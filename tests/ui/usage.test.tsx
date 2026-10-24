@@ -1,11 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { PluginContextProvider } from "@opencode/plugin/tui";
+import { testRender } from "@opentui/solid";
+import { jsx } from "@opentui/solid/jsx-runtime";
 import type {
 	ProviderSummary,
 	QuotaMetric,
 	QuotaRead,
 	QuotaScope,
 } from "../../src/core/contracts";
+import {
+	INVENTORY_FAILED_DETAIL,
+	INVENTORY_FAILED_TITLE,
+	INVENTORY_RETRY_HINT,
+	inventoryRecoveryCommands,
+	quotaInventory,
+} from "../../src/tui";
 import {
 	compactRows,
 	EXPIRED_COMPANION_COPY,
@@ -112,6 +122,72 @@ const OPENAI_PROVIDER: ProviderSummary = {
 	support: "requires-companion",
 	evidence: "live-validated",
 };
+
+type CapturedCommand = {
+	id?: string;
+	bind?: string;
+	run?: () => void | false | Promise<void>;
+};
+
+type CapturedLayer = { commands?: readonly CapturedCommand[] };
+
+// The narrow props of the components do not match the host's
+// `Record<string, unknown>` JSX component signature; these casts are only for
+// calling the host renderer from the test.
+const SidebarHost = Sidebar as unknown as (
+	props: Record<string, unknown>,
+) => unknown;
+const UsagePageHost = UsagePage as unknown as (
+	props: Record<string, unknown>,
+) => unknown;
+const ProviderHost = PluginContextProvider as unknown as (
+	props: Record<string, unknown>,
+) => unknown;
+
+function mockHostContext() {
+	const layers: CapturedLayer[] = [];
+	const theme = {
+		text: {
+			base: "#ffffff",
+			muted: "#aaaaaa",
+			faint: "#666666",
+			feedback: {
+				error: { base: "#ff0000", muted: "#aa0000" },
+				warning: { base: "#ffaa00", muted: "#aa7700" },
+				success: { base: "#00ff00", muted: "#00aa00" },
+				info: { base: "#00aaff", muted: "#0077aa" },
+			},
+		},
+	};
+	const context = {
+		theme,
+		keymap: {
+			layer(factory: () => CapturedLayer) {
+				layers.push(factory());
+			},
+		},
+	};
+	return { context, layers };
+}
+
+function futureQuota(): QuotaRead {
+	return available([
+		{
+			scope: "provider-balance",
+			metrics: [
+				windowMetric({
+					id: "month",
+					scope: "provider-balance",
+					label: "Monthly allowance",
+					windowSeconds: 2_592_000,
+					remainingPercent: 55,
+					usedPercent: 45,
+					resetsAt: PLAN_RESET,
+				}),
+			],
+		},
+	]);
+}
 
 describe("quota presentation values", () => {
 	test("labels_remaining_versus_used_consistently", () => {
@@ -765,9 +841,142 @@ describe("row grouping and narrow terminals", () => {
 	});
 });
 
-describe("components are thin typed wrappers", () => {
-	test("sidebar_and_usage_page_export_components", () => {
-		expect(typeof Sidebar).toBe("function");
-		expect(typeof UsagePage).toBe("function");
+describe("host-rendered wrappers", () => {
+	test("usage_page_renders_declaration_driven_rows_and_keyboard_actions", async () => {
+		const { context, layers } = mockHostContext();
+		const refreshes: string[] = [];
+		let backs = 0;
+		const setup = await testRender(
+			() =>
+				jsx(ProviderHost, {
+					value: context as never,
+					get children() {
+						return jsx(UsagePageHost, {
+							providers: [FUTURE_PROVIDER],
+							quotaByProvider: { "future-provider": futureQuota() },
+							refresh: (providerID: string) => refreshes.push(providerID),
+							back: () => {
+								backs += 1;
+							},
+						});
+					},
+				}),
+			{ width: 80, height: 40 },
+		);
+		try {
+			await setup.renderOnce();
+			const frame = setup.captureCharFrame().replace(/\s+/g, "");
+			expect(frame).toContain("FutureProvider—supported·documented-only");
+			expect(frame).toContain("Authsource:codex-companion");
+			expect(frame).toContain("55%remaining");
+			expect(frame).toContain("Monthlyallowance");
+
+			const commands = layers[0]?.commands ?? [];
+			const back = commands.find(
+				(command) => command.id === "provider-quota.page.back",
+			);
+			const refresh = commands.find(
+				(command) => command.id === "provider-quota.page.refresh",
+			);
+			expect(back?.bind).toBe("escape");
+			expect(refresh?.bind).toBe("ctrl+r");
+			await back?.run?.();
+			await refresh?.run?.();
+			expect(backs).toBe(1);
+			expect(refreshes).toEqual(["future-provider"]);
+
+			setup.resize(32, 60);
+			await setup.renderOnce();
+			const narrow = setup.captureCharFrame().replace(/\s+/g, "");
+			expect(narrow).toContain("FutureProvider");
+			expect(narrow).toContain("55%remaining");
+			expect(narrow).toContain("Monthlyallowance");
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("sidebar_renders_copy_and_click_opens_usage", async () => {
+		const { context } = mockHostContext();
+		let opened = 0;
+		const setup = await testRender(
+			() =>
+				jsx(ProviderHost, {
+					value: context as never,
+					get children() {
+						return jsx(SidebarHost, {
+							provider: OPENAI_PROVIDER,
+							quota: {
+								state: "auth-required",
+								reason: "companion_expired",
+								attemptedAt: NOW,
+							},
+							openUsage: () => {
+								opened += 1;
+							},
+						});
+					},
+				}),
+			{ width: 60, height: 20 },
+		);
+		try {
+			await setup.renderOnce();
+			const frame = setup.captureCharFrame().replace(/\s+/g, "");
+			expect(frame).toContain("OpenAI:requirescompanion·live-validated");
+			expect(frame).toContain(EXPIRED_COMPANION_COPY.replace(/\s+/g, ""));
+
+			await setup.mockMouse.click(1, 1);
+			await setup.renderOnce();
+			expect(opened).toBe(1);
+
+			setup.resize(24, 30);
+			await setup.renderOnce();
+			const narrow = setup.captureCharFrame().replace(/\s+/g, "");
+			expect(narrow).toContain(EXPIRED_COMPANION_COPY.replace(/\s+/g, ""));
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("inventory_failure_is_truthful_and_retryable", () => {
+		const ready = {
+			version: 1,
+			providers: [{ provider: FUTURE_PROVIDER, quota: futureQuota() }],
+		};
+		expect(quotaInventory(undefined, undefined)).toEqual({
+			state: "loading",
+		});
+		expect(quotaInventory(null, undefined)).toEqual({ state: "failed" });
+		expect(quotaInventory(undefined, new Error("inventory down"))).toEqual({
+			state: "failed",
+		});
+		expect(quotaInventory(ready, undefined)).toEqual({
+			state: "ready",
+			result: ready,
+		});
+
+		expect(INVENTORY_FAILED_TITLE).toBe("Provider inventory unavailable");
+		expect(INVENTORY_FAILED_DETAIL).toBe(
+			"Quota could not be read from the server. No figures are shown.",
+		);
+		expect(INVENTORY_RETRY_HINT).toContain("ctrl+r");
+		expect(INVENTORY_RETRY_HINT).toContain("esc");
+
+		const calls: string[] = [];
+		const commands = inventoryRecoveryCommands({
+			retry: () => calls.push("retry"),
+			back: () => calls.push("back"),
+		});
+		const retry = commands.find(
+			(command) => command.id === "provider-quota.recovery.retry",
+		);
+		const back = commands.find(
+			(command) => command.id === "provider-quota.recovery.back",
+		);
+		expect(retry?.bind).toBe("ctrl+r");
+		expect(back?.bind).toBe("escape");
+		retry?.run();
+		back?.run();
+		expect(calls).toEqual(["retry", "back"]);
 	});
 });

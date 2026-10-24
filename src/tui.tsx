@@ -25,7 +25,7 @@ import { UsagePage } from "./ui/UsagePage";
 
 export type QuotaTuiContext = Pick<
 	Plugin.Context,
-	"client" | "data" | "keymap" | "location" | "ui"
+	"client" | "data" | "keymap" | "location" | "theme" | "ui"
 >;
 
 export type QuotaKeymapLayer = ReturnType<
@@ -193,6 +193,62 @@ type VisibleProvider = {
 	quota: QuotaRead;
 };
 
+type PageInventory =
+	| { state: "loading" }
+	| { state: "failed" }
+	| { state: "ready"; result: QuotaListResult };
+
+export const INVENTORY_FAILED_TITLE = "Provider inventory unavailable";
+export const INVENTORY_FAILED_DETAIL =
+	"Quota could not be read from the server. No figures are shown.";
+export const INVENTORY_RETRY_HINT = "[ctrl+r] retry   [esc] back";
+
+/**
+ * Separates in-flight (`undefined`, no error) from failed-and-retryable
+ * (`null` sentinel or a resource error). Collapsing these into "loading" left
+ * the user without a truthful state or any way to retry.
+ */
+export function quotaInventory(
+	value: QuotaListResult | null | undefined,
+	error: unknown,
+): PageInventory {
+	if (error !== undefined || value === null) {
+		return { state: "failed" };
+	}
+	if (value === undefined) {
+		return { state: "loading" };
+	}
+	return { state: "ready", result: value };
+}
+
+export type RecoveryCommand = {
+	id: string;
+	title: string;
+	bind: string;
+	run: () => void;
+};
+
+/** Escape/retry bindings used only while the full page cannot register its own. */
+export function inventoryRecoveryCommands(handlers: {
+	retry: () => void;
+	back: () => void;
+}): RecoveryCommand[] {
+	return [
+		{
+			id: "provider-quota.recovery.back",
+			title: "Back from provider usage",
+			bind: "escape",
+			run: handlers.back,
+		},
+		{
+			id: "provider-quota.recovery.retry",
+			title: "Retry provider inventory",
+			bind: "ctrl+r",
+			run: handlers.retry,
+		},
+	];
+}
+
 // The host JSX runtime types component props as Record<string, unknown>;
 // these narrow component contracts are validated where they are rendered.
 const SidebarHost = Sidebar as unknown as (
@@ -275,22 +331,28 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 	const context = props.context as QuotaTuiContext;
 	const pushed = usePushedQuota(context);
 	let inFlight: AbortController | undefined;
-	const [snapshot, { refetch }] = createResource(async () => {
-		inFlight?.abort();
-		const controller = new AbortController();
-		inFlight = controller;
-		return fetchProviders(context, controller.signal);
-	});
+	// `null` is the failed-inventory sentinel; `undefined` means the resource
+	// has not produced a first value yet. They must never collapse into the
+	// same "loading" UI.
+	const [snapshot, { refetch }] = createResource(
+		async (): Promise<QuotaListResult | null> => {
+			inFlight?.abort();
+			const controller = new AbortController();
+			inFlight = controller;
+			return (await fetchProviders(context, controller.signal)) ?? null;
+		},
+	);
 	onCleanup(() => inFlight?.abort());
 
-	const pageView = (): {
+	const inventory = (): PageInventory =>
+		quotaInventory(snapshot(), snapshot.error);
+
+	const pageView = (
+		result: QuotaListResult,
+	): {
 		providers: ProviderSummary[];
 		quotaByProvider: Record<string, QuotaRead>;
 	} => {
-		const result = snapshot();
-		if (result === undefined) {
-			return { providers: [], quotaByProvider: {} };
-		}
 		const now = Date.now();
 		const providers: ProviderSummary[] = [];
 		const quotaByProvider: Record<string, QuotaRead> = {};
@@ -315,14 +377,45 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 	};
 
 	const back = () => context.ui.router.navigate({ type: "home" });
+	const retry = () => void refetch();
+
+	// While the inventory is loading or failed the full page component is not
+	// mounted, so its keymap cannot help. This recovery layer guarantees a way
+	// out of the failure state; it disables itself once the page mounts.
+	context.keymap.layer(() => ({
+		mode: "global",
+		priority: 20,
+		enabled: () => inventory().state !== "ready",
+		commands: inventoryRecoveryCommands({ retry, back }),
+	}));
 
 	return jsx("box", {
 		flexDirection: "column",
 		children: () => {
-			if (snapshot() === undefined) {
+			const current = inventory();
+			if (current.state === "loading") {
 				return jsx("text", { children: "Loading provider usage..." });
 			}
-			const view = pageView();
+			if (current.state === "failed") {
+				return jsx("box", {
+					flexDirection: "column",
+					children: [
+						jsx("text", {
+							fg: context.theme.text.feedback.error.base,
+							children: INVENTORY_FAILED_TITLE,
+						}),
+						jsx("text", {
+							fg: context.theme.text.feedback.error.base,
+							children: INVENTORY_FAILED_DETAIL,
+						}),
+						jsx("text", {
+							fg: context.theme.text.muted,
+							children: INVENTORY_RETRY_HINT,
+						}),
+					],
+				});
+			}
+			const view = pageView(current.result);
 			return jsx(UsagePageHost, {
 				providers: view.providers,
 				quotaByProvider: view.quotaByProvider,
