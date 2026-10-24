@@ -11,7 +11,7 @@ client IDs, emails, credential-file contents, or personal quota values.
 | --- | --- | --- |
 | Source-plan live validations | **2026-10-24** | The original OpenCode, Ollama, OpenAI token-sharing, and Codex companion checks listed below. This date is not a claim about later runs. |
 | Repository automated verification | 2026-10-24 | Unit/integration suites, typecheck, lint, build, frozen install, audit, package inspection, and a synthetic headless artifact smoke in this workspace. |
-| Integrated live Checkpoint B | **Pending user consent** | The installed plugin against a real Codex cache and the real provider routes has not been re-run as an integrated Checkpoint B smoke. |
+| Integrated live Checkpoint B | **2026-10-24** | Consent granted in-session; the real adapters, readers, and transport ran read-only against the real Codex cache and the live provider routes. See "Integrated live Checkpoint B (2026-10-24)". |
 | Interactive terminal Checkpoint C | **Pending human review** | Placement, navigation, narrow/wide layout, and keybindings in a live OpenCode terminal. |
 
 ## Source-plan live validations (2026-10-24)
@@ -30,6 +30,33 @@ or personal quota snapshots are reproduced here.
 | Codex companion shared-plan quota | After that unique match, `GET https://chatgpt.com/backend-api/wham/usage` returned `200` with primary and secondary plan windows. |
 | Scope distinction | App-week and shared-plan-week values and reset timestamps differed. They are separate constraints, not interchangeable displays. |
 | OpenCode Console | Device OAuth works; a reliable quota endpoint has not been validated. |
+
+## Integrated live Checkpoint B (2026-10-24)
+
+User-consented, read-only smoke of the real modules at `609e3d2` under Bun
+`1.4.4`: the adapter registry, both adapters, the Codex companion reader, the
+bounded credential readers, and the shared `getQuotaJson` transport (allowlist,
+response bounds, and reason-code sanitization all live). No store, config, or
+credential was written, refreshed, rotated, or deleted, and no sign-in was
+started. The host connection APIs do not exist outside OpenCode, so the
+native-credential bridge was replicated exactly: `opencode.db` was opened
+READ-ONLY and the active `openai` OAuth credential was serialized with the
+`serializeNativeCredential` shape (`refresh`/`expires` dropped, selectors +
+`access` + `metadata` kept). Statuses below are successes observed through the
+transport's 2xx handling; the exact success code is not separately captured on
+the sanitized read path.
+
+| Check | Recorded evidence (sanitized) |
+| --- | --- |
+| Request scope | Exactly three GETs through the real transport: Ollama balance, companion apps, companion plan. No other network call was made. |
+| Ollama Cloud saved key (file idiom) | Resolved with `nativeCredential` unset, so the adapter's file idiom read the saved key from the OpenCode auth store. `GET https://ollama.com/api/balance` succeeded (2xx). Read `state: available`, `authSource: opencode`, one `provider-balance` section with separate included, purchased, and total money metrics plus the refill period. |
+| Codex companion reader | `readCodexCompanion({ enabled: true })` with `home` unset and `CODEX_HOME` unset resolved `~/.codex` and returned `available`. |
+| Absent-config storage default | Installed Codex `0.150.1` (observed without executing it). `config.toml` is present and omits `cli_auth_credentials_store`; the reader's documented file default applied, and the login read under that default was accepted by both live routes below. Single-machine observation. |
+| Native registration (read-only db bridge) | `opencode.db` holds exactly one active `openai` OAuth credential; the serialized shape passed `readNativeRegistration` (declared method, issuer/audience/scope selectors, and `metadata.clientID` consistency). |
+| Companion app match then shared plan | `GET https://chatgpt.com/backend-api/wham/usage/chatpass/apps` succeeded (2xx), exactly one app registration matched the native client ID, and only then `GET https://chatgpt.com/backend-api/wham/usage` succeeded (2xx). Request order observed: apps, then plan. |
+| Companion read result | `state: available`, `authSource: codex-companion`, two sections (`app`, `shared-plan`), each with its own windows, percentages, durations, and reset timestamps; the configured app cap stayed a section-level `configuredAppCapPercent` and was never emitted as remaining quota. |
+| Identity and public validation | `isCurrent()` re-read both credential sources after each read and returned `true`; both returned reads passed the public `isQuotaRead` allowlist. |
+| Sentinel discipline | Secret strings (bearers, JWT segments, refresh tokens, account/client identifiers, emails) were collected programmatically from the real stores and asserted absent from every printed line and every returned read: 0 leaks. |
 
 ## Automated verification for this release
 
@@ -65,17 +92,13 @@ provider behavior.
 
 ## Unverified until live smoke
 
-- **Integrated Checkpoint B.** The plugin has not been live-smoked end-to-end
-  against a real Codex cache and the real `chatgpt.com` routes in this release
-  (pending user consent). Do not advertise the companion opt-in as live-safe
-  until that run is recorded.
-- **Absent-config Codex file default.** The reader assumes Codex's documented
-  default of file-backed storage when `config.toml` is absent or omits
-  `cli_auth_credentials_store`. The offline unit test
-  `absent_config_defaults_to_file_storage` pins the current software behavior;
-  it is **not** evidence about the installed Codex version. Revalidate against
-  that version before the live smoke; if the default has changed, the reader
-  must be fixed before the opt-in is advertised as safe.
+- **Absent-config Codex file default (cross-version behavior).** Live-validated
+  against the installed Codex `0.150.1` on 2026-10-24: `config.toml` omits
+  `cli_auth_credentials_store`, the reader's file default applied, and the
+  file-backed login read under that default was accepted by both live quota
+  routes. That is a single-machine observation; the unit test
+  `absent_config_defaults_to_file_storage` pins the software behavior, and the
+  default must be revalidated whenever the installed Codex version changes.
 - **Missing, expired, and mismatched companion logins.** Covered by synthetic
   fixtures in `tests/providers/codex-credentials.test.ts`,
   `tests/providers/openai-companion.test.ts`, and
@@ -101,8 +124,9 @@ provider behavior.
 - [ ] The support-matrix test passes for every registered adapter capability.
 - [ ] The built artifact loads headlessly with the companion disabled and
       enabled using synthetic inputs.
-- [ ] Both live quota routes return `200` and the companion app match is unique
+- [x] Both live quota routes return `200` and the companion app match is unique
       when a consented live run is performed. Record only status/scopes/states.
+      (Performed 2026-10-24; see "Integrated live Checkpoint B (2026-10-24)".)
 - [ ] The native OpenCode inference sign-in still works after enabling the
       companion; the companion path did not replace or refresh it.
 - [ ] Missing/expired/mismatched companion scenarios were exercised with

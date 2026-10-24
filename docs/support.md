@@ -16,9 +16,10 @@ fails CI.
 | Remote server | Not promised for v1; see [No remote or keychain promise](#no-remote-or-keychain-promise) |
 | Quota source | Provider responses only; no local-token estimates, guessed allowances, inferred refills, or API-spending substitution |
 
-Evidence dates in this document refer to the source plan's live validations on
-**2026-10-24** only. Nothing in this document claims a live validation performed
-after that date.
+Evidence dates in this document refer to the live validations on
+**2026-10-24**: the source plan's checks plus the integrated, consented,
+read-only Checkpoint B smoke recorded in `docs/validation.md`. Nothing in this
+document claims a live validation performed after that date.
 
 ## Authentication and compatibility matrix
 
@@ -114,10 +115,14 @@ server-side opt-in. Configuration is read from the server plugin options:
   (`integration.connection.active` then `connection.resolve`). The
   file-backed `auth.json` entry remains the documented fallback for hosts where
   that file is the credential store.
-- The absent-`config.toml` default (treating storage as file-backed) follows
-  Codex's documented default for the versions this reader targets. It is
-  **unverified until live-smoked**; see `docs/validation.md`. If Codex changes
-  that default, revalidate before advertising the opt-in as safe.
+- The absent-setting default (treating storage as file-backed when
+  `config.toml` is absent or omits `cli_auth_credentials_store`) follows Codex's
+  documented default for the versions this reader targets. It was
+  live-validated against the installed Codex `0.150.1` on 2026-10-24
+  (`config.toml` omitted the setting, the reader applied the file default, and
+  the file-backed login was accepted by both live quota routes). That is a
+  single-machine observation, so the evidence level here stays documented-only
+  with that caveat; revalidate whenever the installed Codex version changes.
 
 ## Native sign-in preservation
 
