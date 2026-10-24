@@ -516,17 +516,6 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 		name: USAGE_PAGE_NAME,
 		render: (input) => jsx(QuotaUsagePage, { context, data: input.data }),
 	});
-	context.keymap.layer(() => ({
-		mode: "global",
-		priority: 10,
-		commands: [
-			{
-				id: "provider-quota.bisect.disabled",
-				title: "disabled bisect",
-				run: () => {},
-			},
-		],
-	}));
 	// The slash-yield choice is evaluated ONCE, at setup, outside the layer
 	// factory. The factory must stay pure (host docs): reading
 	// `keymap.commands()` reactively inside a layer factory re-enters the

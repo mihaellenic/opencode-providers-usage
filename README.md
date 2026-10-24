@@ -36,13 +36,19 @@ npx bun@1.4.4 install --frozen-lockfile --ignore-scripts
 npx bun@1.4.4 run build
 ```
 
-The package exposes three entrypoints:
+The package exports four entrypoints:
 
-| Export | Source | Purpose |
+| Export | Target | Purpose |
 | --- | --- | --- |
-| `.` | `src/index.ts` | Server plugin: adapters, coordinator, RPC (`provider-usage`) |
-| `./tui` | `src/tui.tsx` | Terminal plugin: sidebar slot, `/usage` page, palette commands |
-| `./rpc` | `src/rpc.ts` | Versioned, validated RPC contract types |
+| `.` | `./index.ts` | Server plugin: adapters, coordinator, RPC (`provider-usage`) |
+| `./server` | `./index.ts` | Explicit alias for the server plugin |
+| `./tui` | `./tui.tsx` | Terminal plugin: sidebar slot, `/usage` page, palette commands |
+| `./rpc` | `./rpc.ts` | Versioned, validated RPC contract types |
+
+Local plugin targets do not use this map: OpenCode resolves them by root-file
+convention (`index.ts`, `tui.tsx`, `rpc.ts`), and this repository ships those
+root files re-exporting `src/*`. Named package installs use the exports map
+above.
 
 OpenCode loads the `./tui` export beside the main plugin automatically. Do not
 add a second plugin entry for it.
@@ -51,21 +57,10 @@ add a second plugin entry for it.
 
 OpenCode V2 resolves local plugins by ROOT-FILE CONVENTION: the loader looks
 for `<package>/index.ts`, `<package>/tui.tsx`, and `<package>/rpc.ts` (this
-repository ships those root entrypoints, re-exporting `src/*`). A bare
-absolute path as a plugin entry was observed to be silently ignored on
-`2.1.4`; use one of the two verified forms:
+repository ships those root entrypoints, re-exporting `src/*`). Use one of the
+two verified forms:
 
-**Form A — config `plugins` array with a `file://` URL** (this repo's own
-`opencode.jsonc` pattern):
-
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["file:///absolute/path/to/opencode-providers-usage"]
-}
-```
-
-**Form B — symlink into the config plugins directory** (independent of config
+**Form A — symlink into the config plugins directory** (independent of config
 arrays; how the repo is installed for its own development):
 
 ```bash
@@ -73,11 +68,27 @@ ln -sfn /absolute/path/to/opencode-providers-usage \
   ~/.config/opencode/plugins/opencode-providers-usage
 ```
 
+**Form B — config `plugins` array with an object entry** (verified in the
+isolated serve run via `/api/config` and RPC):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    { "package": "file:///absolute/path/to/opencode-providers-usage" }
+  ]
+}
+```
+
+The bare-string form (`"plugins": ["file:///absolute/path"]`) is accepted by
+the config schema; it was observed to be silently ignored for local paths on
+`2.1.4` — prefer the forms above.
+
 ### Enable the Codex companion (optional, disabled by default)
 
 OpenAI quota requires an explicit **server-side** opt-in and an existing
 file-backed Codex login. Use the object form of the config entry so options
-can flow (Form A):
+can flow (Form B):
 
 ```jsonc
 {
