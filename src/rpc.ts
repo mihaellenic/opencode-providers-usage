@@ -1,0 +1,514 @@
+import { Rpc } from "@opencode/plugin";
+import {
+	isQuotaRead,
+	type ProviderSummary,
+	QUOTA_REASON_CODES,
+	type QuotaRead,
+} from "./core/contracts";
+import type { AdapterRegistry } from "./core/registry";
+
+export const QUOTA_RPC_ID = "provider-usage";
+export const QUOTA_PLUGIN_ID = QUOTA_RPC_ID;
+export const QUOTA_RPC_VERSION = 1;
+
+const supportValues = [
+	"supported",
+	"unsupported",
+	"not-applicable",
+	"requires-companion",
+] as const;
+const evidenceValues = [
+	"live-validated",
+	"documented-only",
+	"unverified",
+] as const;
+const scopeValues = ["provider-balance", "shared-plan", "app"] as const;
+const unavailableStateValues = [
+	"unsupported",
+	"not-applicable",
+	"auth-required",
+	"unavailable",
+] as const;
+
+const providerSummarySchema = {
+	type: "object",
+	properties: {
+		providerID: { type: "string" },
+		name: { type: "string" },
+		integrationID: { type: "string" },
+		authMethod: { type: "string" },
+		support: { type: "string", enum: supportValues },
+		evidence: { type: "string", enum: evidenceValues },
+	},
+	required: ["providerID", "name", "authMethod", "support", "evidence"],
+	additionalProperties: false,
+} as const;
+
+const windowMetricSchema = {
+	type: "object",
+	properties: {
+		kind: { type: "string", const: "window" },
+		id: { type: "string" },
+		scope: { type: "string", enum: scopeValues },
+		label: { type: "string" },
+		windowSeconds: { type: "number" },
+		usedPercent: { type: "number" },
+		remainingPercent: { type: "number" },
+		resetsAt: { type: "number" },
+	},
+	required: ["kind", "id", "scope", "label", "windowSeconds"],
+	additionalProperties: false,
+} as const;
+
+const moneyMetricSchema = {
+	type: "object",
+	properties: {
+		kind: { type: "string", const: "money" },
+		id: { type: "string" },
+		scope: { type: "string", const: "provider-balance" },
+		label: { type: "string" },
+		currency: { type: "string", const: "USD" },
+		remaining: { type: "number" },
+		allowance: { type: "number" },
+		used: { type: "number" },
+		resetsAt: { type: "number" },
+	},
+	required: ["kind", "id", "scope", "label", "currency", "remaining"],
+	additionalProperties: false,
+} as const;
+
+const sectionResultSchema = {
+	oneOf: [
+		{
+			type: "object",
+			properties: {
+				state: { type: "string", const: "available" },
+				metrics: {
+					type: "array",
+					items: { oneOf: [windowMetricSchema, moneyMetricSchema] },
+				},
+				fetchedAt: { type: "number" },
+				expiresAt: { type: "number" },
+				configuredAppCapPercent: { type: "number" },
+			},
+			required: ["state", "metrics", "fetchedAt", "expiresAt"],
+			additionalProperties: false,
+		},
+		{
+			type: "object",
+			properties: {
+				state: { type: "string", enum: unavailableStateValues },
+				reason: { type: "string", enum: [...QUOTA_REASON_CODES] },
+				attemptedAt: { type: "number" },
+				retryAfterMs: { type: "number" },
+			},
+			required: ["state", "reason", "attemptedAt"],
+			additionalProperties: false,
+		},
+	],
+} as const;
+
+const quotaReadSchema = {
+	oneOf: [
+		{
+			type: "object",
+			properties: {
+				state: { type: "string", enum: ["available", "partial"] },
+				authSource: { type: "string", enum: ["opencode", "codex-companion"] },
+				sections: {
+					type: "array",
+					items: {
+						type: "object",
+						properties: {
+							scope: { type: "string", enum: scopeValues },
+							result: sectionResultSchema,
+						},
+						required: ["scope", "result"],
+						additionalProperties: false,
+					},
+				},
+			},
+			required: ["state", "authSource", "sections"],
+			additionalProperties: false,
+		},
+		{
+			type: "object",
+			properties: {
+				state: { type: "string", enum: unavailableStateValues },
+				reason: { type: "string", enum: [...QUOTA_REASON_CODES] },
+				attemptedAt: { type: "number" },
+				retryAfterMs: { type: "number" },
+			},
+			required: ["state", "reason", "attemptedAt"],
+			additionalProperties: false,
+		},
+	],
+} as const;
+
+const providerViewSchema = {
+	type: "object",
+	properties: {
+		provider: providerSummarySchema,
+		quota: quotaReadSchema,
+	},
+	required: ["provider", "quota"],
+	additionalProperties: false,
+} as const;
+
+const providerInputSchema = {
+	type: "object",
+	properties: {
+		providerID: { type: "string" },
+	},
+	required: ["providerID"],
+	additionalProperties: false,
+} as const;
+
+const emptyInputSchema = {
+	type: "object",
+	properties: {},
+	additionalProperties: false,
+} as const;
+
+const versionSchema = { type: "number", const: QUOTA_RPC_VERSION } as const;
+
+const invalidInputSchema = {
+	type: "object",
+	properties: {
+		message: { type: "string" },
+	},
+	required: ["message"],
+	additionalProperties: false,
+} as const;
+
+const listOutputSchema = {
+	type: "object",
+	properties: {
+		version: versionSchema,
+		providers: {
+			type: "array",
+			items: providerViewSchema,
+		},
+	},
+	required: ["version", "providers"],
+	additionalProperties: false,
+} as const;
+
+const getOutputSchema = {
+	type: "object",
+	properties: {
+		version: versionSchema,
+		provider: providerSummarySchema,
+		quota: quotaReadSchema,
+	},
+	required: ["version", "provider", "quota"],
+	additionalProperties: false,
+} as const;
+
+const updatedEventSchema = {
+	type: "object",
+	properties: {
+		version: versionSchema,
+		providerID: { type: "string" },
+		quota: quotaReadSchema,
+	},
+	required: ["version", "providerID", "quota"],
+	additionalProperties: false,
+} as const;
+
+/**
+ * Versioned plugin RPC. Inputs deliberately carry only a provider ID: the TUI
+ * can never supply a credential value or credential path. All outputs are
+ * provider/auth/support descriptors plus sanitized quota reads.
+ */
+export const QuotaRpc = Rpc.define({
+	id: QUOTA_RPC_ID,
+	methods: {
+		list: {
+			input: emptyInputSchema,
+			output: listOutputSchema,
+			errors: { invalid_input: invalidInputSchema },
+		},
+		get: {
+			input: providerInputSchema,
+			output: getOutputSchema,
+			errors: { invalid_input: invalidInputSchema },
+		},
+		refresh: {
+			input: providerInputSchema,
+			output: getOutputSchema,
+			errors: { invalid_input: invalidInputSchema },
+		},
+	},
+	events: {
+		updated: { schema: updatedEventSchema },
+	},
+});
+
+export type QuotaProviderRef = {
+	providerID: string;
+	integrationID?: string;
+	authMethod: string;
+};
+
+export type QuotaProviderView = {
+	provider: ProviderSummary;
+	quota: QuotaRead;
+};
+
+export type QuotaListResult = {
+	version: number;
+	providers: QuotaProviderView[];
+};
+
+export type QuotaGetResult = {
+	version: number;
+	provider: ProviderSummary;
+	quota: QuotaRead;
+};
+
+export type QuotaUpdatedEvent = {
+	version: number;
+	providerID: string;
+	quota: QuotaRead;
+};
+
+export type QuotaReadRequest = QuotaProviderRef & { signal: AbortSignal };
+
+export type QuotaRpcSource = {
+	registry: AdapterRegistry;
+	providers(): Promise<QuotaProviderRef[]>;
+	read(input: QuotaReadRequest): Promise<QuotaRead>;
+	now(): number;
+};
+
+export type QuotaRpcOptions = {
+	source: QuotaRpcSource;
+	publish?(event: QuotaUpdatedEvent): Promise<void> | void;
+};
+
+type QuotaMethods = typeof QuotaRpc.methods;
+type QuotaMethodName = keyof QuotaMethods;
+type MethodFor<Name extends QuotaMethodName> = QuotaMethods[Name];
+
+export type QuotaRpcHandlers = {
+	[Name in QuotaMethodName]: (
+		input: Rpc.Output<MethodFor<Name>["input"]>,
+		context: {
+			readonly signal: AbortSignal;
+			readonly error: Rpc.ErrorFactory<MethodFor<Name>>;
+		},
+	) => Promise<
+		| Rpc.HandlerOutput<MethodFor<Name>["output"]>
+		| Rpc.HandlerError<MethodFor<Name>>
+	>;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(
+	value: Record<string, unknown>,
+	allowed: readonly string[],
+): boolean {
+	return Object.keys(value).every((key) => allowed.includes(key));
+}
+
+function isProviderSummary(value: unknown): value is ProviderSummary {
+	if (!isRecord(value)) {
+		return false;
+	}
+	return (
+		hasOnlyKeys(value, [
+			"providerID",
+			"name",
+			"integrationID",
+			"authMethod",
+			"support",
+			"evidence",
+		]) &&
+		typeof value.providerID === "string" &&
+		typeof value.name === "string" &&
+		(value.integrationID === undefined ||
+			typeof value.integrationID === "string") &&
+		typeof value.authMethod === "string" &&
+		typeof value.support === "string" &&
+		(supportValues as readonly string[]).includes(value.support) &&
+		typeof value.evidence === "string" &&
+		(evidenceValues as readonly string[]).includes(value.evidence)
+	);
+}
+
+export function isQuotaProviderView(
+	value: unknown,
+): value is QuotaProviderView {
+	return (
+		isRecord(value) &&
+		hasOnlyKeys(value, ["provider", "quota"]) &&
+		isProviderSummary(value.provider) &&
+		isQuotaRead(value.quota)
+	);
+}
+
+export function isQuotaListResult(value: unknown): value is QuotaListResult {
+	return (
+		isRecord(value) &&
+		hasOnlyKeys(value, ["version", "providers"]) &&
+		value.version === QUOTA_RPC_VERSION &&
+		Array.isArray(value.providers) &&
+		value.providers.every(isQuotaProviderView)
+	);
+}
+
+export function isQuotaGetResult(value: unknown): value is QuotaGetResult {
+	return (
+		isRecord(value) &&
+		hasOnlyKeys(value, ["version", "provider", "quota"]) &&
+		value.version === QUOTA_RPC_VERSION &&
+		isProviderSummary(value.provider) &&
+		isQuotaRead(value.quota)
+	);
+}
+
+type ParsedProviderInput =
+	| { ok: true; providerID: string }
+	| { ok: false; message: string };
+
+function parseProviderInput(value: unknown): ParsedProviderInput {
+	if (!isRecord(value)) {
+		return { ok: false, message: "input must be an object" };
+	}
+	const keys = Object.keys(value);
+	if (keys.length !== 1 || keys[0] !== "providerID") {
+		return {
+			ok: false,
+			message: "input accepts exactly one field: providerID",
+		};
+	}
+	const providerID = value.providerID;
+	if (typeof providerID !== "string" || providerID.length === 0) {
+		return { ok: false, message: "providerID must be a non-empty string" };
+	}
+	return { ok: true, providerID };
+}
+
+type ParsedEmptyInput = { ok: true } | { ok: false; message: string };
+
+function parseEmptyInput(value: unknown): ParsedEmptyInput {
+	if (value === undefined || value === null) {
+		return { ok: true };
+	}
+	if (!isRecord(value)) {
+		return { ok: false, message: "input must be an object" };
+	}
+	if (Object.keys(value).length > 0) {
+		return { ok: false, message: "input accepts no fields" };
+	}
+	return { ok: true };
+}
+
+function invalidResponseRead(now: number): QuotaRead {
+	return { state: "unavailable", reason: "invalid_response", attemptedAt: now };
+}
+
+async function safeRead(
+	source: QuotaRpcSource,
+	input: QuotaReadRequest,
+): Promise<QuotaRead> {
+	try {
+		const value = await source.read(input);
+		return isQuotaRead(value) ? value : invalidResponseRead(source.now());
+	} catch {
+		return invalidResponseRead(source.now());
+	}
+}
+
+async function providerView(
+	source: QuotaRpcSource,
+	ref: QuotaProviderRef,
+	signal: AbortSignal,
+): Promise<QuotaProviderView> {
+	const provider = source.registry.summarize(ref);
+	const quota = await safeRead(source, { ...ref, signal });
+	return { provider, quota };
+}
+
+async function findProvider(
+	source: QuotaRpcSource,
+	providerID: string,
+): Promise<QuotaProviderRef> {
+	const refs = await source.providers();
+	return (
+		refs.find((ref) => ref.providerID === providerID) ?? {
+			providerID,
+			authMethod: "none",
+		}
+	);
+}
+
+function publish(
+	options: QuotaRpcOptions,
+	event: QuotaUpdatedEvent,
+): Promise<void> {
+	return Promise.resolve(options.publish?.(event)).catch(() => undefined);
+}
+
+export function createQuotaRpcHandlers(
+	options: QuotaRpcOptions,
+): QuotaRpcHandlers {
+	const { source } = options;
+
+	return {
+		async list(input, context) {
+			const parsed = parseEmptyInput(input);
+			if (!parsed.ok) {
+				return context.error("invalid_input", parsed.message, {
+					message: parsed.message,
+				});
+			}
+			const refs = await source.providers();
+			const providers = await Promise.all(
+				refs.map((ref) => providerView(source, ref, context.signal)),
+			);
+			return { version: QUOTA_RPC_VERSION, providers };
+		},
+
+		async get(input, context) {
+			const parsed = parseProviderInput(input);
+			if (!parsed.ok) {
+				return context.error("invalid_input", parsed.message, {
+					message: parsed.message,
+				});
+			}
+			const ref = await findProvider(source, parsed.providerID);
+			const view = await providerView(source, ref, context.signal);
+			return {
+				version: QUOTA_RPC_VERSION,
+				provider: view.provider,
+				quota: view.quota,
+			};
+		},
+
+		async refresh(input, context) {
+			const parsed = parseProviderInput(input);
+			if (!parsed.ok) {
+				return context.error("invalid_input", parsed.message, {
+					message: parsed.message,
+				});
+			}
+			const ref = await findProvider(source, parsed.providerID);
+			const view = await providerView(source, ref, context.signal);
+			await publish(options, {
+				version: QUOTA_RPC_VERSION,
+				providerID: ref.providerID,
+				quota: view.quota,
+			});
+			return {
+				version: QUOTA_RPC_VERSION,
+				provider: view.provider,
+				quota: view.quota,
+			};
+		},
+	};
+}
