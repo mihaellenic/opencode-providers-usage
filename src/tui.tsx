@@ -1,7 +1,7 @@
 import { Plugin } from "@opencode/plugin/tui";
 import { jsx } from "@opentui/solid/jsx-runtime";
-import { createMemo, createResource } from "solid-js";
-import type { QuotaRead } from "./core/contracts";
+import { createMemo, createResource, createSignal, onCleanup } from "solid-js";
+import { isQuotaRead, type QuotaRead } from "./core/contracts";
 import {
 	isQuotaGetResult,
 	isQuotaListResult,
@@ -9,6 +9,7 @@ import {
 	type QuotaGetResult,
 	type QuotaListResult,
 	QuotaRpc,
+	type QuotaUpdatedEvent,
 } from "./rpc";
 
 export type QuotaTuiContext = Pick<
@@ -33,6 +34,51 @@ const USAGE_COMMAND_ID = "provider-quota.usage";
 const REFRESH_COMMAND_ID = "provider-quota.refresh";
 const PREFERRED_SLASH = "usage";
 const FALLBACK_SLASH = "provider-usage";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isQuotaUpdatedEventData(value: unknown): value is QuotaUpdatedEvent {
+	return (
+		isRecord(value) &&
+		value.version === 1 &&
+		typeof value.providerID === "string" &&
+		value.providerID.length > 0 &&
+		isQuotaRead(value.quota) &&
+		Object.keys(value).length === 3
+	);
+}
+
+type QuotaEventSubscription = {
+	on(name: "updated", handler: (payload: unknown) => void): () => void;
+};
+
+/**
+ * Subscribes to the server's pushed snapshots. The subscription belongs to the
+ * mounting view and is disposed with it on unload; it creates no timer and no
+ * request. Clients without event support degrade to the resource read.
+ */
+export function subscribeQuotaUpdates(
+	context: Pick<QuotaTuiContext, "client">,
+	handler: (event: QuotaUpdatedEvent) => void,
+): () => void {
+	const client = context.client.rpc(QuotaRpc);
+	const events = (client as { events?: Partial<QuotaEventSubscription> })
+		.events;
+	if (events?.on === undefined) {
+		return () => {};
+	}
+	try {
+		return events.on("updated", (payload) => {
+			if (isRecord(payload) && isQuotaUpdatedEventData(payload.data)) {
+				handler(payload.data);
+			}
+		});
+	} catch {
+		return () => {};
+	}
+}
 
 /**
  * Reads the prompt's selected model reactively. With no selection the UI says
@@ -80,11 +126,12 @@ function quotaState(quota: QuotaRead | undefined): string {
 async function fetchProvider(
 	context: QuotaTuiContext,
 	providerID: string,
+	signal: AbortSignal,
 ): Promise<QuotaGetResult | undefined> {
 	try {
 		const result: unknown = await context.client
 			.rpc(QuotaRpc)
-			.get({ providerID });
+			.get({ providerID }, { signal });
 		return isQuotaGetResult(result) ? result : undefined;
 	} catch {
 		return undefined;
@@ -107,18 +154,37 @@ async function refreshProvider(
 
 async function fetchProviders(
 	context: QuotaTuiContext,
+	signal: AbortSignal,
 ): Promise<QuotaListResult | undefined> {
 	try {
-		const result: unknown = await context.client.rpc(QuotaRpc).list({});
+		const result: unknown = await context.client
+			.rpc(QuotaRpc)
+			.list({}, { signal });
 		return isQuotaListResult(result) ? result : undefined;
 	} catch {
 		return undefined;
 	}
 }
 
+/**
+ * Latest pushed snapshot per provider. Keyed by provider ID, so an update for
+ * one provider can never be rendered under another provider's label.
+ */
+function usePushedQuota(context: QuotaTuiContext) {
+	const [pushed, setPushed] = createSignal<Record<string, QuotaRead>>({});
+	const dispose = subscribeQuotaUpdates(context, (event) => {
+		setPushed((current) => ({
+			...current,
+			[event.providerID]: event.quota,
+		}));
+	});
+	onCleanup(dispose);
+	return pushed;
+}
+
 function sidebarLine(
 	selection: QuotaSelection,
-	result: QuotaGetResult | undefined,
+	quota: QuotaRead | undefined,
 	loading: boolean,
 ): string {
 	if (selection.providerID === undefined) {
@@ -127,30 +193,61 @@ function sidebarLine(
 	if (loading) {
 		return `${selection.label}: checking quota`;
 	}
-	if (result === undefined) {
+	if (quota === undefined) {
 		return `${selection.label}: quota unavailable`;
 	}
-	return `${selection.label}: ${quotaState(result.quota)}`;
+	return `${selection.label}: ${quotaState(quota)}`;
 }
 
 export function QuotaSidebar(props: Record<string, unknown>) {
 	const context = props.context as QuotaTuiContext;
 	const selection = createMemo(() => currentSelection(context));
+	const pushed = usePushedQuota(context);
+	let inFlight: AbortController | undefined;
 	const [snapshot] = createResource(selection, async (selected) => {
+		inFlight?.abort();
 		if (selected.providerID === undefined) {
 			return undefined;
 		}
-		return fetchProvider(context, selected.providerID);
+		const controller = new AbortController();
+		inFlight = controller;
+		return fetchProvider(context, selected.providerID, controller.signal);
 	});
+	onCleanup(() => inFlight?.abort());
+
+	// Only a snapshot fetched for the currently selected provider is shown; a
+	// resource keeps the previous value while refetching, and account A's
+	// figures must never appear under account B's label.
+	const visibleQuota = (): QuotaRead | undefined => {
+		const selected = selection();
+		if (selected.providerID === undefined) {
+			return undefined;
+		}
+		const pushedValue = pushed()[selected.providerID];
+		if (pushedValue !== undefined) {
+			return pushedValue;
+		}
+		const fetched = snapshot();
+		return fetched !== undefined &&
+			fetched.provider.providerID === selected.providerID
+			? fetched.quota
+			: undefined;
+	};
 
 	return jsx("text", {
-		children: () => sidebarLine(selection(), snapshot(), snapshot.loading),
+		children: () =>
+			sidebarLine(
+				selection(),
+				visibleQuota(),
+				snapshot.loading && visibleQuota() === undefined,
+			),
 	});
 }
 
 function pageText(
 	selection: QuotaSelection,
 	result: QuotaListResult | undefined,
+	pushed: () => Record<string, QuotaRead>,
 ): string {
 	const lines = ["Provider usage", `Selected: ${selection.label}`, ""];
 	if (result === undefined) {
@@ -162,8 +259,9 @@ function pageText(
 		return lines.join("\n");
 	}
 	for (const view of result.providers) {
+		const quota = pushed()[view.provider.providerID] ?? view.quota;
 		lines.push(
-			`${view.provider.name} [${view.provider.providerID}]: ${view.provider.support} / ${quotaState(view.quota)}`,
+			`${view.provider.name} [${view.provider.providerID}]: ${view.provider.support} / ${quotaState(quota)}`,
 		);
 	}
 	return lines.join("\n");
@@ -172,11 +270,20 @@ function pageText(
 export function QuotaUsagePage(props: Record<string, unknown>) {
 	const context = props.context as QuotaTuiContext;
 	const selection = createMemo(() => currentSelection(context));
-	const [snapshot] = createResource(() => fetchProviders(context));
+	const pushed = usePushedQuota(context);
+	let inFlight: AbortController | undefined;
+	const [snapshot] = createResource(async () => {
+		inFlight?.abort();
+		const controller = new AbortController();
+		inFlight = controller;
+		return fetchProviders(context, controller.signal);
+	});
+	onCleanup(() => inFlight?.abort());
+
 	return jsx("box", {
 		flexDirection: "column",
 		children: jsx("text", {
-			children: () => pageText(selection(), snapshot()),
+			children: () => pageText(selection(), snapshot(), pushed),
 		}),
 	});
 }
@@ -202,8 +309,8 @@ async function refreshSelected(context: QuotaTuiContext): Promise<void> {
 /**
  * Passive host integration: a compact sidebar line, a namespaced full page,
  * and palette/slash commands. Nothing here fetches quota directly; the RPC is
- * the only boundary, and the interim server wiring returns truthful
- * unsupported/unavailable states for the empty registry.
+ * the only boundary, and the server coordinator is the only refresh owner. No
+ * widget owns a timer, so mounting sidebar and page shares one request rate.
  */
 export function setupQuotaTui(context: QuotaTuiContext): () => void {
 	const disposeSidebar = context.ui.slot({

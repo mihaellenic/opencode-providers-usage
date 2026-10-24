@@ -1,22 +1,26 @@
+import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { ConnectionInfo } from "@opencode/client";
 import { Plugin } from "@opencode/plugin";
-import {
-	type CompanionOptions,
-	type CredentialReadDeps,
-	isQuotaRead,
-	type NativeCredentialSource,
-	type ProviderAdapter,
-	type ProviderDeps,
-	type QuotaRead,
+import type {
+	CompanionOptions,
+	CredentialReadDeps,
+	NativeCredentialSource,
+	ProviderAdapter,
+	ProviderDeps,
+	QuotaRead,
+	ResolvedQuotaSource,
 } from "./core/contracts";
+import { createQuotaCoordinator } from "./core/refresh";
 import { createAdapterRegistry } from "./core/registry";
 import { readCodexCompanion } from "./providers/codex-credentials";
+import { getQuotaJson } from "./providers/http";
 import { createOllamaAdapter } from "./providers/ollama";
 import { createOpenAICompanionAdapter } from "./providers/openai-companion";
 import {
 	createQuotaRpcHandlers,
 	QUOTA_PLUGIN_ID,
+	QUOTA_RPC_VERSION,
 	type QuotaProviderRef,
 	QuotaRpc,
 	type QuotaRpcSource,
@@ -96,6 +100,8 @@ function serializeNativeCredential(value: HostCredentialValue): unknown {
 		};
 	}
 	// "external" references manage their secret outside the credential store.
+	// `undefined` here intentionally means "not observable"; the pinned auth
+	// method gates keep external references out of the supported adapters.
 	return undefined;
 }
 
@@ -166,81 +172,191 @@ function invalidResponseRead(now: number): QuotaRead {
 }
 
 /**
- * Interim direct-resolve path. Task 8 replaces this with the shared
- * identity-aware coordinator; keep it thin and side-effect free.
+ * A resolved source that needs no further resolution work: unsupported
+ * connections and rejected adapter/registry calls still produce a truthful
+ * sanitized read, and they never become a second request path.
  */
-function createRead(source: {
-	registry: ReturnType<typeof createAdapterRegistry>;
-	now(): number;
-	companion: CompanionOptions;
-	deps: ProviderDeps;
-	credentialDeps: CredentialReadDeps;
-	nativeCredential: NativeCredentialSource;
-}) {
-	return async (input: {
-		providerID: string;
-		integrationID?: string;
-		authMethod: string;
-		signal: AbortSignal;
-	}): Promise<QuotaRead> => {
-		try {
-			const resolved = await source.registry.resolve({
-				providerID: input.providerID,
-				...(input.integrationID === undefined
-					? {}
-					: { integrationID: input.integrationID }),
-				authMethod: input.authMethod,
-				companion: source.companion,
-				deps: source.deps,
-				credentialDeps: source.credentialDeps,
-				nativeCredential: source.nativeCredential,
-				signal: input.signal,
-			});
-			if (resolved === null) {
-				return unavailableRead(source.now());
-			}
-			const value = await resolved.read(input.signal);
-			return isQuotaRead(value) ? value : invalidResponseRead(source.now());
-		} catch {
-			return invalidResponseRead(source.now());
-		}
+function staticSource(
+	identityKey: string,
+	read: () => QuotaRead,
+): ResolvedQuotaSource {
+	return {
+		identityKey,
+		read: async () => read(),
+		isCurrent: async () => true,
 	};
 }
 
-export async function setupQuotaServer(ctx: ServerContext): Promise<void> {
+/**
+ * Bounded UTF-8 file read for the credential readers. The byte bound is
+ * enforced while reading, never trusted from an earlier stat: the handle reads
+ * in chunks and aborts as soon as the bound is crossed. Error messages carry no
+ * path or file contents, so credential material cannot reach diagnostics.
+ */
+async function readBoundedUtf8(
+	path: string,
+	maxBytes: number,
+): Promise<string> {
+	if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+		throw new Error("invalid credential byte bound");
+	}
+	const handle = await open(path, "r");
+	try {
+		const buffer = Buffer.alloc(Math.min(64 * 1024, Math.max(1, maxBytes + 1)));
+		const chunks: Buffer[] = [];
+		let total = 0;
+		for (;;) {
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+			if (bytesRead === 0) {
+				break;
+			}
+			total += bytesRead;
+			if (total > maxBytes) {
+				throw new Error("credential file exceeds the configured byte bound");
+			}
+			chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
+		}
+		return Buffer.concat(chunks).toString("utf8");
+	} finally {
+		await handle.close();
+	}
+}
+
+export async function setupQuotaServer(
+	ctx: ServerContext,
+): Promise<() => Promise<void>> {
 	const now = () => Date.now();
 	const registry = createAdapterRegistry(QUOTA_ADAPTERS);
 	const companion = resolveCompanionOptions(ctx.options);
 	const nativeCredential = createNativeCredentialSource(
 		ctx.integration.connection,
 	);
+	const deps: ProviderDeps = { now, getJson: getQuotaJson };
+	const credentialDeps: CredentialReadDeps = {
+		now,
+		env: process.env,
+		homeDirectory: homedir(),
+		readUtf8: readBoundedUtf8,
+	};
+
+	/** Last provider/auth reference observed through an RPC read. */
+	const providerRefs = new Map<string, QuotaProviderRef>();
+
+	async function refreshProviderRefs(): Promise<QuotaProviderRef[]> {
+		const refs = await resolveProviderRefs(ctx);
+		for (const ref of refs) {
+			providerRefs.set(ref.providerID, ref);
+		}
+		return refs;
+	}
+
+	/**
+	 * The registry's resolve, adapted to the coordinator's provider-only seam.
+	 * The provider/auth reference observed by the last RPC read is reused so a
+	 * poll does not repeat the host inventory lookup; the adapters still reread
+	 * the active credential/companion cache on every call, so an account switch
+	 * is observed without restarting the plugin.
+	 */
+	async function resolveSource(
+		providerID: string,
+		signal: AbortSignal,
+	): Promise<ResolvedQuotaSource> {
+		let ref = providerRefs.get(providerID);
+		if (ref === undefined) {
+			try {
+				const refs = await refreshProviderRefs();
+				ref = refs.find((candidate) => candidate.providerID === providerID) ?? {
+					providerID,
+					authMethod: "none",
+				};
+			} catch {
+				return staticSource(`provider:${providerID}:unresolved`, () =>
+					invalidResponseRead(now()),
+				);
+			}
+		}
+		try {
+			const resolved = await registry.resolve({
+				...ref,
+				companion,
+				deps,
+				credentialDeps,
+				nativeCredential,
+				signal,
+			});
+			if (resolved !== null) {
+				return resolved;
+			}
+			return staticSource(`provider:${providerID}:unsupported`, () =>
+				unavailableRead(now()),
+			);
+		} catch {
+			// An adapter/registry bug is a sanitized observation, never a crash.
+			return staticSource(`provider:${providerID}:error`, () =>
+				invalidResponseRead(now()),
+			);
+		}
+	}
+
+	// One coordinator per server plugin runtime: it is the only owner of poll
+	// timers, in-flight requests, caching, and cancellation. Deduplication is
+	// not promised across separate OpenCode server processes.
+	const coordinator = createQuotaCoordinator({
+		now,
+		resolve: resolveSource,
+		setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+		clearTimer: (handle) =>
+			clearTimeout(handle as ReturnType<typeof setTimeout>),
+	});
+
+	let emitUpdated: ((event: QuotaUpdatedEvent) => Promise<void>) | undefined;
+	const watchers = new Map<string, () => void>();
+
+	function publish(providerID: string, quota: QuotaRead): void {
+		void emitUpdated?.({
+			version: QUOTA_RPC_VERSION,
+			providerID,
+			quota,
+		}).catch(() => undefined);
+	}
+
+	/**
+	 * A provider enters the poll lifecycle when an RPC consumer first reads it.
+	 * Providers that are never read are never resolved or polled, and the
+	 * coordinator itself refuses to schedule polling for unsupported or
+	 * non-retryable results.
+	 */
+	function ensureWatched(providerID: string): void {
+		if (watchers.has(providerID)) {
+			return;
+		}
+		watchers.set(
+			providerID,
+			coordinator.watch(providerID, (quota) => publish(providerID, quota)),
+		);
+	}
+
 	const source: QuotaRpcSource = {
 		registry,
 		now,
-		providers: () => resolveProviderRefs(ctx),
-		read: createRead({
-			registry,
-			now,
-			companion,
-			nativeCredential,
-			deps: {
-				now,
-				async getJson() {
-					throw new Error("quota transport is not wired yet");
-				},
-			},
-			credentialDeps: {
-				now,
-				env: process.env,
-				homeDirectory: homedir(),
-				async readUtf8() {
-					throw new Error("credential reads are not wired yet");
-				},
-			},
-		}),
+		providers: () => refreshProviderRefs(),
+		async read(input) {
+			providerRefs.set(input.providerID, {
+				providerID: input.providerID,
+				...(input.integrationID === undefined
+					? {}
+					: { integrationID: input.integrationID }),
+				authMethod: input.authMethod,
+			});
+			// The RPC read is a read-through: it joins the shared in-flight
+			// request or starts one inside the 15-second floor. The caller's
+			// signal stays with the RPC transport; one view leaving must not
+			// cancel another view's shared request.
+			ensureWatched(input.providerID);
+			return coordinator.refresh(input.providerID);
+		},
 	};
 
-	let emitUpdated: ((event: QuotaUpdatedEvent) => Promise<void>) | undefined;
 	const handlers = createQuotaRpcHandlers({
 		source,
 		publish: async (event) => {
@@ -249,6 +365,15 @@ export async function setupQuotaServer(ctx: ServerContext): Promise<void> {
 	});
 	const registration = await ctx.rpc.register(QuotaRpc, handlers);
 	emitUpdated = (event) => registration.events.emit("updated", event);
+
+	return async () => {
+		coordinator.dispose();
+		for (const unwatch of watchers.values()) {
+			unwatch();
+		}
+		watchers.clear();
+		await registration.dispose();
+	};
 }
 
 export default Plugin.define({
