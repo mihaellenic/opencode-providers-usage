@@ -36,6 +36,11 @@ export const QUOTA_ADAPTERS: ProviderAdapter[] = [
 	createOpenAICompanionAdapter({ readCompanion: readCodexCompanion }),
 ];
 
+/** A provider whose last RPC read is older than this stops being watched. */
+export const QUOTA_RPC_IDLE_UNWATCH_MS = 5 * 60_000;
+/** How often the server checks for idle RPC watches to release. */
+export const QUOTA_RPC_IDLE_SWEEP_MS = 60_000;
+
 type ServerContext = Pick<
 	Plugin.Context,
 	"provider" | "integration" | "rpc" | "options"
@@ -311,6 +316,8 @@ export async function setupQuotaServer(
 
 	let emitUpdated: ((event: QuotaUpdatedEvent) => Promise<void>) | undefined;
 	const watchers = new Map<string, () => void>();
+	const lastRpcReadAt = new Map<string, number>();
+	const rpcReadsInFlight = new Map<string, number>();
 
 	function publish(providerID: string, quota: QuotaRead): void {
 		void emitUpdated?.({
@@ -336,6 +343,36 @@ export async function setupQuotaServer(
 		);
 	}
 
+	/**
+	 * Releases server-side watches whose RPC consumers stopped reading. The
+	 * frozen RPC surface has no unwatch method, so the server owns an idle
+	 * sweep: after the last read ages out, the coordinator stops polling, the
+	 * last snapshot stops being pushed, and the UI ages it out truthfully. A
+	 * later read re-watches the provider. An in-flight read keeps the watch.
+	 */
+	function unwatchIdleProviders(): void {
+		if (watchers.size === 0) {
+			return;
+		}
+		const nowMs = now();
+		for (const [providerID, unwatch] of [...watchers]) {
+			if (rpcReadsInFlight.has(providerID)) {
+				continue;
+			}
+			const lastReadAt = lastRpcReadAt.get(providerID);
+			if (
+				lastReadAt === undefined ||
+				nowMs - lastReadAt <= QUOTA_RPC_IDLE_UNWATCH_MS
+			) {
+				continue;
+			}
+			watchers.delete(providerID);
+			unwatch();
+		}
+	}
+
+	const idleSweep = setInterval(unwatchIdleProviders, QUOTA_RPC_IDLE_SWEEP_MS);
+
 	const source: QuotaRpcSource = {
 		registry,
 		now,
@@ -348,12 +385,29 @@ export async function setupQuotaServer(
 					: { integrationID: input.integrationID }),
 				authMethod: input.authMethod,
 			});
-			// The RPC read is a read-through: it joins the shared in-flight
-			// request or starts one inside the 15-second floor. The caller's
-			// signal stays with the RPC transport; one view leaving must not
-			// cancel another view's shared request.
-			ensureWatched(input.providerID);
-			return coordinator.refresh(input.providerID);
+			lastRpcReadAt.set(input.providerID, now());
+			rpcReadsInFlight.set(
+				input.providerID,
+				(rpcReadsInFlight.get(input.providerID) ?? 0) + 1,
+			);
+			try {
+				// The RPC read is a read-through: it joins the shared in-flight
+				// request or starts one inside the 15-second floor. The caller's
+				// signal stays with the RPC transport; one view leaving must not
+				// cancel another view's shared request.
+				ensureWatched(input.providerID);
+				return await coordinator.refresh(input.providerID);
+			} finally {
+				// Count idle time from completion, so a slow read cannot expire
+				// while its own response is still being assembled.
+				lastRpcReadAt.set(input.providerID, now());
+				const remaining = (rpcReadsInFlight.get(input.providerID) ?? 1) - 1;
+				if (remaining <= 0) {
+					rpcReadsInFlight.delete(input.providerID);
+				} else {
+					rpcReadsInFlight.set(input.providerID, remaining);
+				}
+			}
 		},
 	};
 
@@ -367,11 +421,14 @@ export async function setupQuotaServer(
 	emitUpdated = (event) => registration.events.emit("updated", event);
 
 	return async () => {
+		clearInterval(idleSweep);
 		coordinator.dispose();
 		for (const unwatch of watchers.values()) {
 			unwatch();
 		}
 		watchers.clear();
+		lastRpcReadAt.clear();
+		rpcReadsInFlight.clear();
 		await registration.dispose();
 	};
 }

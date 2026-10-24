@@ -10,6 +10,9 @@ contract; the existing registry and presentation tests are the other gates.
 - [ ] Create `src/providers/<name>.ts` exporting a zero-argument factory that
       returns a `ProviderAdapter` (or the smallest input object needed to inject
       an existing credential source, as `createOpenAICompanionAdapter` does).
+      Name the factory `create<Name>Adapter` (for example `createAcmeAdapter`):
+      the support-matrix test's registration check over `src/index.ts` depends
+      on that pattern.
 - [ ] Give the adapter a stable `id` (for example `acme-balance`).
 - [ ] Declare **every** authentication/registration combination in
       `capabilities`, using exact `providerID`/`integrationID` strings and an

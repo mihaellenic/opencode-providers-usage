@@ -308,6 +308,27 @@ describe("quota transport 429 handling", () => {
 		expect(quotaError.retryAfterMs).toBe(120_000);
 	});
 
+	test("keeps an overflowing Retry-After as rate_limited without a hint", async () => {
+		// A finite value in seconds whose millisecond conversion overflows, plus
+		// the exponent spelling of the same magnitude. Neither may turn the
+		// provider's rate limit into a wrong-reason invalid_response.
+		const overflowingSeconds = `1${"0".repeat(308)}`;
+		for (const retryAfter of [overflowingSeconds, "1e308"]) {
+			const { fetchImpl } = syntheticFetch(
+				() =>
+					new Response("{}", {
+						status: 429,
+						headers: { "retry-after": retryAfter },
+					}),
+			);
+			const request = createQuotaTransport(fetchImpl);
+			const error = await captureError(request(OLLAMA_BALANCE, {}, signal()));
+			const quotaError = expectSanitized(error, "rate_limited");
+			expect(quotaError.status).toBe(429);
+			expect(quotaError.retryAfterMs).toBeUndefined();
+		}
+	});
+
 	test("maps 429 to rate_limited with a Retry-After HTTP-date", async () => {
 		const retryAt = new Date(Date.now() + 60_000).toUTCString();
 		const { fetchImpl } = syntheticFetch(

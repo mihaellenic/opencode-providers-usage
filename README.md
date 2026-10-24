@@ -138,11 +138,13 @@ No UI action triggers a model request or an inference call.
   companion-token expiry.
 - Repeated transient failures back off at `60_000`, `120_000`, `240_000`, then
   `300_000` ms; a longer provider `Retry-After` wins.
-- A provider starts its server-side watch on the first RPC read and remains
-  watched until the plugin unloads, even if no UI is mounted. The frozen RPC
-  surface has no unwatch method. Providers ever read are not polled in the
-  background before that first read, and unsupported/authentication failures do
-  not get a timer.
+- A provider starts its server-side watch on the first RPC read. A server-side
+  idle sweep runs every `60_000` ms and releases the watch once the last RPC
+  read is older than `300_000` ms. Polling then stops, the last snapshot is no
+  longer pushed, and it ages out through the normal freshness checks; a later
+  RPC read re-watches the provider. The frozen RPC surface still has no unwatch
+  method. Providers never read are never resolved or polled, and
+  unsupported/authentication failures do not get a timer.
 - Request deduplication is in-process only. Separate OpenCode server processes
   are **not** deduplicated.
 

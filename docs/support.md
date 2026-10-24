@@ -185,14 +185,19 @@ the Ollama adapter.
 | Maximum snapshot age treated as current | `90_000` ms, or earlier at a reset boundary or companion-token expiry |
 | Transient-failure backoff | `60_000`, `120_000`, `240_000`, `300_000` ms, capped at the last; provider `Retry-After` wins when longer |
 | Automatic retry | Only transient failures; unsupported, auth, matching, and companion errors do not loop |
+| Idle server-side unwatch | After the last RPC read is older than `300_000` ms, checked by a sweep every `60_000` ms |
 | Cross-process deduplication | **Not promised**; each OpenCode server process owns its own coordinator and may request the same quota |
 
 A provider enters the poll lifecycle when an RPC consumer first reads it. The
-server-side watcher then remains active until the plugin unloads, even if the
-mounted UI goes away: the frozen RPC surface has no unwatch method. Providers
-never read by a consumer are never resolved or polled, and unsupported or
-authentication failures never get a timer. This is an operational fact, not a
-per-widget timer: multiple widgets share the same server-owned request.
+frozen RPC surface has no unwatch method, so without a server-side policy a
+watcher remains active until the plugin unloads. Instead, a server-side sweep
+releases the watch once the last RPC read is older than `300_000` ms.
+After the unwatch, polling stops and the last snapshot is no longer pushed; it
+ages out through the normal freshness checks instead of being presented as
+fresh. A later RPC read re-watches the provider. Providers never read by a
+consumer are never resolved or polled, and unsupported or authentication
+failures never get a timer. This is an operational fact, not a per-widget timer:
+multiple widgets share the same server-owned request.
 
 ## Security boundary
 

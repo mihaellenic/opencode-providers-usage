@@ -76,7 +76,11 @@ function parseRetryAfterMs(value: string | null): number | undefined {
 	}
 	if (/^\d+$/.test(trimmed)) {
 		const seconds = Number(trimmed);
-		return Number.isFinite(seconds) ? seconds * 1000 : undefined;
+		if (!Number.isFinite(seconds)) {
+			return undefined;
+		}
+		const retryAfterMs = seconds * 1000;
+		return Number.isFinite(retryAfterMs) ? retryAfterMs : undefined;
 	}
 	const retryAt = Date.parse(trimmed);
 	if (Number.isNaN(retryAt)) {

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +10,11 @@ import type {
 	ResolvedQuotaSource,
 } from "../../src/core/contracts";
 import { createQuotaCoordinator } from "../../src/core/refresh";
-import { setupQuotaServer } from "../../src/index";
+import {
+	QUOTA_RPC_IDLE_SWEEP_MS,
+	QUOTA_RPC_IDLE_UNWATCH_MS,
+	setupQuotaServer,
+} from "../../src/index";
 import type { QuotaUpdatedEvent } from "../../src/rpc";
 import { type QuotaTuiContext, subscribeQuotaUpdates } from "../../src/tui";
 
@@ -1019,6 +1023,82 @@ describe("host wiring smoke", () => {
 		);
 		expect(afterUnload.requests).toBe(0);
 		expect(afterUnload.result).toBeDefined();
+	});
+
+	test("idle_rpc_reads_unwatch_and_a_fresh_read_rewatches", async () => {
+		jest.useFakeTimers();
+		jest.setSystemTime(NOW);
+		const originalFetch = globalThis.fetch;
+		let requests = 0;
+		globalThis.fetch = (async () => {
+			requests += 1;
+			return new Response(JSON.stringify(balancePayload()), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}) as unknown as typeof fetch;
+		try {
+			const host = fakeHostContext({
+				providers: [{ id: "ollama", integrationID: "ollama-cloud" }],
+				async active() {
+					return {
+						type: "credential",
+						id: "credential-1",
+						label: "Account",
+						method: "key",
+					};
+				},
+				resolve: async () => ({ type: "key", key: "synthetic-ollama-key" }),
+			});
+			const cleanup = await setupQuotaServer(host.context);
+			const handlers = host.registrations[0]?.handlers;
+			if (handlers === undefined) {
+				throw new Error("rpc was not registered");
+			}
+
+			const first = (await handlers.get(
+				{ providerID: "ollama" },
+				emptyRpcContext(),
+			)) as { quota: QuotaRead };
+			expect(first.quota.state).toBe("available");
+			expect(requests).toBe(1);
+
+			// Bun's fake timers advance synchronously, so step in small
+			// increments and drain the promise continuations between them.
+			const advance = async (ms: number) => {
+				for (let elapsed = 0; elapsed < ms; elapsed += 1_000) {
+					jest.advanceTimersByTime(1_000);
+					for (let drain = 0; drain < 100; drain += 1) {
+						await Promise.resolve();
+					}
+				}
+			};
+
+			// No more RPC reads. The polls run until the idle sweep releases the
+			// watch shortly after the five-minute window.
+			await advance(QUOTA_RPC_IDLE_UNWATCH_MS + QUOTA_RPC_IDLE_SWEEP_MS);
+			const settled = requests;
+			// The watch was polling before it expired.
+			expect(settled).toBeGreaterThan(1);
+
+			// Once unwatched, no further provider request is made: the last
+			// snapshot is simply no longer pushed or refreshed.
+			await advance(QUOTA_RPC_IDLE_SWEEP_MS * 2);
+			expect(requests).toBe(settled);
+
+			// A later RPC read re-watches the provider and requests resume.
+			const rewarmed = (await handlers.get(
+				{ providerID: "ollama" },
+				emptyRpcContext(),
+			)) as { quota: QuotaRead };
+			expect(requests).toBe(settled + 1);
+			expect(rewarmed.quota.state).toBe("available");
+
+			await cleanup();
+		} finally {
+			globalThis.fetch = originalFetch;
+			jest.useRealTimers();
+		}
 	});
 
 	test("enabled_companion_uses_real_bounded_reads_without_stub_mislabel", async () => {

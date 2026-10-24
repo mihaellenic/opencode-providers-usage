@@ -37,7 +37,7 @@ All commands use the pinned runtime via `npx bun@1.4.4`.
 
 | Check | Result |
 | --- | --- |
-| `bun test` | `191 pass`, `0 fail`, `1534 expect()` calls, 10 files. |
+| `bun test` | `193 pass`, `0 fail`, `1575 expect()` calls, 10 files. |
 | `bun run typecheck` | Exit 0 (`tsc --noEmit --jsx preserve`). |
 | `bun run lint` | Exit 0; 23 files checked, no fixes applied. |
 | `bun run build` | Exit 0; `dist/index.js`, `dist/tui.js`, `dist/rpc.js`; `build exports ok: ., ./tui, ./rpc`. |
@@ -109,6 +109,8 @@ provider behavior.
       synthetic fixtures, not by mutating a real sign-in.
 - [ ] The terminal UI was checked at narrow and wide widths, with selected-provider
       changes, page open/back, refresh, and no model request.
+- [ ] Re-verify every number in this table against a fresh full run before
+      publishing.
 
 ## Manual smoke procedure
 
