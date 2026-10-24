@@ -1,7 +1,11 @@
 import { Plugin } from "@opencode/plugin/tui";
 import { jsx } from "@opentui/solid/jsx-runtime";
 import { createMemo, createResource, createSignal, onCleanup } from "solid-js";
-import { isQuotaRead, type QuotaRead } from "./core/contracts";
+import {
+	isQuotaRead,
+	type ProviderSummary,
+	type QuotaRead,
+} from "./core/contracts";
 import {
 	isQuotaGetResult,
 	isQuotaListResult,
@@ -11,6 +15,13 @@ import {
 	QuotaRpc,
 	type QuotaUpdatedEvent,
 } from "./rpc";
+import {
+	defaultLocaleContext,
+	formatQuotaRows,
+	revalidateQuota,
+} from "./ui/format";
+import { Sidebar } from "./ui/Sidebar";
+import { UsagePage } from "./ui/UsagePage";
 
 export type QuotaTuiContext = Pick<
 	Plugin.Context,
@@ -113,14 +124,9 @@ export function usageSlashName(
 	return occupied ? FALLBACK_SLASH : PREFERRED_SLASH;
 }
 
-function quotaState(quota: QuotaRead | undefined): string {
-	if (quota === undefined) {
-		return "quota unavailable";
-	}
-	if ("sections" in quota) {
-		return quota.state;
-	}
-	return `${quota.state} (${quota.reason})`;
+function quotaHeadline(quota: QuotaRead): string {
+	const [row] = formatQuotaRows(quota, defaultLocaleContext());
+	return row?.value ?? "no quota reported";
 }
 
 async function fetchProvider(
@@ -182,22 +188,19 @@ function usePushedQuota(context: QuotaTuiContext) {
 	return pushed;
 }
 
-function sidebarLine(
-	selection: QuotaSelection,
-	quota: QuotaRead | undefined,
-	loading: boolean,
-): string {
-	if (selection.providerID === undefined) {
-		return "No provider selected";
-	}
-	if (loading) {
-		return `${selection.label}: checking quota`;
-	}
-	if (quota === undefined) {
-		return `${selection.label}: quota unavailable`;
-	}
-	return `${selection.label}: ${quotaState(quota)}`;
-}
+type VisibleProvider = {
+	provider: ProviderSummary;
+	quota: QuotaRead;
+};
+
+// The host JSX runtime types component props as Record<string, unknown>;
+// these narrow component contracts are validated where they are rendered.
+const SidebarHost = Sidebar as unknown as (
+	props: Record<string, unknown>,
+) => unknown;
+const UsagePageHost = UsagePage as unknown as (
+	props: Record<string, unknown>,
+) => unknown;
 
 export function QuotaSidebar(props: Record<string, unknown>) {
 	const context = props.context as QuotaTuiContext;
@@ -217,62 +220,62 @@ export function QuotaSidebar(props: Record<string, unknown>) {
 
 	// Only a snapshot fetched for the currently selected provider is shown; a
 	// resource keeps the previous value while refetching, and account A's
-	// figures must never appear under account B's label.
-	const visibleQuota = (): QuotaRead | undefined => {
+	// figures must never appear under account B's label. Pushed snapshots are
+	// re-validated locally so an expiry that passed since the server push stops
+	// rendering figures (ledger ruling 2).
+	const visibleProvider = (): VisibleProvider | undefined => {
 		const selected = selection();
 		if (selected.providerID === undefined) {
 			return undefined;
 		}
-		const pushedValue = pushed()[selected.providerID];
-		if (pushedValue !== undefined) {
-			return pushedValue;
-		}
 		const fetched = snapshot();
-		return fetched !== undefined &&
+		const matching =
+			fetched !== undefined &&
 			fetched.provider.providerID === selected.providerID
-			? fetched.quota
-			: undefined;
+				? fetched
+				: undefined;
+		const quota = pushed()[selected.providerID] ?? matching?.quota;
+		if (matching === undefined || quota === undefined) {
+			return undefined;
+		}
+		return {
+			provider: matching.provider,
+			quota: revalidateQuota(quota, Date.now()),
+		};
 	};
 
-	return jsx("text", {
-		children: () =>
-			sidebarLine(
-				selection(),
-				visibleQuota(),
-				snapshot.loading && visibleQuota() === undefined,
-			),
-	});
-}
+	const openUsage = () =>
+		context.ui.router.navigate({ type: "plugin", name: USAGE_PAGE_NAME });
 
-function pageText(
-	selection: QuotaSelection,
-	result: QuotaListResult | undefined,
-	pushed: () => Record<string, QuotaRead>,
-): string {
-	const lines = ["Provider usage", `Selected: ${selection.label}`, ""];
-	if (result === undefined) {
-		lines.push("Provider inventory unavailable");
-		return lines.join("\n");
-	}
-	if (result.providers.length === 0) {
-		lines.push("No providers available");
-		return lines.join("\n");
-	}
-	for (const view of result.providers) {
-		const quota = pushed()[view.provider.providerID] ?? view.quota;
-		lines.push(
-			`${view.provider.name} [${view.provider.providerID}]: ${view.provider.support} / ${quotaState(quota)}`,
-		);
-	}
-	return lines.join("\n");
+	return jsx("box", {
+		flexDirection: "column",
+		children: () => {
+			const selected = selection();
+			if (selected.providerID === undefined) {
+				return jsx("text", { children: "No provider selected" });
+			}
+			const visible = visibleProvider();
+			if (visible === undefined) {
+				return jsx("text", {
+					children: snapshot.loading
+						? `${selected.label}: checking quota`
+						: `${selected.label}: quota unavailable`,
+				});
+			}
+			return jsx(SidebarHost, {
+				provider: visible.provider,
+				quota: visible.quota,
+				openUsage,
+			});
+		},
+	});
 }
 
 export function QuotaUsagePage(props: Record<string, unknown>) {
 	const context = props.context as QuotaTuiContext;
-	const selection = createMemo(() => currentSelection(context));
 	const pushed = usePushedQuota(context);
 	let inFlight: AbortController | undefined;
-	const [snapshot] = createResource(async () => {
+	const [snapshot, { refetch }] = createResource(async () => {
 		inFlight?.abort();
 		const controller = new AbortController();
 		inFlight = controller;
@@ -280,11 +283,53 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 	});
 	onCleanup(() => inFlight?.abort());
 
+	const pageView = (): {
+		providers: ProviderSummary[];
+		quotaByProvider: Record<string, QuotaRead>;
+	} => {
+		const result = snapshot();
+		if (result === undefined) {
+			return { providers: [], quotaByProvider: {} };
+		}
+		const now = Date.now();
+		const providers: ProviderSummary[] = [];
+		const quotaByProvider: Record<string, QuotaRead> = {};
+		for (const view of result.providers) {
+			const providerID = view.provider.providerID;
+			providers.push(view.provider);
+			const quota = pushed()[providerID] ?? view.quota;
+			quotaByProvider[providerID] = revalidateQuota(quota, now);
+		}
+		return { providers, quotaByProvider };
+	};
+
+	const refresh = (providerID: string): void => {
+		void (async () => {
+			await refreshProvider(context, providerID);
+			// Re-read the sanitized list so the page reflects the refresh even
+			// when the client has no event subscription; the RPC floor returns
+			// the just-committed snapshot. There is no local override that could
+			// outlive an account change.
+			await refetch();
+		})();
+	};
+
+	const back = () => context.ui.router.navigate({ type: "home" });
+
 	return jsx("box", {
 		flexDirection: "column",
-		children: jsx("text", {
-			children: () => pageText(selection(), snapshot(), pushed),
-		}),
+		children: () => {
+			if (snapshot() === undefined) {
+				return jsx("text", { children: "Loading provider usage..." });
+			}
+			const view = pageView();
+			return jsx(UsagePageHost, {
+				providers: view.providers,
+				quotaByProvider: view.quotaByProvider,
+				refresh,
+				back,
+			});
+		},
 	});
 }
 
@@ -302,7 +347,7 @@ async function refreshSelected(context: QuotaTuiContext): Promise<void> {
 		message:
 			result === undefined
 				? `${selection.label}: quota unavailable`
-				: `${selection.label}: ${quotaState(result.quota)}`,
+				: `${selection.label}: ${quotaHeadline(result.quota)}`,
 	});
 }
 
