@@ -145,6 +145,17 @@ export type ProviderCapability = {
 	evidence: ProviderSummary["evidence"];
 };
 
+/**
+ * Server-private bridge to the host's supported credential APIs. Implementations
+ * call the host, then serialize the ACTIVE connection's credential into the
+ * auth.json-entry shape the adapter parsers already accept; adapters treat the
+ * result as `unknown`. Never RPC output and never logged.
+ */
+export type NativeCredentialSource = {
+	/** Return the ACTIVE connection's credential value, or `undefined` when the integration has no active connection. */
+	resolve(integrationID: string): Promise<unknown | undefined>;
+};
+
 export type AdapterResolveInput = {
 	providerID: string;
 	integrationID?: string;
@@ -153,6 +164,8 @@ export type AdapterResolveInput = {
 	deps: ProviderDeps;
 	credentialDeps: CredentialReadDeps;
 	signal: AbortSignal;
+	/** Host-backed credential source; the file idiom stays the fallback. */
+	nativeCredential?: NativeCredentialSource;
 };
 
 export type ProviderAdapter = {

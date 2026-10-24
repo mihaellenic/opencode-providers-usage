@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type {
+	AdapterResolveInput,
 	ProviderAdapter,
 	ProviderCapability,
 	QuotaRead,
@@ -435,6 +436,116 @@ describe("server provider mapping", () => {
 			state: "unsupported",
 			reason: "no_validated_quota_source",
 		});
+	});
+
+	test("native_credential_source_bridges_active_host_connection", async () => {
+		const activeCalls: string[] = [];
+		const resolvedConnections: unknown[] = [];
+		const credentialValue = {
+			type: "oauth",
+			methodID: "chatgpt-token-sharing",
+			access: "host-native-access-sentinel",
+			refresh: "host-native-refresh-sentinel",
+			expires: NOW + 3_600_000,
+			metadata: {
+				clientID: "host-native-client-id",
+				scopes: ["chatgpt.tokens.use.direct"],
+			},
+		};
+		let registered:
+			| {
+					get: (input: unknown, context: unknown) => Promise<unknown>;
+			  }
+			| undefined;
+		const context = {
+			provider: {
+				list: async () => ({
+					location: { directory: "/tmp/provider-usage-test" },
+					data: [
+						{
+							id: "alpha",
+							name: "Alpha",
+							activation: "enabled",
+							package: "@opencode/ai/providers/openai",
+						},
+					],
+				}),
+			},
+			integration: {
+				connection: {
+					active: async (integrationID: string) => {
+						activeCalls.push(integrationID);
+						if (integrationID === "no-active") {
+							return undefined;
+						}
+						return {
+							type: "credential",
+							id: "credential-1",
+							label: "Account",
+							method: "oauth",
+						};
+					},
+					resolve: async (connection: unknown) => {
+						resolvedConnections.push(connection);
+						return credentialValue;
+					},
+				},
+			},
+			rpc: {
+				register: async (
+					_definition: unknown,
+					handlers: {
+						get: (input: unknown, context: unknown) => Promise<unknown>;
+					},
+				) => {
+					registered = { get: handlers.get };
+					return {
+						dispose: async () => {},
+						events: { emit: async () => {} },
+					};
+				},
+			},
+		};
+
+		const captured: AdapterResolveInput[] = [];
+		const probe: ProviderAdapter = {
+			id: "native-probe",
+			capabilities: [],
+			async resolve(input) {
+				captured.push(input);
+				return null;
+			},
+		};
+		const index = QUOTA_ADAPTERS.push(probe) - 1;
+		try {
+			await setupQuotaServer(context as never);
+			await registered?.get({ providerID: "alpha" }, emptyRpcContext());
+
+			expect(captured).toHaveLength(1);
+			const native = captured[0]?.nativeCredential;
+			expect(native).toBeDefined();
+
+			// Only the auth.json entry shape the adapters accept crosses the
+			// bridge: no refresh token, expiry, or raw host value wrapper.
+			expect(await native?.resolve("openai")).toEqual({
+				type: "oauth",
+				methodID: "chatgpt-token-sharing",
+				access: "host-native-access-sentinel",
+				metadata: {
+					clientID: "host-native-client-id",
+					scopes: ["chatgpt.tokens.use.direct"],
+				},
+			});
+			expect(activeCalls).toEqual(["openai"]);
+			expect(resolvedConnections).toHaveLength(1);
+
+			// No active connection means "not observed", so the adapter can keep
+			// its documented file-store fallback.
+			expect(await native?.resolve("no-active")).toBeUndefined();
+			expect(resolvedConnections).toHaveLength(1);
+		} finally {
+			QUOTA_ADAPTERS.splice(index, 1);
+		}
 	});
 
 	test("rejecting_adapter_maps_to_invalid_response", async () => {

@@ -435,6 +435,29 @@ function authStorePath(deps: CredentialReadDeps): string {
 	return `${base.replace(/\/+$/, "")}/opencode/auth.json`;
 }
 
+/**
+ * The host serializes its active credential into the same entry shape the file
+ * store uses, so one parser serves both sources.
+ */
+function parseOllamaKeyEntry(entry: unknown): string | null {
+	if (!isRecord(entry)) {
+		return null;
+	}
+	// OpenCode's file-backed store uses "api"; the V2 credential value uses
+	// "key". Both carry the same saved API key.
+	if (entry.type !== "api" && entry.type !== "key") {
+		return null;
+	}
+	if (typeof entry.key !== "string") {
+		return null;
+	}
+	const key = entry.key.trim();
+	if (key === "" || !BEARER_PATTERN.test(key)) {
+		return null;
+	}
+	return key;
+}
+
 async function readSavedOllamaKey(
 	integrationID: string,
 	deps: CredentialReadDeps,
@@ -455,23 +478,55 @@ async function readSavedOllamaKey(
 	if (!isRecord(store)) {
 		return null;
 	}
-	const entry = store[integrationID];
-	if (!isRecord(entry)) {
-		return null;
+	return parseOllamaKeyEntry(store[integrationID]);
+}
+
+type KeyResolution =
+	| { state: "key"; key: string }
+	| { state: "missing" }
+	| { state: "error" };
+
+/**
+ * Preference order: the ACTIVE host credential, then the documented file-store
+ * fallback (v1 hosts where auth.json is the store). A host bridge failure is an
+ * observed failure, not a reason to trust a stale file entry; it becomes a
+ * sanitized unavailable read at the caller.
+ */
+async function resolveOllamaKey(
+	input: AdapterResolveInput,
+	integrationID: string,
+): Promise<KeyResolution> {
+	const native = input.nativeCredential;
+	if (native !== undefined) {
+		let value: unknown;
+		try {
+			value = await native.resolve(integrationID);
+		} catch {
+			return { state: "error" };
+		}
+		if (value !== undefined) {
+			const key = parseOllamaKeyEntry(value);
+			return key === null ? { state: "missing" } : { state: "key", key };
+		}
 	}
-	// OpenCode's file-backed store uses "api"; the V2 credential value uses
-	// "key". Both carry the same saved API key.
-	if (entry.type !== "api" && entry.type !== "key") {
-		return null;
-	}
-	if (typeof entry.key !== "string") {
-		return null;
-	}
-	const key = entry.key.trim();
-	if (key === "" || !BEARER_PATTERN.test(key)) {
-		return null;
-	}
-	return key;
+
+	const key = await readSavedOllamaKey(integrationID, input.credentialDeps);
+	return key === null ? { state: "missing" } : { state: "key", key };
+}
+
+function hostFailureSource(
+	identityKey: string,
+	input: AdapterResolveInput,
+): ResolvedQuotaSource {
+	return {
+		identityKey,
+		read: async () => ({
+			state: "unavailable",
+			reason: "invalid_response",
+			attemptedAt: input.deps.now(),
+		}),
+		isCurrent: async () => false,
+	};
 }
 
 export function createOllamaAdapter(): ProviderAdapter {
@@ -489,23 +544,21 @@ export function createOllamaAdapter(): ProviderAdapter {
 			}
 
 			const integrationID = input.integrationID;
-			const apiKey = await readSavedOllamaKey(
-				integrationID,
-				input.credentialDeps,
-			);
-			if (apiKey === null) {
+			const resolution = await resolveOllamaKey(input, integrationID);
+			if (resolution.state === "error") {
+				return hostFailureSource(`ollama-balance:${integrationID}`, input);
+			}
+			if (resolution.state === "missing") {
 				return null;
 			}
+			const apiKey = resolution.key;
 
 			return {
 				identityKey: `ollama-balance:${integrationID}`,
 				read: (signal) => fetchOllamaQuota(apiKey, signal, input.deps),
 				isCurrent: async () => {
-					const current = await readSavedOllamaKey(
-						integrationID,
-						input.credentialDeps,
-					);
-					return current !== null && current === apiKey;
+					const current = await resolveOllamaKey(input, integrationID);
+					return current.state === "key" && current.key === apiKey;
 				},
 			};
 		},

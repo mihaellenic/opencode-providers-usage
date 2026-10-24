@@ -2,6 +2,7 @@ import type {
 	AdapterResolveInput,
 	CompanionOptions,
 	CredentialReadDeps,
+	NativeCredentialSource,
 	ProviderAdapter,
 	ProviderCapability,
 	ProviderDeps,
@@ -20,6 +21,8 @@ type ResolveInput = SummarizeInput & {
 	deps: ProviderDeps;
 	credentialDeps: CredentialReadDeps;
 	signal: AbortSignal;
+	/** Optional so existing callers and tests keep the file-only behavior. */
+	nativeCredential?: NativeCredentialSource;
 };
 
 export type AdapterRegistry = {
@@ -103,6 +106,9 @@ export function createAdapterRegistry(
 				deps: input.deps,
 				credentialDeps: input.credentialDeps,
 				signal: input.signal,
+				...(input.nativeCredential === undefined
+					? {}
+					: { nativeCredential: input.nativeCredential }),
 			};
 
 			for (const adapter of registered) {

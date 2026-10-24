@@ -61,6 +61,11 @@ const COMPANION_REASONS: ReadonlySet<string> = new Set([
 	"invalid_companion",
 ]);
 
+const NATIVE_REASONS: ReadonlySet<string> = new Set([
+	"invalid_native_registration",
+	"invalid_response",
+]);
+
 /**
  * Capability declarations only; the registry matches on provider/integration
  * and auth method. The first OpenAI OAuth entry describes the only supported
@@ -250,6 +255,27 @@ function authStorePath(deps: CredentialReadDeps): string {
 }
 
 async function loadNativeRegistration(
+	input: AdapterResolveInput,
+): Promise<NativeRegistration | RegistrationFailure> {
+	const native = input.nativeCredential;
+	if (native !== undefined) {
+		let value: unknown;
+		try {
+			value = await native.resolve(OPENAI_INTEGRATION_ID);
+		} catch {
+			// The host bridge failed while observing the active credential; no
+			// exception text or credential material reaches the result.
+			return { state: "unavailable", reason: "invalid_response" };
+		}
+		if (value !== undefined) {
+			return readNativeRegistration(value);
+		}
+	}
+
+	return readFileNativeRegistration(input.credentialDeps);
+}
+
+async function readFileNativeRegistration(
 	deps: CredentialReadDeps,
 ): Promise<NativeRegistration | RegistrationFailure> {
 	let text: string;
@@ -692,12 +718,20 @@ type Identity = {
 	registration?: NativeRegistration;
 	companion?: CodexCompanion;
 	reason?: QuotaReason;
+	/** Set when the host bridge itself failed; currentness is unprovable. */
+	hostFailure?: boolean;
 };
 
 function companionFailureReason(reason: string): QuotaReason {
 	return COMPANION_REASONS.has(reason)
 		? (reason as QuotaReason)
 		: "invalid_companion";
+}
+
+function registrationFailureReason(reason: string): QuotaReason {
+	return NATIVE_REASONS.has(reason)
+		? (reason as QuotaReason)
+		: "invalid_native_registration";
 }
 
 /**
@@ -722,23 +756,30 @@ async function readIdentity(
 		return { reason: "companion_expired" };
 	}
 
-	const registration = await loadNativeRegistration(input.credentialDeps);
+	const registration = await loadNativeRegistration(input);
 	if ("state" in registration) {
+		const reason = registrationFailureReason(registration.reason);
 		return {
 			companion: companion.credential,
-			reason: "invalid_native_registration",
+			reason,
+			...(reason === "invalid_response" ? { hostFailure: true } : {}),
 		};
 	}
 
 	return { registration, companion: companion.credential };
 }
 
+/**
+ * Unresolved state still carries the observed companion fingerprint: the
+ * coordinator must see a companion identity change even before a registration
+ * resolves (ledger Task 7 minor #2).
+ */
 function identityKeyFor(identity: Identity): string {
 	const resolved =
 		identity.registration !== undefined && identity.companion !== undefined;
 	const basis = resolved
 		? `${identity.registration?.connectionKey ?? ""}\u0000${identity.companion?.identityKey ?? ""}`
-		: `unresolved\u0000${identity.reason ?? "invalid_native_registration"}`;
+		: `unresolved\u0000${identity.reason ?? "invalid_native_registration"}\u0000${identity.companion?.identityKey ?? ""}`;
 	return createHash("sha256")
 		.update(`openai-companion\u0000${basis}`)
 		.digest("hex");
@@ -812,11 +853,15 @@ export function createOpenAICompanionAdapter(input: {
 			return {
 				identityKey: identityKeyFor(identity),
 				read: (signal) => readQuota(adapterInput, input.readCompanion, signal),
-				isCurrent: async () =>
-					sameIdentity(
+				isCurrent: async () => {
+					if (identity.hostFailure === true) {
+						return false;
+					}
+					return sameIdentity(
 						identity,
 						await readIdentity(adapterInput, input.readCompanion),
-					),
+					);
+				},
 			};
 		},
 	};

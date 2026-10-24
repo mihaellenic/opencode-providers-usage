@@ -3,6 +3,7 @@ import {
 	type AdapterResolveInput,
 	type CredentialReadDeps,
 	isQuotaRead,
+	type NativeCredentialSource,
 	type ProviderDeps,
 	type QuotaMetric,
 	type QuotaRead,
@@ -129,7 +130,10 @@ async function resolveOllama(
 	deps: ProviderDeps,
 	credentialDeps: CredentialReadDeps,
 	overrides: Partial<
-		Pick<AdapterResolveInput, "providerID" | "integrationID" | "authMethod">
+		Pick<
+			AdapterResolveInput,
+			"providerID" | "integrationID" | "authMethod" | "nativeCredential"
+		>
 	> = {},
 ): Promise<ResolvedQuotaSource | null> {
 	return createOllamaAdapter().resolve({
@@ -142,6 +146,36 @@ async function resolveOllama(
 		signal: new AbortController().signal,
 		...overrides,
 	});
+}
+
+type NativeObservation = { integrationIDs: string[] };
+
+function nativeCredential(
+	value: unknown | (() => unknown),
+	observed: NativeObservation = { integrationIDs: [] },
+): NativeCredentialSource {
+	return {
+		async resolve(integrationID) {
+			observed.integrationIDs.push(integrationID);
+			return typeof value === "function" ? (value as () => unknown)() : value;
+		},
+	};
+}
+
+async function resolveOrFailWithNative(
+	deps: ProviderDeps,
+	credentialDeps: CredentialReadDeps,
+	native: NativeCredentialSource,
+): Promise<ResolvedQuotaSource> {
+	const source = await resolveOllama(deps, credentialDeps, {
+		nativeCredential: native,
+	});
+	if (source === null) {
+		throw new Error(
+			"expected the Ollama adapter to resolve the host credential",
+		);
+	}
+	return source;
 }
 
 async function resolveOrFail(
@@ -793,5 +827,89 @@ describe("Ollama adapter connection matching", () => {
 				evidence: "documented-only",
 			},
 		]);
+	});
+});
+
+describe("Ollama native host credential bridge", () => {
+	test("prefers_host_native_credential_over_file_store", async () => {
+		const observed = observation();
+		const host: NativeObservation = { integrationIDs: [] };
+		const hostKey = "host-native-ollama-key";
+		const calls: RequestCall[] = [];
+		const source = await resolveOrFailWithNative(
+			payloadDeps(officialBalance(), calls),
+			credentials(SAVED_KEY_STORE, observed),
+			nativeCredential({ type: "key", key: hostKey }, host),
+		);
+
+		// The active host credential wins over the file store: the file is never
+		// read, not even for currentness.
+		expect(observed.calls).toBe(0);
+		expect(host.integrationIDs).toEqual(["ollama-cloud"]);
+		expect(await source.isCurrent()).toBe(true);
+		expect(observed.calls).toBe(0);
+		expect(host.integrationIDs).toEqual(["ollama-cloud", "ollama-cloud"]);
+
+		const read = await source.read(new AbortController().signal);
+		expect(isQuotaRead(read)).toBe(true);
+		expect(read.state).toBe("available");
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.headers).toEqual({
+			Authorization: `Bearer ${hostKey}`,
+			Accept: "application/json",
+		});
+		expect(JSON.stringify(read)).not.toContain(hostKey);
+		expect(JSON.stringify(source)).not.toContain(hostKey);
+	});
+
+	test("falls_back_to_file_store_when_host_returns_undefined", async () => {
+		const observed = observation();
+		const host: NativeObservation = { integrationIDs: [] };
+		const calls: RequestCall[] = [];
+		const source = await resolveOrFailWithNative(
+			payloadDeps(officialBalance(), calls),
+			credentials(SAVED_KEY_STORE, observed),
+			nativeCredential(undefined, host),
+		);
+
+		expect(observed.paths).toEqual([AUTH_PATH]);
+		expect(await source.isCurrent()).toBe(true);
+		expect(observed.paths).toEqual([AUTH_PATH, AUTH_PATH]);
+		expect(host.integrationIDs).toEqual(["ollama-cloud", "ollama-cloud"]);
+
+		const read = await source.read(new AbortController().signal);
+		expect(isQuotaRead(read)).toBe(true);
+		expect(read.state).toBe("available");
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.headers.Authorization).toBe(`Bearer ${SENTINEL}`);
+	});
+
+	test("host_credential_error_maps_to_sanitized_unavailable", async () => {
+		const observed = observation();
+		const calls: RequestCall[] = [];
+		const secret = "host-native-error-sentinel";
+		const native: NativeCredentialSource = {
+			async resolve() {
+				throw new Error(`host bridge failed for ${secret}`);
+			},
+		};
+		const source = await resolveOrFailWithNative(
+			payloadDeps(officialBalance(), calls),
+			credentials(SAVED_KEY_STORE, observed),
+			native,
+		);
+
+		expect(observed.calls).toBe(0);
+		const read = await source.read(new AbortController().signal);
+		expect(isQuotaRead(read)).toBe(true);
+		expect(read).toEqual({
+			state: "unavailable",
+			reason: "invalid_response",
+			attemptedAt: NOW,
+		});
+		expect(JSON.stringify(read)).not.toContain(secret);
+		expect(calls).toHaveLength(0);
+		expect(await source.isCurrent()).toBe(false);
+		expect(observed.calls).toBe(0);
 	});
 });

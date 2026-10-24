@@ -4,6 +4,7 @@ import {
 	type CompanionOptions,
 	type CredentialReadDeps,
 	isQuotaRead,
+	type NativeCredentialSource,
 	type ProviderAdapter,
 	type ProviderCapability,
 	type ProviderDeps,
@@ -160,6 +161,26 @@ describe("adapter registry", () => {
 
 		expect(await registry.resolve(resolveInput())).toBeNull();
 		expect(calls).toEqual(["first", "second"]);
+	});
+
+	test("forwards_native_credential_source_to_adapters", async () => {
+		let received: AdapterResolveInput | undefined;
+		const native: NativeCredentialSource = {
+			async resolve() {
+				return undefined;
+			},
+		};
+		const registry = createAdapterRegistry([
+			adapter("probe", [], async (input) => {
+				received = input;
+				return null;
+			}),
+		]);
+
+		expect(
+			await registry.resolve(resolveInput({ nativeCredential: native })),
+		).toBeNull();
+		expect(received?.nativeCredential).toBe(native);
 	});
 
 	test("summarize_returns_declared_capability", () => {

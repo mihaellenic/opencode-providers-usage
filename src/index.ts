@@ -5,6 +5,7 @@ import {
 	type CompanionOptions,
 	type CredentialReadDeps,
 	isQuotaRead,
+	type NativeCredentialSource,
 	type ProviderAdapter,
 	type ProviderDeps,
 	type QuotaRead,
@@ -71,6 +72,56 @@ export function authMethodForConnection(
 	return connection.type === "credential" ? connection.method : "env";
 }
 
+type HostConnectionApi = ServerContext["integration"]["connection"];
+type HostCredentialValue = NonNullable<
+	Awaited<ReturnType<HostConnectionApi["resolve"]>>
+>;
+
+/**
+ * Serializes the host credential into the auth.json-entry JSON shape both
+ * adapter parsers already accept. Refresh tokens and expiry are deliberately
+ * dropped: the adapters only need selectors plus the access/key value, and
+ * fewer secrets cross the bridge. Never logged and never RPC output.
+ */
+function serializeNativeCredential(value: HostCredentialValue): unknown {
+	if (value.type === "key") {
+		return { type: "key", key: value.key };
+	}
+	if (value.type === "oauth") {
+		return {
+			type: "oauth",
+			methodID: value.methodID,
+			access: value.access,
+			...(value.metadata === undefined ? {} : { metadata: value.metadata }),
+		};
+	}
+	// "external" references manage their secret outside the credential store.
+	return undefined;
+}
+
+/**
+ * The host bridge reads only the ACTIVE connection for an integration; no
+ * credential path or value can arrive through RPC or plugin options. Host
+ * errors propagate to the adapter, which maps them to a sanitized read.
+ */
+function createNativeCredentialSource(
+	connection: HostConnectionApi,
+): NativeCredentialSource {
+	return {
+		async resolve(integrationID) {
+			const active = await connection.active(integrationID);
+			if (active === undefined) {
+				return undefined;
+			}
+			const value = await connection.resolve(active);
+			if (value === undefined) {
+				return undefined;
+			}
+			return serializeNativeCredential(value);
+		},
+	};
+}
+
 /**
  * Resolves provider metadata to quota inputs. The integration ID comes from the
  * provider record, never from an assumption that provider ID equals integration
@@ -124,6 +175,7 @@ function createRead(source: {
 	companion: CompanionOptions;
 	deps: ProviderDeps;
 	credentialDeps: CredentialReadDeps;
+	nativeCredential: NativeCredentialSource;
 }) {
 	return async (input: {
 		providerID: string;
@@ -141,6 +193,7 @@ function createRead(source: {
 				companion: source.companion,
 				deps: source.deps,
 				credentialDeps: source.credentialDeps,
+				nativeCredential: source.nativeCredential,
 				signal: input.signal,
 			});
 			if (resolved === null) {
@@ -158,6 +211,9 @@ export async function setupQuotaServer(ctx: ServerContext): Promise<void> {
 	const now = () => Date.now();
 	const registry = createAdapterRegistry(QUOTA_ADAPTERS);
 	const companion = resolveCompanionOptions(ctx.options);
+	const nativeCredential = createNativeCredentialSource(
+		ctx.integration.connection,
+	);
 	const source: QuotaRpcSource = {
 		registry,
 		now,
@@ -166,6 +222,7 @@ export async function setupQuotaServer(ctx: ServerContext): Promise<void> {
 			registry,
 			now,
 			companion,
+			nativeCredential,
 			deps: {
 				now,
 				async getJson() {

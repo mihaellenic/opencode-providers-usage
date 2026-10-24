@@ -160,6 +160,8 @@ type HarnessOptions = {
 	plan?: Payload;
 	companion?: CompanionRead;
 	store?: unknown;
+	/** Synthetic host credential value; a function is reread on every resolve. */
+	native?: Payload;
 	providerID?: string;
 	integrationID?: string;
 	authMethod?: string;
@@ -173,7 +175,9 @@ function harness(options: HarnessOptions = {}) {
 		deps: CredentialReadDeps;
 	}[] = [];
 	const credentialReads: { path: string; maxBytes: number }[] = [];
+	const nativeReads: string[] = [];
 	let storedEntry = options.store ?? authStore();
+	let nativeValue: Payload = options.native;
 	let readResult: CompanionRead = options.companion ?? companionRead();
 
 	const deps: ProviderDeps = {
@@ -210,6 +214,16 @@ function harness(options: HarnessOptions = {}) {
 		deps,
 		credentialDeps,
 		signal: new AbortController().signal,
+		...(options.native === undefined
+			? {}
+			: {
+					nativeCredential: {
+						async resolve(integrationID: string) {
+							nativeReads.push(integrationID);
+							return resolvePayload(nativeValue);
+						},
+					},
+				}),
 	};
 
 	const adapter = createOpenAICompanionAdapter({
@@ -225,11 +239,15 @@ function harness(options: HarnessOptions = {}) {
 		requests,
 		companionReads,
 		credentialReads,
+		nativeReads,
 		setCompanion(next: CompanionRead) {
 			readResult = next;
 		},
 		setStore(next: unknown) {
 			storedEntry = next;
+		},
+		setNative(next: Payload) {
+			nativeValue = next;
 		},
 		async source(): Promise<ResolvedQuotaSource> {
 			const source = await adapter.resolve(input);
@@ -1106,5 +1124,112 @@ describe("adapter declarations", () => {
 			evidence: "documented-only",
 		});
 		expect(h.requests).toHaveLength(0);
+	});
+});
+
+function hostEntry(clientID: string): Record<string, unknown> {
+	return nativeEntry({
+		access: nativeJwt({ client_id: clientID }),
+		metadata: { clientID, scopes: ["openid", "chatgpt.tokens.use.direct"] },
+	});
+}
+
+describe("native host credential bridge", () => {
+	test("prefers_host_native_credential_over_file_store", async () => {
+		// The file entry points at a different registration; only the host value
+		// can match the app, so a file read would surface as a mismatch.
+		const h = harness({
+			native: hostEntry(CLIENT_ID),
+			store: authStore(hostEntry(OTHER_CLIENT_ID)),
+		});
+		const read = await h.read();
+
+		expect(isQuotaRead(read)).toBe(true);
+		expect(read.state).toBe("available");
+		expect(section(read, "app").state).toBe("available");
+		expect(h.requests.map((call) => call.url)).toEqual([APPS_URL, PLAN_URL]);
+		expect(h.credentialReads).toHaveLength(0);
+		expect(h.nativeReads).toEqual(["openai", "openai"]);
+	});
+
+	test("falls_back_to_file_store_when_host_returns_undefined", async () => {
+		const h = harness({ native: () => undefined });
+		const read = await h.read();
+
+		expect(isQuotaRead(read)).toBe(true);
+		expect(read.state).toBe("available");
+		expect(h.nativeReads).toEqual(["openai", "openai"]);
+		expect(h.credentialReads.map((call) => call.path)).toEqual([
+			AUTH_PATH,
+			AUTH_PATH,
+		]);
+	});
+
+	test("host_credential_error_maps_to_sanitized_unavailable", async () => {
+		const secret = "host-bridge-error-sentinel";
+		const h = harness({
+			native: () => {
+				throw new Error(`host bridge failed for ${secret}`);
+			},
+		});
+		const source = await h.source();
+		const read = await source.read(new AbortController().signal);
+
+		expect(isQuotaRead(read)).toBe(true);
+		expect(read).toEqual({
+			state: "unavailable",
+			reason: "invalid_response",
+			attemptedAt: NOW,
+		});
+		expect(JSON.stringify(read)).not.toContain(secret);
+		expect(await source.isCurrent()).toBe(false);
+		expect(h.requests).toHaveLength(0);
+		expect(h.credentialReads).toHaveLength(0);
+	});
+
+	test("active_only_host_value_gives_fresh_identity", async () => {
+		const h = harness({ native: hostEntry(CLIENT_ID) });
+		const first = await h.source();
+		expect(await first.isCurrent()).toBe(true);
+
+		// Switching the active credential changes the observed registration.
+		h.setNative(hostEntry(OTHER_CLIENT_ID));
+		const second = await h.source();
+		expect(second.identityKey).not.toBe(first.identityKey);
+		expect(await first.isCurrent()).toBe(false);
+		expect(await second.isCurrent()).toBe(true);
+
+		// An active-account change on the companion side is equally observable.
+		h.setCompanion(
+			companionRead(
+				companionCredential({
+					accountID: "synthetic-other-companion-account",
+					identityKey: "synthetic-companion-identity-b",
+				}),
+			),
+		);
+		expect(await second.isCurrent()).toBe(false);
+		expect(h.credentialReads).toHaveLength(0);
+	});
+
+	test("unresolved_identity_keeps_companion_fingerprint", async () => {
+		const h = harness({
+			native: { type: "oauth", access: "not-a-jwt" },
+			companion: companionRead(
+				companionCredential({ identityKey: "companion-unresolved-a" }),
+			),
+		});
+		const first = await h.source();
+		expectUnavailable(await h.read(), "invalid_native_registration");
+
+		h.setCompanion(
+			companionRead(
+				companionCredential({ identityKey: "companion-unresolved-b" }),
+			),
+		);
+		const second = await h.source();
+		expect(second.identityKey).not.toBe(first.identityKey);
+		expect(await first.isCurrent()).toBe(false);
+		expect(h.credentialReads).toHaveLength(0);
 	});
 });
