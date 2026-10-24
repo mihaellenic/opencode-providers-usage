@@ -9,6 +9,7 @@ import {
 	type QuotaRead,
 } from "./core/contracts";
 import { createAdapterRegistry } from "./core/registry";
+import { createOllamaAdapter } from "./providers/ollama";
 import {
 	createQuotaRpcHandlers,
 	QUOTA_PLUGIN_ID,
@@ -22,7 +23,7 @@ import {
  * The single registration point for quota adapters. Tasks 5 and 7 append their
  * adapter modules here; core, RPC, and TUI code never gain provider branches.
  */
-export const QUOTA_ADAPTERS: ProviderAdapter[] = [];
+export const QUOTA_ADAPTERS: ProviderAdapter[] = [createOllamaAdapter()];
 
 type ServerContext = Pick<Plugin.Context, "provider" | "integration" | "rpc">;
 
