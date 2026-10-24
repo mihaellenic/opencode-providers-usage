@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import type { ConnectionInfo } from "@opencode/client";
 import { Plugin } from "@opencode/plugin";
 import {
+	type CompanionOptions,
 	type CredentialReadDeps,
 	isQuotaRead,
 	type ProviderAdapter,
@@ -25,7 +26,36 @@ import {
  */
 export const QUOTA_ADAPTERS: ProviderAdapter[] = [createOllamaAdapter()];
 
-type ServerContext = Pick<Plugin.Context, "provider" | "integration" | "rpc">;
+type ServerContext = Pick<
+	Plugin.Context,
+	"provider" | "integration" | "rpc" | "options"
+>;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Companion access is opt-in and server-side only. No credential value can be
+ * supplied through plugin configuration; only the consent flag and an optional
+ * trusted home directory are read.
+ */
+function resolveCompanionOptions(
+	options: Plugin.Context["options"] | undefined,
+): CompanionOptions {
+	const raw = options?.codexCompanion;
+	if (!isRecord(raw)) {
+		return { enabled: false };
+	}
+	const home =
+		typeof raw.home === "string" && raw.home.trim() !== ""
+			? raw.home
+			: undefined;
+	return {
+		enabled: raw.enabled === true,
+		...(home === undefined ? {} : { home }),
+	};
+}
 
 export function authMethodForConnection(
 	connection: ConnectionInfo | undefined,
@@ -86,6 +116,7 @@ function invalidResponseRead(now: number): QuotaRead {
 function createRead(source: {
 	registry: ReturnType<typeof createAdapterRegistry>;
 	now(): number;
+	companion: CompanionOptions;
 	deps: ProviderDeps;
 	credentialDeps: CredentialReadDeps;
 }) {
@@ -102,7 +133,7 @@ function createRead(source: {
 					? {}
 					: { integrationID: input.integrationID }),
 				authMethod: input.authMethod,
-				companion: { enabled: false },
+				companion: source.companion,
 				deps: source.deps,
 				credentialDeps: source.credentialDeps,
 				signal: input.signal,
@@ -121,6 +152,7 @@ function createRead(source: {
 export async function setupQuotaServer(ctx: ServerContext): Promise<void> {
 	const now = () => Date.now();
 	const registry = createAdapterRegistry(QUOTA_ADAPTERS);
+	const companion = resolveCompanionOptions(ctx.options);
 	const source: QuotaRpcSource = {
 		registry,
 		now,
@@ -128,6 +160,7 @@ export async function setupQuotaServer(ctx: ServerContext): Promise<void> {
 		read: createRead({
 			registry,
 			now,
+			companion,
 			deps: {
 				now,
 				async getJson() {
@@ -136,7 +169,7 @@ export async function setupQuotaServer(ctx: ServerContext): Promise<void> {
 			},
 			credentialDeps: {
 				now,
-				env: {},
+				env: process.env,
 				homeDirectory: homedir(),
 				async readUtf8() {
 					throw new Error("credential reads are not wired yet");
