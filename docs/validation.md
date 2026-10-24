@@ -12,6 +12,7 @@ client IDs, emails, credential-file contents, or personal quota values.
 | Source-plan live validations | **2026-10-24** | The original OpenCode, Ollama, OpenAI token-sharing, and Codex companion checks listed below. This date is not a claim about later runs. |
 | Repository automated verification | 2026-10-24 | Unit/integration suites, typecheck, lint, build, frozen install, audit, package inspection, and a synthetic headless artifact smoke in this workspace. |
 | Integrated live Checkpoint B | **2026-10-24** | Consent granted in-session; the real adapters, readers, and transport ran read-only against the real Codex cache and the live provider routes. See "Integrated live Checkpoint B (2026-10-24)". |
+| Standalone isolated-runtime integration | 2026-10-24 | Plugin loaded and executed inside isolated standalone OpenCode 2.1.4 instances (private server, temporary config, symlinks/copy of the plugin only): server plugin + TUI plugin setup, sanitized RPC via `/api/rpc`, and TUI first paint verified; local-plugin loading conventions and a host re-entrancy crash were diagnosed and fixed. |
 | Interactive terminal Checkpoint C | **Pending human review** | Placement, navigation, narrow/wide layout, and keybindings in a live OpenCode terminal. |
 
 ## Source-plan live validations (2026-10-24)

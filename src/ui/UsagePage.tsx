@@ -1,5 +1,6 @@
 import { usePlugin } from "@opencode/plugin/tui";
 import { jsx } from "@opentui/solid/jsx-runtime";
+import { createMemo } from "solid-js";
 import type {
 	DisplayRow,
 	LocaleContext,
@@ -78,57 +79,61 @@ export function UsagePage(props: UsagePageProps) {
 		],
 	}));
 
+	const content = createMemo(() => {
+		const theme = context.theme;
+		const sections = formatUsageSections({
+			providers: props.providers,
+			quotaByProvider: props.quotaByProvider,
+			locale,
+		});
+		const children: unknown[] = [
+			jsx("text", {
+				key: "title",
+				fg: theme.text.base,
+				children: "Provider usage",
+			}),
+			jsx("text", {
+				key: "hint",
+				fg: theme.text.faint,
+				children: "[ctrl+r] refresh   [esc] back",
+			}),
+		];
+		if (sections.length === 0) {
+			children.push(
+				jsx("text", {
+					key: "empty",
+					fg: theme.text.muted,
+					children: "No connected providers.",
+				}),
+			);
+			return children;
+		}
+		for (const section of sections) {
+			children.push(
+				jsx("text", {
+					key: `${section.providerID}:heading`,
+					fg: theme.text.base,
+					children: `${section.heading} — ${section.support}`,
+				}),
+			);
+			for (const row of section.rows) {
+				children.push(...rowElement(theme, row));
+			}
+			children.push(
+				jsx("text", {
+					key: `${section.providerID}:separator`,
+					fg: theme.text.faint,
+					children: "",
+				}),
+			);
+		}
+		return children;
+	});
+
 	return jsx("box", {
 		flexDirection: "column",
-		children: () => {
-			const theme = context.theme;
-			const sections = formatUsageSections({
-				providers: props.providers,
-				quotaByProvider: props.quotaByProvider,
-				locale,
-			});
-			const children: unknown[] = [
-				jsx("text", {
-					key: "title",
-					fg: theme.text.base,
-					children: "Provider usage",
-				}),
-				jsx("text", {
-					key: "hint",
-					fg: theme.text.faint,
-					children: "[ctrl+r] refresh   [esc] back",
-				}),
-			];
-			if (sections.length === 0) {
-				children.push(
-					jsx("text", {
-						key: "empty",
-						fg: theme.text.muted,
-						children: "No connected providers.",
-					}),
-				);
-				return children;
-			}
-			for (const section of sections) {
-				children.push(
-					jsx("text", {
-						key: `${section.providerID}:heading`,
-						fg: theme.text.base,
-						children: `${section.heading} — ${section.support}`,
-					}),
-				);
-				for (const row of section.rows) {
-					children.push(...rowElement(theme, row));
-				}
-				children.push(
-					jsx("text", {
-						key: `${section.providerID}:separator`,
-						fg: theme.text.faint,
-						children: "",
-					}),
-				);
-			}
-			return children;
+		get children() {
+			return content();
 		},
 	});
 }

@@ -10,6 +10,7 @@ import type {
 	QuotaScope,
 } from "../../src/core/contracts";
 import {
+	buildSidebarText,
 	INVENTORY_FAILED_DETAIL,
 	INVENTORY_FAILED_TITLE,
 	INVENTORY_RETRY_HINT,
@@ -896,9 +897,8 @@ describe("host-rendered wrappers", () => {
 		}
 	});
 
-	test("sidebar_renders_copy_and_click_opens_usage", async () => {
+	test("sidebar_renders_single_text_join_without_click_affordance", async () => {
 		const { context } = mockHostContext();
-		let opened = 0;
 		const setup = await testRender(
 			() =>
 				jsx(ProviderHost, {
@@ -911,9 +911,6 @@ describe("host-rendered wrappers", () => {
 								reason: "companion_expired",
 								attemptedAt: NOW,
 							},
-							openUsage: () => {
-								opened += 1;
-							},
 						});
 					},
 				}),
@@ -925,10 +922,6 @@ describe("host-rendered wrappers", () => {
 			expect(frame).toContain("OpenAI:requirescompanion·live-validated");
 			expect(frame).toContain(EXPIRED_COMPANION_COPY.replace(/\s+/g, ""));
 
-			await setup.mockMouse.click(1, 1);
-			await setup.renderOnce();
-			expect(opened).toBe(1);
-
 			setup.resize(24, 30);
 			await setup.renderOnce();
 			const narrow = setup.captureCharFrame().replace(/\s+/g, "");
@@ -936,6 +929,102 @@ describe("host-rendered wrappers", () => {
 		} finally {
 			await setup.dispose();
 		}
+	});
+
+	test("sidebar_text_joins_rows_and_keeps_pinned_states", () => {
+		const rows = buildSidebarText({
+			selection: { providerID: "openai", label: "OpenAI" },
+			provider: OPENAI_PROVIDER,
+			quota: available([
+				{
+					scope: "shared-plan",
+					metrics: [
+						windowMetric({
+							id: "week",
+							remainingPercent: 80,
+							usedPercent: 20,
+							resetsAt: PLAN_RESET,
+						}),
+					],
+				},
+			]),
+			loading: false,
+			locale: LOCALE,
+			now: NOW,
+		});
+		expect(rows).not.toBeNull();
+		const lines = rows?.split("\n") ?? [];
+		expect(lines[0]).toBe("OpenAI: requires companion · live-validated");
+		expect(lines.some((line) => line.includes("80% remaining"))).toBe(true);
+		expect(lines.at(-1)).toBe("Updated: 12s ago");
+
+		expect(
+			buildSidebarText({
+				selection: undefined,
+				provider: undefined,
+				quota: undefined,
+				loading: false,
+				locale: LOCALE,
+			}),
+		).toBeNull();
+		expect(
+			buildSidebarText({
+				selection: { label: "No provider selected" },
+				provider: undefined,
+				quota: undefined,
+				loading: false,
+				locale: LOCALE,
+			}),
+		).toBe("No provider selected");
+		expect(
+			buildSidebarText({
+				selection: { providerID: "openai", label: "OpenAI" },
+				provider: undefined,
+				quota: undefined,
+				loading: true,
+				locale: LOCALE,
+			}),
+		).toBe("OpenAI: checking quota");
+		expect(
+			buildSidebarText({
+				selection: { providerID: "openai", label: "OpenAI" },
+				provider: undefined,
+				quota: undefined,
+				loading: false,
+				locale: LOCALE,
+			}),
+		).toBe("OpenAI: quota unavailable");
+	});
+
+	test("host_children_are_plain_nodes_not_functions", () => {
+		for (const file of [
+			"src/tui.tsx",
+			"src/ui/Sidebar.tsx",
+			"src/ui/UsagePage.tsx",
+		]) {
+			const source = readFileSync(
+				new URL(`../../${file}`, import.meta.url),
+				"utf8",
+			);
+			expect(source).not.toMatch(/children:\s*\(\s*\)\s*=>/);
+			expect(source).not.toMatch(/children:\s*function/);
+			expect(source).toContain("get children()");
+		}
+
+		const tui = readFileSync(
+			new URL("../../src/tui.tsx", import.meta.url),
+			"utf8",
+		);
+		expect(tui).not.toContain("QuotaSidebar");
+		expect(tui).toContain('jsx("text", { children: text })');
+		expect(tui).toContain("if (text === null)");
+
+		const sidebar = readFileSync(
+			new URL("../../src/ui/Sidebar.tsx", import.meta.url),
+			"utf8",
+		);
+		expect(sidebar).not.toContain("onMouseDown");
+		expect(sidebar).not.toContain("openUsage");
 	});
 
 	test("inventory_failure_is_truthful_and_retryable", () => {

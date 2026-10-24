@@ -2,6 +2,7 @@
   "name": "opencode-providers-usage",
   "version": "0.0.0",
   "type": "module",
+  "main": "./src/index.ts",
   "packageManager": "bun@1.4.4",
   "engines": {
     "bun": "1.4.4"
@@ -20,9 +21,10 @@
     "check:build": "bun -e 'import { existsSync, readFileSync } from \"node:fs\"; const pkg = JSON.parse(readFileSync(\"package.json\", \"utf8\")); for (const [name, target] of Object.entries(pkg.exports)) { if (typeof target !== \"string\" || !existsSync(target)) throw new Error(`missing export ${name}: ${String(target)}`); } for (const file of [\"dist/index.js\", \"dist/tui.js\", \"dist/rpc.js\"]) { if (!existsSync(file)) throw new Error(`missing build output ${file}`); } const tui = readFileSync(\"dist/tui.js\", \"utf8\"); if (!tui.includes(\"solid-js\")) throw new Error(\"solid-js is not external in dist/tui.js\"); if (tui.includes(\"function createSignal\")) throw new Error(\"a second Solid runtime is bundled\"); console.log(`build exports ok: ${Object.keys(pkg.exports).join(\", \")}`);'"
   },
   "exports": {
-    ".": "./src/index.ts",
-    "./tui": "./src/tui.tsx",
-    "./rpc": "./src/rpc.ts"
+    ".": "./index.ts",
+    "./server": "./index.ts",
+    "./tui": "./tui.tsx",
+    "./rpc": "./rpc.ts"
   },
   "dependencies": {
     "@opencode/plugin": "2.1.4"

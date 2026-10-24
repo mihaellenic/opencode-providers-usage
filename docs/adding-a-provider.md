@@ -133,6 +133,29 @@ No credential may be forwarded to a host outside the adapter's allowlist.
   cannot represent, return an honest unavailable/partial result instead of
   adding a field or guessing.
 
+## Host-runtime constraints learned in live integration (2.1.4)
+
+These are not optional style rules; violating them breaks the TUI:
+
+- **Entrypoint resolution is root-file convention.** Local plugin targets are
+  resolved by looking for `<package>/index.*`, `<package>/tui.*`, and
+  `<package>/rpc.*` at the package root; `package.json` `exports` apply only
+  to *named* package installs. This repository keeps root shims
+  (`index.ts`, `tui.tsx`, `rpc.ts`) re-exporting `src/*` — a new provider
+  must not need any change there.
+- **Never pass function values as JSX `children`.** The host re-invokes
+  function children re-entrantly; combined with reactive reads inside the
+  same render path it degenerates into a synchronous recursion
+  (`RangeError: Maximum call stack size exceeded`) on the first host
+  re-reconcile. Children must be plain strings or pre-built static nodes.
+- **Render closures read memo/signal getters of OUR OWN state only.** Host
+  reactive reads (`ui.model.current()`, `data.location.*`) belong in
+  `createEffect`/setup code that writes our own signals.
+- **Keymap layer factories must be pure.** Reading `keymap.commands()` inside
+  the factory re-enters the command store while it registers and crashes with
+  the same RangeError. The `/usage`-or-`/provider-usage` choice is evaluated
+  once at setup.
+
 ## Why the docs row is part of the code contract
 
 `tests/integration/security.test.ts` builds the same adapter registry the server

@@ -243,3 +243,13 @@ prompt, or silently reads a stale file for another storage backend.
 Model usage, cost, speed, historical charts, alerts, automatic provider
 switching, and purchasing credits are out of scope. Their future data sources
 must remain independent capabilities, never guessed quota inputs.
+
+## Sidebar presentation trade-off
+
+The sidebar contribution deliberately renders as a single static text node
+with a joined string (the host-proven shape for slot contributions; nested
+reactive component trees in `sidebar.content` triggered a host re-entrancy
+crash on 2.1.4). Consequences: the sidebar carries plain text rows without
+per-row tone colors and no click affordance — tones, full details, and all
+interaction remain on the full-page dashboard (`/usage`), where the complete
+layout is safe.

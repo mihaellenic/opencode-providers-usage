@@ -1,7 +1,6 @@
-import { usePlugin } from "@opencode/plugin/tui";
 import { jsx } from "@opentui/solid/jsx-runtime";
+import { createMemo } from "solid-js";
 import type {
-	DisplayRow,
 	LocaleContext,
 	ProviderSummary,
 	QuotaRead,
@@ -11,41 +10,27 @@ import { defaultLocaleContext, formatSidebarRows } from "./format";
 export type SidebarProps = {
 	provider: ProviderSummary;
 	quota: QuotaRead;
-	openUsage: () => void;
 };
 
-type Theme = ReturnType<typeof usePlugin>["theme"];
-
-function toneColor(theme: Theme, tone: DisplayRow["tone"]) {
-	if (tone === "error") {
-		return theme.text.feedback.error.base;
-	}
-	if (tone === "warning") {
-		return theme.text.feedback.warning.base;
-	}
-	return theme.text.base;
-}
-
 /**
- * Compact selected-provider contribution. All labels, values, scopes and
- * states come from the sanitized declarations and quota read; this component
- * only paints the view model and forwards a click as the usage-page action.
+ * Compact selected-provider contribution as one text node with a plain-string
+ * child. The live sidebar slot builds the same joined string directly in its
+ * render computation; this wrapper remains as the reusable presentation shape
+ * (and is what the host-render tests exercise). Click-to-open was removed from
+ * the text shape; the page is opened through /usage or the palette command.
  */
 export function Sidebar(props: SidebarProps) {
-	const context = usePlugin();
 	const locale: LocaleContext = defaultLocaleContext();
+	const content = createMemo(() =>
+		formatSidebarRows(props.provider, props.quota, locale)
+			.map((row) => `${row.label}: ${row.value}`)
+			.join("\n"),
+	);
 
-	return jsx("box", {
-		flexDirection: "column",
-		onMouseDown: () => props.openUsage(),
-		children: () =>
-			formatSidebarRows(props.provider, props.quota, locale).map((row) =>
-				jsx("text", {
-					key: row.id,
-					fg: toneColor(context.theme, row.tone),
-					children: `${row.label}: ${row.value}`,
-				}),
-			),
+	return jsx("text", {
+		get children() {
+			return content();
+		},
 	});
 }
 

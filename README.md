@@ -49,44 +49,43 @@ add a second plugin entry for it.
 
 ## Loading the plugin
 
-Add the package to `plugins` in `opencode.jsonc`. Use the object form when you
-want to pass options, or the string form for defaults:
+OpenCode V2 resolves local plugins by ROOT-FILE CONVENTION: the loader looks
+for `<package>/index.ts`, `<package>/tui.tsx`, and `<package>/rpc.ts` (this
+repository ships those root entrypoints, re-exporting `src/*`). A bare
+absolute path as a plugin entry was observed to be silently ignored on
+`2.1.4`; use one of the two verified forms:
+
+**Form A — config `plugins` array with a `file://` URL** (this repo's own
+`opencode.jsonc` pattern):
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": [
-    "/absolute/path/to/opencode-providers-usage"
-  ]
+  "plugins": ["file:///absolute/path/to/opencode-providers-usage"]
 }
 ```
 
-If you installed it as a project dependency, the package name works instead:
+**Form B — symlink into the config plugins directory** (independent of config
+arrays; how the repo is installed for its own development):
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugins": ["opencode-providers-usage"]
-}
+```bash
+ln -sfn /absolute/path/to/opencode-providers-usage \
+  ~/.config/opencode/plugins/opencode-providers-usage
 ```
 
 ### Enable the Codex companion (optional, disabled by default)
 
 OpenAI quota requires an explicit **server-side** opt-in and an existing
-file-backed Codex login:
+file-backed Codex login. Use the object form of the config entry so options
+can flow (Form A):
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
     {
-      "package": "/absolute/path/to/opencode-providers-usage",
-      "options": {
-        "codexCompanion": {
-          "enabled": true,
-          "home": "/absolute/path/to/.codex"
-        }
-      }
+      "package": "file:///absolute/path/to/opencode-providers-usage",
+      "options": { "codexCompanion": { "enabled": true } }
     }
   ]
 }
@@ -118,9 +117,12 @@ has already been imported.
 
 - The sidebar follows the **prompt's currently selected provider**, not the
   server's default model. With no selection it says “No provider selected”.
+  The sidebar contribution renders as plain text rows (single text node):
+  tone/color affordances live on the full page only.
 - `Show provider usage` (`provider-quota.usage`) opens the full page. The slash
-  command is `/usage`; if another command already owns that name, the plugin
-  registers `/provider-usage` instead and leaves the other command intact.
+  command is `/usage`; the occupation check runs once at setup — a plugin that
+  registers `/usage` later may collide, and OpenCode resolves duplicate slash
+  names itself. If occupied at our setup the plugin registers `/provider-usage`.
 - `Refresh provider usage` (`provider-quota.refresh`) refreshes the selected
   provider and shows a short status toast.
 - On the full page, `ctrl+r` refreshes every listed provider and `escape` goes
