@@ -10,7 +10,9 @@ import {
 	type QuotaRead,
 } from "./core/contracts";
 import { createAdapterRegistry } from "./core/registry";
+import { readCodexCompanion } from "./providers/codex-credentials";
 import { createOllamaAdapter } from "./providers/ollama";
+import { createOpenAICompanionAdapter } from "./providers/openai-companion";
 import {
 	createQuotaRpcHandlers,
 	QUOTA_PLUGIN_ID,
@@ -21,10 +23,13 @@ import {
 } from "./rpc";
 
 /**
- * The single registration point for quota adapters. Tasks 5 and 7 append their
- * adapter modules here; core, RPC, and TUI code never gain provider branches.
+ * The single registration point for quota adapters. New providers are appended
+ * here; core, RPC, and TUI code never gain provider branches.
  */
-export const QUOTA_ADAPTERS: ProviderAdapter[] = [createOllamaAdapter()];
+export const QUOTA_ADAPTERS: ProviderAdapter[] = [
+	createOllamaAdapter(),
+	createOpenAICompanionAdapter({ readCompanion: readCodexCompanion }),
+];
 
 type ServerContext = Pick<
 	Plugin.Context,
