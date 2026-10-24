@@ -6,6 +6,12 @@
   "engines": {
     "bun": "1.4.4"
   },
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "docs"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit --jsx preserve",
     "lint": "biome check src tests",
