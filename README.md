@@ -60,8 +60,12 @@ for `<package>/index.ts`, `<package>/tui.tsx`, and `<package>/rpc.ts` (this
 repository ships those root entrypoints, re-exporting `src/*`). Use one of the
 two verified forms:
 
+Use only one form for a given plugin. Combining a directory symlink with a
+config entry causes `Duplicate plugin ID: provider-usage`. `scripts/dev-open.sh`
+uses Form B in both companion modes to keep the plugin options attached.
+
 **Form A — symlink into the config plugins directory** (independent of config
-arrays; how the repo is installed for its own development):
+arrays):
 
 ```bash
 ln -sfn /absolute/path/to/opencode-providers-usage \

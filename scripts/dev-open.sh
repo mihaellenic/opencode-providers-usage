@@ -8,11 +8,9 @@
 #
 # How isolation works (verified live against OpenCode 2.1.4):
 #   - XDG_CONFIG_HOME -> a temporary config directory containing exactly one
-#     opencode.jsonc (plugin entry + options) and a plugins/ DIRECTORY holding
-#     a SYMLINK to this repo. In V2 the plugin-directory symlink is the
-#     ALWAYS-WORKING loading mechanism; a bare absolute plugin path is
-#     silently dropped, and `file://` config entries are only honored for
-#     packages, never needed here.
+#     opencode.jsonc with one object-form plugin entry and its options. The
+#     server entry also exposes the TUI entrypoint automatically. Do not add a
+#     plugins/ symlink as well: that registers the same server plugin twice.
 #   - XDG_DATA_HOME is NOT overridden, so your real OpenCode data dir
 #     (opencode.db: saved keys / active OAuth) is used by the plugin — real
 #     quota needs real credentials, read-only.
@@ -46,10 +44,10 @@ if [ "${COMPOSER:-}" = "doctor" ]; then echo "✓ doctor done"; exit 0; fi
 
 # --- quiet, isolated environment --------------------------------------------
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/opencode-quota-standalone.XXXXXX")"
-CONFIG_DIR="${WORK}/config/oconf"; CONFIG_ROOT="${WORK}/config"
+CONFIG_ROOT="${WORK}/config"
 PLUGIN_DIR="${WORK}/snapshot"
 DATA_DIR="${WORK}/data"; SCRATCH="${WORK}/scratch"
-mkdir -p "${CONFIG_ROOT}/opencode/plugins" "${WORK}/cache" "${DATA_DIR}" "${SCRATCH}"
+mkdir -p "${CONFIG_ROOT}/opencode" "${WORK}/cache" "${DATA_DIR}" "${SCRATCH}"
 
 # Quiet snapshot copy of the plugin (gitignored + churn-free).
 if command -v rsync >/dev/null 2>&1; then
@@ -58,24 +56,23 @@ if command -v rsync >/dev/null 2>&1; then
 else
   cp -R "${PLUGIN_ROOT}" "${PLUGIN_DIR}"
 fi
-ln -s "${PLUGIN_DIR}" "${CONFIG_ROOT}/opencode/plugins/opencode-providers-usage"
 
 COMPANION="${1:-on}"   # "on" (default) → enabled; anything else → disabled
 if [ "${COMPANION}" = "on" ]; then
-  cat > "${CONFIG_ROOT}/opencode/opencode.jsonc" <<JSON
+  ENABLED=true
+  echo "▶ companion: ENABLED (reads ${CODEX_HOME:-~/.codex} read-only)"
+else
+  ENABLED=false
+  echo "▶ companion: disabled (OpenAI row shows the opt-in explanation)"
+fi
+cat > "${CONFIG_ROOT}/opencode/opencode.jsonc" <<JSON
 {
   "\$schema": "https://opencode.ai/config.json",
   "plugins": [
-    { "package": "file://${PLUGIN_DIR}", "options": { "codexCompanion": { "enabled": true } } }
+    { "package": "file://${PLUGIN_DIR}", "options": { "codexCompanion": { "enabled": ${ENABLED} } } }
   ]
 }
 JSON
-  echo "▶ companion: ENABLED (reads ${CODEX_HOME:-~/.codex} read-only)"
-else
-  printf '{\n  "$schema": "https://opencode.ai/config.json",\n}\n' \
-    > "${CONFIG_ROOT}/opencode/opencode.jsonc"
-  echo "▶ companion: disabled (OpenAI row shows the opt-in explanation)"
-fi
 echo "▶ isolated config root: ${CONFIG_ROOT}"
 
 # --- launch ------------------------------------------------------------------
