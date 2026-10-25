@@ -271,17 +271,28 @@ export function createQuotaCoordinator(
 	}
 
 	/**
-	 * Clears historical presentation and the recovery episode while leaving the
-	 * current observation (the snapshot) intact for failure-state display.
+	 * Ends a retryable failure episode without touching the current observation
+	 * or history. Non-auth, non-retryable failures use this path: the last good
+	 * figures are retained while automatic recovery stops.
 	 */
-	function clearHistory(entry: Entry): void {
-		entry.lastKnown = undefined;
+	function endRecovery(entry: Entry): void {
 		entry.failedSince = undefined;
 		entry.failures = 0;
 		entry.recovering = false;
 		entry.cooldownUntil = undefined;
 		entry.nextRetryAt = undefined;
 		clearTimer(entry);
+	}
+
+	/**
+	 * Drops historical presentation as well as the recovery episode, while
+	 * leaving the current observation (the snapshot) intact for failure-state
+	 * display. Reserved for auth rejection, identity changes, invalidation, and
+	 * rejected successful-response currentness.
+	 */
+	function clearHistory(entry: Entry): void {
+		entry.lastKnown = undefined;
+		endRecovery(entry);
 	}
 
 	function startFailure(entry: Entry, completedAt: number): void {
@@ -364,12 +375,7 @@ export function createQuotaCoordinator(
 				// Full success is the only path that creates history or ends a
 				// recovery episode.
 				entry.lastKnown = value;
-				entry.failedSince = undefined;
-				entry.failures = 0;
-				entry.recovering = false;
-				entry.cooldownUntil = undefined;
-				entry.nextRetryAt = undefined;
-				clearTimer(entry);
+				endRecovery(entry);
 			} else {
 				// A partial result starts or continues failure timing; it never
 				// replaces the last complete history.
@@ -380,7 +386,9 @@ export function createQuotaCoordinator(
 			// Rejected credentials invalidate the old identity's figures.
 			clearHistory(entry);
 		} else if (NO_AUTO_RETRY.has(value.reason)) {
-			clearHistory(entry);
+			// A non-retryable failure stops recovery but is still a refresh
+			// failure: the last complete figures remain presentable as history.
+			endRecovery(entry);
 		} else {
 			startFailure(entry, completedAt);
 			scheduleRecovery(entry, completedAt, value.retryAfterMs);

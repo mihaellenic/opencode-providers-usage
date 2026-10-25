@@ -545,6 +545,14 @@ function hostFailureSource(
 }
 
 export function createOllamaAdapter(): ProviderAdapter {
+	/**
+	 * Last successfully observed credential fingerprint per integration. A host
+	 * credential-read failure is not a credential change, so the failure source
+	 * reuses this identity instead of appearing as a rotation. A genuine
+	 * rotation is observed by the next successful credential resolution.
+	 */
+	const lastFingerprints = new Map<string, string>();
+
 	return {
 		id: "ollama-balance",
 		capabilities: [...CAPABILITIES],
@@ -561,13 +569,19 @@ export function createOllamaAdapter(): ProviderAdapter {
 			const integrationID = input.integrationID;
 			const resolution = await resolveOllamaKey(input, integrationID);
 			if (resolution.state === "error") {
-				return hostFailureSource(`ollama-balance:${integrationID}`, input);
+				const known = lastFingerprints.get(integrationID);
+				const identityKey =
+					known === undefined
+						? `ollama-balance:${integrationID}`
+						: `ollama-balance:${integrationID}:${known}`;
+				return hostFailureSource(identityKey, input);
 			}
 			if (resolution.state === "missing") {
 				return null;
 			}
 			const apiKey = resolution.key;
 			const fingerprint = credentialFingerprint(apiKey);
+			lastFingerprints.set(integrationID, fingerprint);
 
 			return {
 				identityKey: `ollama-balance:${integrationID}:${fingerprint}`,

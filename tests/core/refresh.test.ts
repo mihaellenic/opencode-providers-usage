@@ -4,6 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
 	CoordinatorDeps,
+	CredentialReadDeps,
+	NativeCredentialSource,
+	ProviderDeps,
 	QuotaMetric,
 	QuotaRead,
 	QuotaScope,
@@ -15,6 +18,7 @@ import {
 	QUOTA_RPC_IDLE_UNWATCH_MS,
 	setupQuotaServer,
 } from "../../src/index";
+import { createOllamaAdapter } from "../../src/providers/ollama";
 import type { QuotaUpdatedEvent } from "../../src/rpc";
 import { type QuotaTuiContext, subscribeQuotaUpdates } from "../../src/tui";
 
@@ -1272,6 +1276,107 @@ describe("quota presentation history", () => {
 		coordinator.dispose();
 	});
 
+	test("host_bridge_failure_keeps_history_and_recovery_replaces_it", async () => {
+		const clock = fakeClock();
+		const adapter = createOllamaAdapter();
+		const apiKey = "synthetic-host-bridge-key";
+		let hostFails = false;
+		let balanceUsd = 40;
+
+		const native: NativeCredentialSource = {
+			async resolve() {
+				if (hostFails) {
+					throw new Error("host bridge read failed");
+				}
+				return { type: "key", key: apiKey };
+			},
+		};
+		const providerDeps: ProviderDeps = {
+			now: clock.now,
+			async getJson() {
+				return {
+					included: {
+						balance_usd: balanceUsd,
+						allowance_usd: 60,
+						period: { until: Math.floor((NOW + 86_400_000) / 1000) },
+					},
+					purchased: { balance_usd: 5 },
+				};
+			},
+		};
+		const credentialDeps: CredentialReadDeps = {
+			now: clock.now,
+			env: { XDG_DATA_HOME: "/synthetic/data" },
+			homeDirectory: "/synthetic/home",
+			async readUtf8() {
+				throw new Error("the file fallback must not be used");
+			},
+		};
+
+		const coordinator = createQuotaCoordinator({
+			now: clock.now,
+			async resolve(_providerID, signal) {
+				const resolved = await adapter.resolve({
+					providerID: "ollama",
+					integrationID: "ollama-cloud",
+					authMethod: "key",
+					companion: { enabled: false },
+					deps: providerDeps,
+					credentialDeps,
+					signal,
+					nativeCredential: native,
+				});
+				if (resolved === null) {
+					throw new Error("expected the Ollama adapter to resolve");
+				}
+				return resolved;
+			},
+			setTimer: clock.setTimer,
+			clearTimer: clock.clearTimer,
+		});
+
+		await coordinator.refresh("ollama");
+		const initial = coordinator.presentation("ollama").lastKnown;
+		if (initial === undefined) {
+			throw new Error("expected initial history");
+		}
+		expect(moneyRemaining(initial)).toBe(40);
+
+		// A credential READ failure is not an observed credential change: the
+		// snapshot becomes the sanitized error but history must survive.
+		hostFails = true;
+		await clock.advance(FLOOR_MS);
+		await coordinator.refresh("ollama");
+		const failed = coordinator.presentation("ollama");
+		const failedHistory = failed.lastKnown;
+		if (failedHistory === undefined) {
+			throw new Error("expected history to survive the host-bridge failure");
+		}
+		expect(moneyRemaining(failedHistory)).toBe(40);
+		expect(failed.failedSince).toBe(NOW + FLOOR_MS);
+		expect(coordinator.isRecovering("ollama")).toBe(true);
+		expect(coordinator.read("ollama")).toMatchObject({
+			state: "unavailable",
+			reason: "invalid_response",
+		});
+
+		// Recovery with the same credential replaces history with fresh figures.
+		hostFails = false;
+		balanceUsd = 30;
+		await clock.advance(RECOVERY_INTERVAL_MS);
+		const recovered = coordinator.presentation("ollama");
+		const recoveredHistory = recovered.lastKnown;
+		if (recoveredHistory === undefined) {
+			throw new Error("expected replacement history after recovery");
+		}
+		expect(moneyRemaining(recoveredHistory)).toBe(30);
+		expect(recovered.failedSince).toBeUndefined();
+		expect(coordinator.isRecovering("ollama")).toBe(false);
+		expect(JSON.stringify(recovered)).not.toContain(apiKey);
+
+		coordinator.dispose();
+	});
+
 	test("invalidation_clears_history_and_recovery_state", async () => {
 		let failing = false;
 		const { coordinator, clock } = harness(() =>
@@ -1302,6 +1407,56 @@ describe("quota presentation history", () => {
 		expect(coordinator.isRecovering("alpha")).toBe(false);
 		expect(clock.pending()).toBe(0);
 		expect(metrics(coordinator.read("alpha"))).toEqual([]);
+
+		coordinator.dispose();
+	});
+
+	test("non_retryable_failure_retains_history_and_ends_recovery", async () => {
+		let mode: "ok" | "transient" | "disabled" = "ok";
+		let requests = 0;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					requests += 1;
+					if (mode === "transient") {
+						return unavailableRead(NOW, "network_error");
+					}
+					if (mode === "disabled") {
+						return unavailableRead(NOW, "companion_disabled");
+					}
+					return availableRead(NOW, { remaining: 42 });
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		mode = "transient";
+		await clock.advance(FLOOR_MS);
+		await coordinator.refresh("alpha");
+		expect(coordinator.presentation("alpha").failedSince).not.toBeUndefined();
+		expect(clock.pending()).toBe(1);
+
+		mode = "disabled";
+		await clock.advance(RECOVERY_INTERVAL_MS);
+		const failure = await coordinator.refresh("alpha");
+		expect(failure).toMatchObject({
+			state: "unavailable",
+			reason: "companion_disabled",
+		});
+
+		const presentation = coordinator.presentation("alpha");
+		const lastKnown = presentation.lastKnown;
+		if (lastKnown === undefined) {
+			throw new Error("expected history to survive a non-retryable failure");
+		}
+		expect(remainingPercents(lastKnown)).toEqual([42]);
+		expect(presentation.failedSince).toBeUndefined();
+		expect(coordinator.isRecovering("alpha")).toBe(false);
+		expect(clock.pending()).toBe(0);
+
+		await clock.advance(POLL_MS * 10);
+		expect(requests).toBe(3);
 
 		coordinator.dispose();
 	});

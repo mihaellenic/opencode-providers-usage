@@ -921,6 +921,55 @@ describe("Ollama native host credential bridge", () => {
 		expect(calls[0]?.headers.Authorization).toBe(`Bearer ${SENTINEL}`);
 	});
 
+	test("host_bridge_failure_reuses_the_last_success_identity", async () => {
+		const adapter = createOllamaAdapter();
+		let hostCalls = 0;
+		const native: NativeCredentialSource = {
+			async resolve() {
+				hostCalls += 1;
+				if (hostCalls === 2) {
+					throw new Error(`host bridge failed for ${SENTINEL}`);
+				}
+				return { type: "key", key: SENTINEL };
+			},
+		};
+		const deps = payloadDeps(officialBalance());
+		const credentialDeps = credentials(SAVED_KEY_STORE);
+		const input = (): AdapterResolveInput => ({
+			providerID: "ollama",
+			integrationID: "ollama-cloud",
+			authMethod: "key",
+			companion: { enabled: false },
+			deps,
+			credentialDeps,
+			signal: new AbortController().signal,
+			nativeCredential: native,
+		});
+
+		const success = await adapter.resolve(input());
+		if (success === null) {
+			throw new Error("expected the initial credential to resolve");
+		}
+		const failure = await adapter.resolve(input());
+		if (failure === null) {
+			throw new Error("expected the host failure source");
+		}
+
+		// A read failure is not a credential change. The failure source must
+		// keep the last observed identity so history is not invalidated.
+		expect(failure.identityKey).toBe(success.identityKey);
+		expect(await failure.isCurrent()).toBe(false);
+		expect(await failure.read(new AbortController().signal)).toEqual({
+			state: "unavailable",
+			reason: "invalid_response",
+			attemptedAt: NOW,
+		});
+		expect(failure.identityKey).not.toContain(SENTINEL);
+
+		const recovered = await adapter.resolve(input());
+		expect(recovered?.identityKey).toBe(success.identityKey);
+	});
+
 	test("host_credential_error_maps_to_sanitized_unavailable", async () => {
 		const observed = observation();
 		const calls: RequestCall[] = [];
