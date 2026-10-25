@@ -336,12 +336,13 @@ async function main(): Promise<void> {
 		};
 
 		const fresh = await waitForFrame(
-			(frame) => frame.includes("90% left") && frame.includes("Alpha provider"),
+			(frame) => frame.includes("10%") && frame.includes("Alpha provider"),
 		);
 		const freshLines = paintedLines(fresh);
 		assert.equal(freshLines[0], " Alpha provider");
-		assert.ok(freshLines.some((line) => line.includes("App 7d")));
-		assert.ok(fresh.includes("Resets"));
+		assert.ok(freshLines.some((line) => line.includes("7d")));
+		assert.ok(fresh.includes("━"));
+		assert.ok(fresh.includes("resets 1h"));
 		assert.ok(!fresh.includes("updated"));
 		assert.ok(!fresh.includes("12s ago"));
 		assert.ok(!fresh.includes("View all providers"));
@@ -367,11 +368,9 @@ async function main(): Promise<void> {
 		const callsBeforeTheme = calls.length;
 		const initialTheme = theme();
 		const initialSpans = setup.captureSpans();
+		assert.ok(spanFor(initialSpans, "10%").fg.equals(initialTheme.text.muted));
 		assert.ok(
-			spanFor(initialSpans, "90% left").fg.equals(initialTheme.text.muted),
-		);
-		assert.ok(
-			spanFor(initialSpans, "Resets").fg.equals(initialTheme.text.muted),
+			spanFor(initialSpans, "resets 1h").fg.equals(initialTheme.text.muted),
 		);
 		assert.ok(
 			spanFor(initialSpans, "Alpha provider").fg.equals(initialTheme.text.base),
@@ -379,8 +378,8 @@ async function main(): Promise<void> {
 
 		const alternate = fixtureTheme(ALTERNATE_COLORS);
 		setTheme(alternate);
-		await waitForSpanColor("90% left", alternate.text.muted);
-		await waitForSpanColor("Resets", alternate.text.muted);
+		await waitForSpanColor("10%", alternate.text.muted);
+		await waitForSpanColor("resets 1h", alternate.text.muted);
 		const alternateSpans = setup.captureSpans();
 		assert.ok(
 			spanFor(alternateSpans, "Alpha provider").fg.equals(alternate.text.base),
@@ -396,9 +395,9 @@ async function main(): Promise<void> {
 			},
 		};
 		setTheme(tokenTheme);
-		await waitForSpanColor("Resets", tokenMutedA);
+		await waitForSpanColor("resets 1h", tokenMutedA);
 		setTokenMuted(tokenMutedB);
-		await waitForSpanColor("Resets", tokenMutedB);
+		await waitForSpanColor("resets 1h", tokenMutedB);
 		assert.equal(calls.length, callsBeforeTheme);
 		console.log("sidebar-slot-live: theme-updates");
 
@@ -419,8 +418,8 @@ async function main(): Promise<void> {
 		assert.ok(expired.includes("Quota unavailable"));
 		assert.ok(!expired.includes("last attempt"));
 		assert.ok(!expired.includes("ago"));
-		assert.ok(!expired.includes("33% left"));
-		assert.ok(!expired.includes("Resets"));
+		assert.ok(!expired.includes("33%"));
+		assert.ok(!expired.includes("resets"));
 
 		failAlpha = true;
 		setSelected({ providerID: "alpha", modelID: "model-a" });
@@ -428,8 +427,8 @@ async function main(): Promise<void> {
 			frame.includes("no current result was returned"),
 		);
 		assert.ok(failed.includes("Alpha provider"));
-		assert.ok(!/% left/.test(failed));
-		assert.ok(!failed.includes("Resets"));
+		assert.ok(!/%/.test(failed));
+		assert.ok(!failed.includes("resets"));
 		assert.deepEqual(calls, [
 			{ method: "get", providerID: "alpha" },
 			{ method: "get", providerID: "beta" },

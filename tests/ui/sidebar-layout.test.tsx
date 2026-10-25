@@ -33,29 +33,29 @@ function productionRead(): QuotaRead {
 		authSource: "codex-companion",
 		sections: [
 			{
-				scope: "shared-plan",
+				scope: "app",
 				result: {
 					state: "available",
 					metrics: [
 						{
 							kind: "window",
-							id: "five-hour",
-							scope: "shared-plan",
-							label: "Primary",
-							windowSeconds: 18_000,
-							remainingPercent: 97,
-							usedPercent: 3,
-							resetsAt: Date.UTC(2026, 9, 24, 17, 0, 0),
+							id: "weekly",
+							scope: "app",
+							label: "Current app limit",
+							windowSeconds: 604_800,
+							remainingPercent: 75,
+							usedPercent: 25,
+							resetsAt: PRODUCTION_NOW + 2 * 86_400_000 + 4 * 3_600_000,
 						},
 						{
 							kind: "window",
-							id: "weekly",
-							scope: "shared-plan",
-							label: "Secondary",
-							windowSeconds: 604_800,
-							remainingPercent: 9,
-							usedPercent: 91,
-							resetsAt: Date.UTC(2026, 9, 29, 11, 0, 0),
+							id: "five-hour",
+							scope: "app",
+							label: "Current app limit",
+							windowSeconds: 18_000,
+							remainingPercent: 41,
+							usedPercent: 59,
+							resetsAt: PRODUCTION_NOW + 8 * 3_600_000,
 						},
 					],
 					fetchedAt: PRODUCTION_NOW - 30_000,
@@ -124,18 +124,20 @@ const TWO_WINDOWS: SidebarModel = {
 	provider: "OpenAI · Codex quota",
 	lines: [
 		{
-			id: "app-week",
+			id: "app-5h",
 			kind: "window",
-			label: "App 7d",
-			value: { text: "90% left", tone: "success" },
-			reset: "Resets Thu 14:00",
+			label: "5h",
+			value: { text: "59%", tone: "normal" },
+			fill: 0.59,
+			reset: "resets 8h",
 		},
 		{
-			id: "shared-5h",
+			id: "app-7d",
 			kind: "window",
-			label: "Shared 5h",
-			value: { text: "9% left", tone: "warning" },
-			reset: "Resets 18:00",
+			label: "7d",
+			value: { text: "25%", tone: "normal" },
+			fill: 0.25,
+			reset: "resets 2d 4h",
 		},
 	],
 };
@@ -178,14 +180,15 @@ const LONG_CUSTOM_LABELS: SidebarModel = {
 		{
 			id: "custom-long",
 			kind: "window",
-			label: "Shared 7d · Custom daily window",
-			value: { text: "45% left", tone: "success" },
-			reset: "Resets Nov 30, 12:00 · 2027",
+			label: "7d · Custom daily window",
+			value: { text: "55%", tone: "normal" },
+			fill: 0.55,
+			reset: "resets 2d 4h",
 		},
 		{
 			id: "unknown-long",
 			kind: "window",
-			label: "App 5h",
+			label: "5h",
 			value: { text: "Unknown (not reported)", tone: "muted" },
 		},
 	],
@@ -234,13 +237,13 @@ describe("approved sidebar layout", () => {
 	test("60_and_40_columns_match_the_mock_derived_two_window_layout", async () => {
 		expect(await capture(TWO_WINDOWS, 60)).toEqual([
 			" OpenAI · Codex quota",
-			" App 7d    90% left                         Resets Thu 14:00",
-			" Shared 5h 9% left                              Resets 18:00",
+			" 5h ━━━━━━━━━━━━━━━━━━━━━━━───────────────── 59% · resets 8h",
+			" 7d ━━━━━━━━━──────────────────────────── 25% · resets 2d 4h",
 		]);
 		expect(await capture(TWO_WINDOWS, 40)).toEqual([
 			" OpenAI · Codex quota",
-			" App 7d    90% left     Resets Thu 14:00",
-			" Shared 5h 9% left          Resets 18:00",
+			" 5h ━━━━━━━━━━━───────── 59% · resets 8h",
+			" 7d ━━━━───────────── 25% · resets 2d 4h",
 		]);
 	});
 
@@ -258,23 +261,21 @@ describe("approved sidebar layout", () => {
 			): line is Extract<SidebarModel["lines"][number], { kind: "window" }> =>
 				line.kind === "window",
 		);
-		expect(windows.map((line) => line.label)).toEqual([
-			"Shared 5h",
-			"Shared 7d",
-		]);
+		expect(windows.map((line) => line.label)).toEqual(["5h", "7d"]);
 		expect(windows.map((line) => line.value)).toEqual([
-			{ text: "97% left", tone: "success" },
-			{ text: "9% left", tone: "warning" },
+			{ text: "59%", tone: "normal" },
+			{ text: "25%", tone: "normal" },
 		]);
+		expect(windows.map((line) => line.fill)).toEqual([0.59, 0.25]);
 		const resets = windows
 			.map((line) => line.reset)
 			.filter((reset): reset is string => reset !== undefined);
-		expect(resets).toHaveLength(2);
+		expect(resets).toEqual(["resets 8h", "resets 2d 4h"]);
 
 		expect(await capture(model, 40)).toEqual([
 			" OpenAI · Codex quota",
-			" Shared 5h 97% left         Resets 17:00",
-			" Shared 7d 9% left         29 Oct, 11:00",
+			" 5h ━━━━━━━━━━━───────── 59% · resets 8h",
+			" 7d ━━━━───────────── 25% · resets 2d 4h",
 		]);
 
 		for (const width of [24, 32, 40, 60]) {
@@ -283,13 +284,14 @@ describe("approved sidebar layout", () => {
 				const frame = setup.captureCharFrame();
 				const lines = paintedLines(frame);
 				expect(lines.every((line) => line.length <= width)).toBe(true);
+				const squashed = frame.replace(/\s+/g, "");
 				for (const reset of resets) {
-					// A reset is one readable cell: it may move to its own line when the
-					// pane is narrow, but it must not split mid-clock or mid-date.
-					expect(frame).toContain(reset);
+					// A reset countdown may move under the bar at narrow widths, but
+					// every word stays painted and readable.
+					expect(squashed).toContain(reset.replace(/\s+/g, ""));
 				}
-				expect(frame).toContain("97% left");
-				expect(frame).toContain("9% left");
+				expect(frame).toContain("59%");
+				expect(frame).toContain("25%");
 			} finally {
 				await setup.dispose();
 			}
@@ -329,16 +331,13 @@ describe("approved sidebar layout", () => {
 	test("32_and_24_columns_preserve_every_value_and_reset_without_clipping", async () => {
 		expect(await capture(TWO_WINDOWS, 32)).toEqual([
 			" OpenAI · Codex quota",
-			" App 7d    90% left",
-			"                Resets Thu 14:00",
-			" Shared 5h 9% left  Resets 18:00",
+			" 5h ━━━━━━━───── 59% · resets 8h",
+			" 7d ━━─────── 25% · resets 2d 4h",
 		]);
 		expect(await capture(TWO_WINDOWS, 24)).toEqual([
 			" OpenAI · Codex quota",
-			" App 7d    90% left",
-			"        Resets Thu 14:00",
-			" Shared 5h 9% left",
-			"            Resets 18:00",
+			" 5h ━━── 59% · resets 8h",
+			" 7d ─ 25% · resets 2d 4h",
 		]);
 
 		for (const width of [24, 32, 40, 60]) {
@@ -347,12 +346,12 @@ describe("approved sidebar layout", () => {
 			const painted = lines.join("\n").replace(/[│\s]+/g, "");
 			for (const text of [
 				"OpenAI · Codex quota",
-				"App 7d",
-				"90% left",
-				"Resets Thu 14:00",
-				"Shared 5h",
-				"9% left",
-				"Resets 18:00",
+				"5h",
+				"59%",
+				"resets 8h",
+				"7d",
+				"25%",
+				"resets 2d 4h",
 			]) {
 				expect(painted).toContain(text.replace(/\s+/g, ""));
 			}
@@ -369,11 +368,12 @@ describe("approved sidebar layout", () => {
 			const painted = lines.join("\n").replace(/[│\s]+/g, "");
 			for (const text of [
 				"A very long arbitrary provider name",
-				"Shared 7d ·",
-				"Custom daily window",
-				"45% left",
-				"Resets Nov 30, 12:00 · 2027",
-				"App 5h",
+				"7d ·",
+				"Customdaily",
+				"window",
+				"55%",
+				"resets 2d 4h",
+				"5h",
 				"Unknown (not reported)",
 			]) {
 				expect(painted).toContain(text.replace(/\s+/g, ""));
@@ -386,29 +386,28 @@ describe("approved sidebar layout", () => {
 	test("long_custom_layout_keeps_intrinsic_columns_wide_and_wraps_only_when_narrow", async () => {
 		expect(await capture(LONG_CUSTOM_LABELS, 60)).toEqual([
 			" A very long arbitrary provider name",
-			" Shared 7d · Custom daily window 45% left",
-			"                                 Resets Nov 30, 12:00 · 2027",
-			" App 5h                          Unknown (not reported)",
+			" 7d · Custom daily window ━━━━━━━━─────── 55% · resets 2d 4h",
+			" 5h Unknown (not reported)",
 		]);
 		expect(await capture(LONG_CUSTOM_LABELS, 24)).toEqual([
 			" A very long arbitrary",
 			" provider name",
-			" Shared 7d · Custom",
-			" daily window",
-			" 45% left",
-			" Resets Nov 30, 12:00 ·",
-			"                    2027",
-			" App 5h",
+			" 7d · Custom daily  ━━──",
+			" window",
+			" 55% · resets 2d 4h",
+			" 5h",
 			" Unknown (not reported)",
 		]);
 	});
 
-	test("window_cells_share_aligned_label_value_and_right_edges_at_normal_widths", async () => {
+	test("window_bars_share_compact_label_and_reset_edges_at_normal_widths", async () => {
 		const lines = await capture(TWO_WINDOWS, 60);
-		expect(lines[1]?.indexOf("90% left")).toBe(11);
-		expect(lines[2]?.indexOf("9% left")).toBe(11);
-		expect(lines[1]?.endsWith("Resets Thu 14:00")).toBe(true);
-		expect(lines[2]?.endsWith("Resets 18:00")).toBe(true);
+		expect(lines[1]?.startsWith(" 5h ")).toBe(true);
+		expect(lines[2]?.startsWith(" 7d ")).toBe(true);
+		expect(lines[1]?.indexOf("59%")).toBeGreaterThan(4);
+		expect(lines[2]?.indexOf("25%")).toBeGreaterThan(4);
+		expect(lines[1]?.endsWith("resets 8h")).toBe(true);
+		expect(lines[2]?.endsWith("resets 2d 4h")).toBe(true);
 		expect(lines[1]?.length).toBe(60);
 		expect(lines[2]?.length).toBe(60);
 	});
@@ -458,6 +457,78 @@ describe("approved sidebar layout", () => {
 		expect(full).toContain("100%");
 	});
 
+	test("window_used_fill_paints_a_distinct_proportional_base_run_for_both_percent_paths", async () => {
+		const read = (percent: {
+			remainingPercent?: number;
+			usedPercent?: number;
+		}): QuotaRead => ({
+			state: "available",
+			authSource: "codex-companion",
+			sections: [
+				{
+					scope: "app",
+					result: {
+						state: "available",
+						metrics: [
+							{
+								kind: "window",
+								id: "five-hour",
+								scope: "app",
+								label: "Current app limit",
+								windowSeconds: 18_000,
+								...percent,
+								resetsAt: PRODUCTION_NOW + 3_600_000,
+							},
+						],
+						fetchedAt: PRODUCTION_NOW - 1000,
+						expiresAt: PRODUCTION_NOW + 60_000,
+					},
+				},
+			],
+		});
+
+		for (const quota of [
+			read({ remainingPercent: 33 }),
+			read({ usedPercent: 67 }),
+		]) {
+			const model = buildSidebarModel(
+				OPENAI_PROVIDER,
+				quota,
+				PRODUCTION_LOCALE,
+				PRODUCTION_NOW,
+			);
+			expect(model.lines[0]).toMatchObject({
+				kind: "window",
+				fill: 0.67,
+				value: { text: "67%", tone: "normal" },
+			});
+
+			const setup = await paint(model, 60);
+			try {
+				const line = paintedLines(setup.captureCharFrame())[1];
+				expect(line).toBeDefined();
+				expect(line).toContain("67%");
+				const barStart = line?.indexOf("━") ?? -1;
+				const percentAt = line?.indexOf("67%") ?? -1;
+				expect(barStart).toBeGreaterThan(0);
+				expect(percentAt).toBeGreaterThan(barStart);
+				const bar = line?.slice(barStart, percentAt).trimEnd() ?? "";
+				const used = (bar.match(/━/g) ?? []).length;
+				const remaining = (bar.match(/─/g) ?? []).length;
+				expect(used).toBeGreaterThan(0);
+				expect(remaining).toBeGreaterThan(0);
+				expect(used / (used + remaining)).toBeCloseTo(0.67, 1);
+
+				const spans = setup.captureSpans();
+				expect(spanFor(spans, "━").fg.equals(LAYOUT_THEME.base)).toBe(true);
+				expect(spanFor(spans, "─").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+				expect(spanFor(spans, "67%").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			} finally {
+				await setup.dispose();
+			}
+		}
+	});
+
 	test("titles_stay_bright_while_rows_stay_dim_and_percent_tones_hold", async () => {
 		const setup = await paint(TWO_WINDOWS, 60);
 		try {
@@ -466,14 +537,46 @@ describe("approved sidebar layout", () => {
 			expect(spanFor(frame, "OpenAI · Codex quota").fg.equals(theme.base)).toBe(
 				true,
 			);
-			expect(spanFor(frame, "App 7d").fg.equals(theme.muted)).toBe(true);
-			expect(spanFor(frame, "90% left").fg.equals(theme.muted)).toBe(true);
-			expect(spanFor(frame, "9% left").fg.equals(theme.muted)).toBe(true);
-			expect(spanFor(frame, "Resets Thu 14:00").fg.equals(theme.muted)).toBe(
+			expect(spanFor(frame, "5h").fg.equals(theme.muted)).toBe(true);
+			expect(spanFor(frame, "7d").fg.equals(theme.muted)).toBe(true);
+			expect(spanFor(frame, "59%").fg.equals(theme.muted)).toBe(true);
+			expect(spanFor(frame, "25%").fg.equals(theme.muted)).toBe(true);
+			expect(spanFor(frame, "━").fg.equals(theme.base)).toBe(true);
+			expect(spanFor(frame, "─").fg.equals(theme.muted)).toBe(true);
+			expect(spanFor(frame, "· resets 8h").fg.equals(theme.muted)).toBe(true);
+			expect(spanFor(frame, "· resets 2d 4h").fg.equals(theme.muted)).toBe(
 				true,
 			);
 		} finally {
 			await setup.dispose();
+		}
+
+		const warningWindow = await paint(
+			{
+				provider: "OpenAI · Codex quota",
+				lines: [
+					{
+						id: "warning-window",
+						kind: "window",
+						label: "5h",
+						value: { text: "90%", tone: "warning" },
+						fill: 0.9,
+						reset: "resets 8h",
+					},
+				],
+			},
+			60,
+		);
+		try {
+			const frame = warningWindow.captureSpans();
+			expect(spanFor(frame, "90%").fg.equals(LAYOUT_THEME.warning)).toBe(true);
+			expect(spanFor(frame, "5h").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.base)).toBe(true);
+			expect(spanFor(frame, "· resets 8h").fg.equals(LAYOUT_THEME.muted)).toBe(
+				true,
+			);
+		} finally {
+			await warningWindow.dispose();
 		}
 
 		const barSetup = await paint(COMPLETE_CREDITS, 60);
@@ -481,7 +584,7 @@ describe("approved sidebar layout", () => {
 			const frame = barSetup.captureSpans();
 			// The bar segments, reset note, stat amounts, and neutral percent are
 			// all dimmed; only a threshold percent keeps its semantic color.
-			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.base)).toBe(true);
 			expect(spanFor(frame, "─").fg.equals(LAYOUT_THEME.muted)).toBe(true);
 			expect(spanFor(frame, "41.6%").fg.equals(LAYOUT_THEME.muted)).toBe(true);
 			expect(
@@ -524,7 +627,7 @@ describe("approved sidebar layout", () => {
 			expect(spanFor(frame, "92.4%").fg.equals(LAYOUT_THEME.warning)).toBe(
 				true,
 			);
-			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.base)).toBe(true);
 			expect(spanFor(frame, "─").fg.equals(LAYOUT_THEME.muted)).toBe(true);
 			expect(
 				spanFor(frame, "$55.44 / $60.00 used").fg.equals(LAYOUT_THEME.muted),
@@ -553,7 +656,7 @@ describe("approved sidebar layout", () => {
 		try {
 			const frame = exhausted.captureSpans();
 			expect(spanFor(frame, "100%").fg.equals(LAYOUT_THEME.error)).toBe(true);
-			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.base)).toBe(true);
 		} finally {
 			await exhausted.dispose();
 		}
@@ -650,12 +753,8 @@ describe("approved sidebar layout", () => {
 			const frame = setup.captureCharFrame();
 			expect(paintedLines(frame).join(" ")).toContain("Ollama Cloud");
 			const spans = setup.captureSpans();
-			expect(spanFor(spans, "90% left").fg.equals(LAYOUT_THEME.muted)).toBe(
-				true,
-			);
-			expect(spanFor(spans, "9% left").fg.equals(LAYOUT_THEME.muted)).toBe(
-				true,
-			);
+			expect(spanFor(spans, "59%").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			expect(spanFor(spans, "25%").fg.equals(LAYOUT_THEME.muted)).toBe(true);
 
 			expect(frame).not.toContain("View all providers");
 			await setup.mockMouse.click(3, 1);

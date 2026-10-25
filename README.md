@@ -132,9 +132,9 @@ has already been imported.
 
 - The sidebar follows the **prompt's currently selected provider**, not the
   server's default model. With no selection it says “No provider selected”.
-  The structured sidebar card shows the provider name, the used-quota bar with
-  its reset countdown, and a dimmed used/allowance row. Clicking anywhere in the
-  card opens the full page.
+  The structured sidebar card shows the provider name, compact used-quota bars
+  with reset countdowns, and dimmed detail rows. Shared-plan windows stay on the
+  full page. Clicking anywhere in the card opens the full page.
 - `Show provider usage` (`provider-quota.usage`) opens the full page. The slash
   command is `/usage`; the occupation check runs once at setup — a plugin that
   registers `/usage` later may collide, and OpenCode resolves duplicate slash

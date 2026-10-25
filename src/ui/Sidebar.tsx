@@ -1,12 +1,7 @@
 import type { RGBA } from "@opentui/core";
 import { jsx } from "@opentui/solid/jsx-runtime";
 import type { QuotaTuiContext } from "../tui";
-import type {
-	SidebarCell,
-	SidebarLine,
-	SidebarModel,
-	SidebarTone,
-} from "./sidebar-model";
+import type { SidebarCell, SidebarModel, SidebarTone } from "./sidebar-model";
 
 /** Minimal semantic tokens the quota block actually paints. */
 export type SidebarTheme = {
@@ -78,6 +73,105 @@ function cell(
 	});
 }
 
+type BarRow = {
+	id: string;
+	label?: string;
+	fill: number;
+	percent: SidebarCell;
+	reset?: string;
+};
+
+/**
+ * One compact bar row: optional duration label, the width-adaptive used (base)
+ * / remaining (muted) track, the percent used, and an optional inline reset
+ * countdown. The track grows to the available frame width; each glyph run is
+ * clipped by its flex segment, so no host width read is needed.
+ */
+function barRow(theme: SidebarTheme, line: BarRow) {
+	const percentTone =
+		line.percent.tone === "normal"
+			? theme.muted
+			: toneColor(theme, line.percent.tone);
+	const fill = Math.min(1, Math.max(0, line.fill));
+	return jsx("box", {
+		key: line.id,
+		flexDirection: "row",
+		flexWrap: "wrap",
+		width: "100%",
+		columnGap: 1,
+		children: [
+			...(line.label === undefined
+				? []
+				: [
+						jsx("text", {
+							key: `${line.id}:label`,
+							maxWidth: "100%",
+							flexShrink: 0,
+							wrapMode: "word",
+							fg: theme.muted,
+							children: line.label,
+						}),
+					]),
+			jsx("box", {
+				key: `${line.id}:bar`,
+				flexDirection: "row",
+				flexGrow: 1,
+				flexBasis: 0,
+				minWidth: 1,
+				children: [
+					...(fill <= 0
+						? []
+						: [
+								jsx("text", {
+									key: `${line.id}:used`,
+									flexGrow: fill,
+									flexBasis: 0,
+									flexShrink: 0,
+									overflow: "hidden",
+									wrapMode: "none",
+									fg: theme.base,
+									children: USED_GLYPHS,
+								}),
+							]),
+					...(fill >= 1
+						? []
+						: [
+								jsx("text", {
+									key: `${line.id}:remaining`,
+									flexGrow: 1 - fill,
+									flexBasis: 0,
+									flexShrink: 0,
+									overflow: "hidden",
+									wrapMode: "none",
+									fg: theme.muted,
+									children: REMAINING_GLYPHS,
+								}),
+							]),
+				],
+			}),
+			jsx("text", {
+				key: `${line.id}:percent`,
+				flexShrink: 0,
+				wrapMode: "none",
+				fg: percentTone,
+				children: line.percent.text,
+			}),
+			...(line.reset === undefined
+				? []
+				: [
+						jsx("text", {
+							key: `${line.id}:reset`,
+							flexShrink: 0,
+							maxWidth: "100%",
+							wrapMode: "word",
+							fg: theme.muted,
+							children: `· ${line.reset}`,
+						}),
+					]),
+		],
+	});
+}
+
 /**
  * Static terminal interpretation of the approved compact quota block:
  * provider-name title, a width-adaptive used-quota bar with a compact reset
@@ -91,61 +185,44 @@ export function renderSidebar(
 	theme: SidebarTheme,
 	openUsage: () => void,
 ) {
-	// Shared intrinsic columns: wide enough for actual labels/values at normal
-	// pane widths. `maxWidth: "100%"` lets a real parent constrain a column that
-	// is wider than the pane, so text wraps instead of clipping without any
-	// host width read or fixed pane-size assumption.
-	const labelWidth = Math.max(
-		1,
-		...model.lines
-			.filter(
-				(line): line is Extract<SidebarLine, { kind: "window" }> =>
-					line.kind === "window",
-			)
-			.map((line) => line.label.length),
-	);
-	const valueWidth = Math.max(
-		1,
-		...model.lines
-			.filter(
-				(line): line is Extract<SidebarLine, { kind: "window" }> =>
-					line.kind === "window",
-			)
-			.map((line) => line.value.text.length),
-	);
 	const rows = model.lines.map((line) => {
 		if (line.kind === "window") {
-			return jsx("box", {
-				key: line.id,
-				flexDirection: "row",
-				flexWrap: "wrap",
-				columnGap: 1,
-				children: [
-					jsx("text", {
-						key: `${line.id}:label`,
-						width: labelWidth,
-						maxWidth: "100%",
-						flexShrink: 0,
-						wrapMode: "word",
-						fg: theme.muted,
-						children: line.label,
-					}),
-					cell(theme, line.value, `${line.id}:value`, valueWidth),
-					...(line.reset === undefined
-						? []
-						: [
-								jsx("text", {
-									key: `${line.id}:reset`,
-									flexGrow: 1,
-									flexShrink: 0,
-									maxWidth: "100%",
-									textAlign: "right",
-									wrapMode: "word",
-									fg: theme.muted,
-									children: line.reset,
-								}),
-							]),
-				],
+			if (line.fill === undefined) {
+				return jsx("box", {
+					key: line.id,
+					flexDirection: "row",
+					flexWrap: "wrap",
+					columnGap: 1,
+					children: [
+						jsx("text", {
+							key: `${line.id}:label`,
+							maxWidth: "100%",
+							flexShrink: 0,
+							wrapMode: "word",
+							fg: theme.muted,
+							children: line.label,
+						}),
+						cell(theme, line.value, `${line.id}:value`),
+						...(line.reset === undefined
+							? []
+							: [
+									jsx("text", {
+										key: `${line.id}:reset`,
+										maxWidth: "100%",
+										wrapMode: "word",
+										fg: theme.muted,
+										children: `· ${line.reset}`,
+									}),
+								]),
+					],
+				});
+			}
+			return barRow(theme, {
+				id: line.id,
+				label: line.label,
+				fill: line.fill,
+				percent: line.value,
+				reset: line.reset,
 			});
 		}
 		if (line.kind === "credit") {
@@ -199,80 +276,7 @@ export function renderSidebar(
 			});
 		}
 		if (line.kind === "bar") {
-			const percentTone =
-				line.percent.tone === "normal"
-					? theme.muted
-					: toneColor(theme, line.percent.tone);
-			const fill = Math.min(1, Math.max(0, line.fill));
-			return jsx("box", {
-				key: line.id,
-				flexDirection: "row",
-				flexWrap: "wrap",
-				width: "100%",
-				columnGap: 1,
-				children: [
-					// The track grows to the parent width, and the used/remaining
-					// segments grow in proportion to the reported used fraction. Each
-					// glyph run is clipped by its segment, so the bar adapts to the
-					// frame without the renderer reading a host width.
-					jsx("box", {
-						key: `${line.id}:bar`,
-						flexDirection: "row",
-						flexGrow: 1,
-						flexBasis: 0,
-						minWidth: 1,
-						children: [
-							...(fill <= 0
-								? []
-								: [
-										jsx("text", {
-											key: `${line.id}:used`,
-											flexGrow: fill,
-											flexBasis: 0,
-											flexShrink: 0,
-											overflow: "hidden",
-											wrapMode: "none",
-											fg: theme.muted,
-											children: USED_GLYPHS,
-										}),
-									]),
-							...(fill >= 1
-								? []
-								: [
-										jsx("text", {
-											key: `${line.id}:remaining`,
-											flexGrow: 1 - fill,
-											flexBasis: 0,
-											flexShrink: 0,
-											overflow: "hidden",
-											wrapMode: "none",
-											fg: theme.muted,
-											children: REMAINING_GLYPHS,
-										}),
-									]),
-						],
-					}),
-					jsx("text", {
-						key: `${line.id}:percent`,
-						flexShrink: 0,
-						wrapMode: "none",
-						fg: percentTone,
-						children: line.percent.text,
-					}),
-					...(line.reset === undefined
-						? []
-						: [
-								jsx("text", {
-									key: `${line.id}:reset`,
-									flexShrink: 0,
-									maxWidth: "100%",
-									wrapMode: "word",
-									fg: theme.muted,
-									children: `· ${line.reset}`,
-								}),
-							]),
-				],
-			});
+			return barRow(theme, line);
 		}
 		return jsx("text", {
 			key: line.id,

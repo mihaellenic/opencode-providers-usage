@@ -8,7 +8,6 @@ import type {
 	UnavailableState,
 } from "../core/contracts";
 import {
-	dateParts,
 	durationText,
 	formatCurrency,
 	formatPercent,
@@ -23,7 +22,10 @@ export type SidebarWindowLine = {
 	id: string;
 	kind: "window";
 	label: string;
+	/** Percent used, or the unknown fallback when no percentage was reported. */
 	value: SidebarCell;
+	/** Used fraction for the compact bar; absent when no percentage is known. */
+	fill?: number;
 	reset?: string;
 };
 
@@ -118,7 +120,10 @@ function compactDuration(seconds: number): string {
 function windowCounts(read: SectionsRead) {
 	const counts = new Map<string, number>();
 	for (const section of read.sections) {
-		if (section.result.state !== "available") {
+		if (
+			section.scope === "shared-plan" ||
+			section.result.state !== "available"
+		) {
 			continue;
 		}
 		for (const metric of section.result.metrics) {
@@ -156,32 +161,6 @@ function uniqueWindowLabel(
 	return unique;
 }
 
-function resetText(
-	timestamp: number,
-	locale: LocaleContext,
-	now: number,
-): string {
-	const reset = dateParts(timestamp, locale);
-	const current = dateParts(now, locale);
-	const sameLocalDate =
-		reset.year === current.year &&
-		reset.month === current.month &&
-		reset.day === current.day;
-	const clock = `${reset.hour}:${reset.minute}`;
-	if (sameLocalDate) {
-		return `Resets ${clock}`;
-	}
-	const date = new Intl.DateTimeFormat(locale.locale, {
-		timeZone: locale.timeZone,
-		calendar: "gregory",
-		numberingSystem: "latn",
-		month: "short",
-		day: "numeric",
-	}).format(timestamp);
-	const year = reset.year === current.year ? "" : ` · ${reset.year}`;
-	return `${date}, ${clock}${year}`;
-}
-
 function futureSpan(milliseconds: number): string {
 	const seconds = Math.max(1, Math.ceil(milliseconds / 1000));
 	if (seconds < 60) {
@@ -203,10 +182,10 @@ function futureSpan(milliseconds: number): string {
 }
 
 /**
- * Two-unit countdown for the compact credit bar. Seconds/minutes are rounded
- * up once, then the first two units are shown. A day-scale duration never
- * reports a partial hour as `0h`; sub-hour durations fall back to minutes or
- * seconds. The countdown uses only the reported reset timestamp.
+ * Two-unit countdown shared by the credit and window bar rows. Seconds/minutes
+ * are rounded up once, then the first two units are shown. A day-scale
+ * duration never reports a partial hour as `0h`; sub-hour durations fall back
+ * to minutes or seconds. The countdown uses only the reported reset timestamp.
  */
 function resetCountdown(milliseconds: number): string {
 	const seconds = Math.max(1, Math.ceil(milliseconds / 1000));
@@ -231,7 +210,7 @@ function resetCountdown(milliseconds: number): string {
 	return hours === 0 ? `${days}d` : `${days}d ${hours}h`;
 }
 
-function barResetText(
+function resetCountdownText(
 	resetsAt: number | undefined,
 	now: number,
 ): string | undefined {
@@ -256,26 +235,38 @@ function refillText(
 	return `refills in ${futureSpan(resetsAt - now)}`;
 }
 
-function windowValue(
+function windowDisplay(
 	metric: Extract<QuotaMetric, { kind: "window" }>,
 	locale: LocaleContext,
-): SidebarCell {
+): { value: SidebarCell; fill?: number } {
 	if (metric.remainingPercent !== undefined) {
-		const percent = metric.remainingPercent;
+		// Reported remaining is safe to invert into used.
+		const usedPercent = 100 - metric.remainingPercent;
 		return {
-			text: `${formatPercent(percent, locale)}% left`,
-			tone: percent === 0 ? "error" : percent <= 20 ? "warning" : "success",
+			value: {
+				text: `${formatPercent(usedPercent, locale)}%`,
+				tone:
+					usedPercent >= 100
+						? "error"
+						: usedPercent >= 80
+							? "warning"
+							: "normal",
+			},
+			fill: Math.min(1, Math.max(0, usedPercent / 100)),
 		};
 	}
 	if (metric.usedPercent !== undefined) {
 		// Used-only input never proves how much remains. Show the reported usage
 		// without inferring a remaining percentage or a healthy tone.
 		return {
-			text: `${formatPercent(metric.usedPercent, locale)}% used`,
-			tone: "normal",
+			value: {
+				text: `${formatPercent(metric.usedPercent, locale)}%`,
+				tone: "normal",
+			},
+			fill: Math.min(1, Math.max(0, metric.usedPercent / 100)),
 		};
 	}
-	return { text: "Unknown (not reported)", tone: "muted" };
+	return { value: { text: "Unknown (not reported)", tone: "muted" } };
 }
 
 function moneyValue(
@@ -310,7 +301,7 @@ function includedLines(
 		const usedPercent = (used / allowance) * 100;
 		const tone: SidebarTone =
 			usedPercent >= 100 ? "error" : usedPercent >= 80 ? "warning" : "normal";
-		const reset = barResetText(metric.resetsAt, now);
+		const reset = resetCountdownText(metric.resetsAt, now);
 		return [
 			{
 				id,
@@ -472,22 +463,26 @@ function availableLines(
 	}
 
 	const lines: SidebarLine[] = [];
+	const windowDurations = new Map<string, number>();
 	for (let index = 0; index < result.metrics.length; index += 1) {
 		const metric = result.metrics[index];
 		if (metric === undefined) {
 			continue;
 		}
 		if (metric.kind === "window") {
-			const base = `${SCOPE_NAMES[section.scope]} ${compactDuration(metric.windowSeconds)}`;
+			const id = `${sectionIndex}:${metric.scope}:${metric.id}`;
+			const base = compactDuration(metric.windowSeconds);
 			const count = counts.get(`${section.scope}:${metric.windowSeconds}`) ?? 1;
+			const display = windowDisplay(metric, locale);
+			const reset = resetCountdownText(metric.resetsAt, now);
+			windowDurations.set(id, metric.windowSeconds);
 			lines.push({
-				id: `${sectionIndex}:${metric.scope}:${metric.id}`,
+				id,
 				kind: "window",
 				label: uniqueWindowLabel(base, metric, count, usedLabels),
-				value: windowValue(metric, locale),
-				...(metric.resetsAt === undefined
-					? {}
-					: { reset: resetText(metric.resetsAt, locale, now) }),
+				value: display.value,
+				...(display.fill === undefined ? {} : { fill: display.fill }),
+				...(reset === undefined ? {} : { reset }),
 			});
 			continue;
 		}
@@ -527,6 +522,29 @@ function availableLines(
 				: [otherCredit(metric, sectionIndex, locale, now)]),
 		);
 	}
+
+	// Window rows sort by duration ascending; equal durations keep their source
+	// order (including the de-dup suffix assignment made above). Non-window lines
+	// stay in their original slots.
+	const windowSlots: number[] = [];
+	const windowLines: SidebarWindowLine[] = [];
+	lines.forEach((line, index) => {
+		if (line.kind === "window") {
+			windowSlots.push(index);
+			windowLines.push(line);
+		}
+	});
+	windowLines.sort(
+		(left, right) =>
+			(windowDurations.get(left.id) ?? 0) -
+			(windowDurations.get(right.id) ?? 0),
+	);
+	windowSlots.forEach((slot, index) => {
+		const line = windowLines[index];
+		if (line !== undefined) {
+			lines[slot] = line;
+		}
+	});
 	return lines;
 }
 
@@ -539,8 +557,9 @@ function retrySuffix(retryAfterMs: number | undefined): string {
 /**
  * Pure structured sidebar view model. Every cell and status is derived from
  * reported quota fields; formatted display strings are never parsed back into
- * data. Source section/metric order is preserved, missing values stay absent,
- * and no allowance, total, or remaining value is inferred.
+ * data. Source section and non-window metric order is preserved, window rows
+ * are stably sorted by duration ascending, missing values stay absent, and no
+ * allowance, total, or remaining value is inferred.
  *
  * Caller precondition: apply `revalidateQuota()` to quota snapshots before
  * rendering. `now` is a formatting and age reference only; this function does
@@ -575,6 +594,11 @@ export function buildSidebarModel(
 	const counts = windowCounts(read);
 	const usedLabels = new Set<string>();
 	read.sections.forEach((section, sectionIndex) => {
+		// The sidebar card surfaces app-scope windows; shared-plan stays on the
+		// full usage page. This filter is local to the sidebar model.
+		if (section.scope === "shared-plan") {
+			return;
+		}
 		if (section.result.state !== "available") {
 			lines.push({
 				id: `${sectionIndex}:${section.scope}:status`,

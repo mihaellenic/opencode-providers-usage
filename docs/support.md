@@ -267,39 +267,43 @@ The live path keeps the host safeguards that mattered:
 - The model is a compact projection of reported quota data, not a second quota
   source. The card title is only the provider name (`OpenAI · Codex quota` for
   the validated Codex companion capability; arbitrary names unchanged) in the
-  base color. Every row below the title is muted.
-- Window rows keep explicit scope/duration labels (`App 7d`, `Shared 5h`,
-  `Balance 7d`), the reported remaining/used value in its own aligned cell, and
-  a muted reset cell. Reported remaining takes precedence; used-only input
-  never becomes a fabricated remaining value. Unknown values stay muted.
+  base color. Row labels, values, and detail text below the title are muted;
+  the used bar fill is the one bright element.
+- Window rows use duration-only labels (`5h`, `7d`) and the same compact bar:
+  used (`━`, base color) versus remaining (`─`, muted), the used percentage,
+  then an inline `· resets 8h` countdown. Rows sort by duration ascending
+  (`5h` before `7d`); equal durations keep source order and de-dup suffixes.
+  `shared-plan` sections are omitted from the sidebar card and remain available
+  on the full usage page. Reported `remainingPercent` is inverted to used
+  percent and keeps the percentage thresholds; `usedPercent`-only input stays
+  neutral; no reported percentage keeps the muted `Unknown (not reported)`
+  fallback without a bar.
 - Included credits with a positive reported allowance render one compact bar
-  row followed by one stat row. The bar row shows used (`━`) versus remaining
-  (`─`) in muted colors, then the used percentage and an inline
+  row followed by one stat row. The bar row shows used (`━`, base color) versus
+  remaining (`─`, muted), then the used percentage and an inline
   `· resets 25d 15h` countdown derived only from the reported reset timestamp
   (two units: days/hours, hours/minutes, then minutes or seconds; past resets
-  read `resets now`). Only the percentage is exempt from dimming: 100% used
-  keeps the error tone, at least 80% used keeps the warning tone, and below
-  that it stays muted. The stat row reads
-  `$25.27 / $60.00 used` on the left and, when reported, `+$4.27 credits` on
-  the right. The purchased pool is folded into that right cell and the derived
-  total pool is intentionally omitted. Used is derived only as
-  `allowance − remaining`. Without a positive allowance the actual money
-  remaining is shown and no bar or used figure is invented; the existing
-  purchased/total pair rendering stays in that fallback.
+  read `resets now`). Only the percentage carries a threshold tone: 100% used
+  keeps the error tone and at least 80% used keeps the warning tone; below that
+  it stays muted. The stat row reads `$25.27 / $60.00 used` on the left and,
+  when reported, `+$4.27 credits` on the right. The purchased pool is folded
+  into that right cell and the derived total pool is intentionally omitted.
+  Used is derived only as `allowance − remaining`. Without a positive allowance
+  the actual money remaining is shown and no bar or used figure is invented;
+  the existing purchased/total pair rendering stays in that fallback.
 - Every unavailable section keeps its exact reason/recovery copy and retry
   delay, painted in the muted row color. Expired sections hide their figures;
   partial reads keep valid rows. The compact sidebar no longer repeats an
   `updated`/`last attempt` timestamp; freshness stays on the full usage page.
 - The whole card is a click target that opens the existing `provider-usage`
   page route. It triggers no new RPC read or refresh.
-- Painted-line tests cover 24, 32, 40, and 60 columns. Columns use the actual
-  label/value content widths and are constrained by the real parent width, so
-  ordinary layouts stay aligned and long custom labels/values remain intact at
-  wide panes instead of being split by arbitrary caps. The quota bar grows to
-  the frame width and clips its used/remaining glyph runs proportionally. Narrow
-  panes wrap the reset countdown, detail, and title content instead of clipping
-  or hiding a constraint. Semantic colors, including live theme repaints, are
-  asserted from captured spans.
+- Painted-line tests cover 24, 32, 40, and 60 columns. Rows honor the real
+  parent width: compact bar rows align their label, bar, percent, and reset
+  edges at normal widths, long labels and countdowns wrap instead of clipping,
+  and the quota bar grows to the frame width while clipping its used/remaining
+  glyph runs proportionally. Narrow panes wrap the reset countdown, labels, and
+  title content instead of hiding a constraint. Semantic colors, including live
+  theme repaints, are asserted from captured spans.
 
 **Validation limitation:** these checks use OpenTUI's test renderer plus an
 isolated `--conditions=browser` client-runtime probe with a fake host. They

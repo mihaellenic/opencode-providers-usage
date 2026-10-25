@@ -972,7 +972,7 @@ describe("host-rendered wrappers", () => {
 					},
 				},
 				{
-					scope: "shared-plan",
+					scope: "app",
 					result: {
 						state: "unavailable",
 						reason: "rate_limited",
@@ -1010,10 +1010,11 @@ describe("host-rendered wrappers", () => {
 			expect(wideLines[0]?.endsWith("OpenAI")).toBe(true);
 			expect(wideLines.every((line) => line.length <= 60)).toBe(true);
 			const wide = wideLines.join(" ");
-			expect(wide).toContain("App 7d");
-			expect(wide).toContain("90% left");
-			expect(wide).toContain("Shared 5h");
-			expect(wide).toContain("70% left");
+			expect(wide).toContain("7d");
+			expect(wide).toContain("10%");
+			expect(wide).toContain("resets 6d 2h");
+			expect(wide).not.toContain("Shared");
+			expect(wide).not.toContain("70%");
 			expect(wide.replace(/\s+/g, "")).toContain(
 				"Quotaunavailable:theproviderratelimit".replace(/\s+/g, ""),
 			);
@@ -1034,10 +1035,11 @@ describe("host-rendered wrappers", () => {
 			expect(narrowLines.every((line) => line.length <= 24)).toBe(true);
 			expect(narrowLines.length).toBeGreaterThan(wideLines.length);
 			const narrow = narrowLines.join(" ");
-			expect(narrow).toContain("App 7d");
-			expect(narrow).toContain("90% left");
-			expect(narrow).toContain("Shared 5h");
-			expect(narrow).toContain("70% left");
+			expect(narrow).toContain("7d");
+			expect(narrow).toContain("10%");
+			expect(narrow.replace(/\s+/g, "")).toContain("resets6d2h");
+			expect(narrow).not.toContain("Shared");
+			expect(narrow).not.toContain("70%");
 			expect(narrow).not.toContain("updated");
 			expect(narrow).not.toContain("View all providers");
 		} finally {

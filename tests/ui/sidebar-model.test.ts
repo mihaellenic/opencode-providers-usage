@@ -79,7 +79,7 @@ function moneyMetric(
 }
 
 describe("buildSidebarModel", () => {
-	test("renders the approved two-window shape without invented account labels", () => {
+	test("sorts compact app-only window bars and ignores shared-plan", () => {
 		const model = buildSidebarModel(
 			{ ...provider, name: "OpenAI ChatGPT with Codex companion" },
 			{
@@ -88,20 +88,27 @@ describe("buildSidebarModel", () => {
 				sections: [
 					available("app", [
 						windowMetric({
+							id: "week",
+							scope: "app",
+							windowSeconds: 604_800,
+							remainingPercent: 75,
+							resetsAt: NOW + 2 * 86_400_000 + 4 * 3_600_000,
+						}),
+						windowMetric({
 							id: "five-hour",
 							scope: "app",
 							windowSeconds: 18_000,
-							remainingPercent: 97,
-							resetsAt: Date.UTC(2026, 11, 31, 21, 17),
+							remainingPercent: 41,
+							resetsAt: NOW + 8 * 3_600_000,
 						}),
 					]),
 					available("shared-plan", [
 						windowMetric({
-							id: "week",
+							id: "shared",
 							scope: "shared-plan",
 							label: "Shared plan primary limit",
 							remainingPercent: 9,
-							resetsAt: Date.UTC(2027, 0, 5, 1, 16),
+							resetsAt: NOW + 21 * 86_400_000,
 						}),
 					]),
 				],
@@ -115,22 +122,59 @@ describe("buildSidebarModel", () => {
 			{
 				id: "0:app:five-hour",
 				kind: "window",
-				label: "App 5h",
-				value: { text: "97% left", tone: "success" },
-				reset: "Resets 21:17",
+				label: "5h",
+				value: { text: "59%", tone: "normal" },
+				fill: 0.59,
+				reset: "resets 8h",
 			},
 			{
-				id: "1:shared-plan:week",
+				id: "0:app:week",
 				kind: "window",
-				label: "Shared 7d",
-				value: { text: "9% left", tone: "warning" },
-				reset: "Jan 5, 01:16 · 2027",
+				label: "7d",
+				value: { text: "25%", tone: "normal" },
+				fill: 0.25,
+				reset: "resets 2d 4h",
 			},
 		]);
 		const serialized = JSON.stringify(model);
+		expect(serialized).not.toContain("shared-plan");
 		expect(serialized).not.toContain("Account-wide");
 		expect(serialized).not.toContain("ChatGPT Plus");
 		expect(serialized).not.toContain("ago");
+	});
+
+	test("shared-plan sections and failures produce no sidebar lines", () => {
+		const model = buildSidebarModel(
+			provider,
+			partial([
+				{
+					scope: "shared-plan",
+					result: {
+						state: "available",
+						metrics: [
+							windowMetric({
+								id: "shared-window",
+								scope: "shared-plan",
+								remainingPercent: 40,
+							}),
+						],
+						fetchedAt: NOW - 1000,
+						expiresAt: NOW + 60_000,
+					},
+				},
+				{
+					scope: "shared-plan",
+					result: {
+						state: "unavailable",
+						reason: "timeout",
+						attemptedAt: NOW - 5000,
+					},
+				},
+			]),
+			LOCALE,
+			NOW,
+		);
+		expect(model.lines).toEqual([]);
 	});
 
 	test("renders a used bar and folds purchased credits into the stat row", () => {
@@ -192,7 +236,7 @@ describe("buildSidebarModel", () => {
 		expect(serialized).not.toContain("ago");
 	});
 
-	test("preserves four independent app/shared constraints and distinguishes collisions", () => {
+	test("preserves independent app constraints and distinguishes collisions", () => {
 		const model = buildSidebarModel(
 			provider,
 			{
@@ -226,22 +270,6 @@ describe("buildSidebarModel", () => {
 							remainingPercent: 90,
 						}),
 					]),
-					available("shared-plan", [
-						windowMetric({
-							id: "primary",
-							scope: "shared-plan",
-							label: "Primary",
-							windowSeconds: 18_000,
-							remainingPercent: 40,
-						}),
-						windowMetric({
-							id: "secondary",
-							scope: "shared-plan",
-							label: "Secondary",
-							windowSeconds: 18_000,
-							remainingPercent: 30,
-						}),
-					]),
 				],
 			},
 			LOCALE,
@@ -250,22 +278,24 @@ describe("buildSidebarModel", () => {
 
 		const windows = model.lines.filter((line) => line.kind === "window");
 		expect(windows.map((line) => line.id)).toEqual([
-			"0:app:generic",
-			"0:app:custom",
 			"0:app:burst-one",
 			"0:app:burst-two",
-			"1:shared-plan:primary",
-			"1:shared-plan:secondary",
+			"0:app:generic",
+			"0:app:custom",
 		]);
 		expect(windows.map((line) => line.label)).toEqual([
-			"App 7d · Current app limit",
-			"App 7d · Custom cap",
-			"App 1h · Burst",
-			"App 1h · Burst · burst-two",
-			"Shared 5h · Primary",
-			"Shared 5h · Secondary",
+			"1h · Burst",
+			"1h · Burst · burst-two",
+			"7d · Current app limit",
+			"7d · Custom cap",
 		]);
-		expect(new Set(windows.map((line) => line.label)).size).toBe(6);
+		expect(windows.map((line) => line.value)).toEqual([
+			{ text: "20%", tone: "normal" },
+			{ text: "10%", tone: "normal" },
+			{ text: "50%", tone: "normal" },
+			{ text: "30%", tone: "normal" },
+		]);
+		expect(new Set(windows.map((line) => line.label)).size).toBe(4);
 	});
 
 	test("keeps inherited-property names and arbitrary labels intact", () => {
@@ -306,7 +336,7 @@ describe("buildSidebarModel", () => {
 		);
 	});
 
-	test("keeps used-only, zero, warning, success, and unknown window values truthful", () => {
+	test("shows used percent with thresholds and keeps used-only neutral", () => {
 		const model = buildSidebarModel(
 			provider,
 			{
@@ -317,24 +347,38 @@ describe("buildSidebarModel", () => {
 						windowMetric({
 							id: "used-only",
 							scope: "app",
+							windowSeconds: 18_000,
 							usedPercent: 10,
+						}),
+						windowMetric({
+							id: "used-only-high",
+							scope: "app",
+							windowSeconds: 3_600,
+							usedPercent: 91,
 						}),
 						windowMetric({
 							id: "zero",
 							scope: "app",
+							windowSeconds: 604_800,
 							remainingPercent: 0,
 						}),
 						windowMetric({
 							id: "warning-edge",
 							scope: "app",
+							windowSeconds: 86_400,
 							remainingPercent: 20,
 						}),
 						windowMetric({
 							id: "healthy",
 							scope: "app",
+							windowSeconds: 2_592_000,
 							remainingPercent: 21,
 						}),
-						windowMetric({ id: "unknown", scope: "app" }),
+						windowMetric({
+							id: "unknown",
+							scope: "app",
+							windowSeconds: 1_209_600,
+						}),
 					]),
 				],
 			},
@@ -343,12 +387,29 @@ describe("buildSidebarModel", () => {
 		);
 
 		const windows = model.lines.filter((line) => line.kind === "window");
+		expect(windows.map((line) => line.label)).toEqual([
+			"1h",
+			"5h",
+			"1d",
+			"7d",
+			"14d",
+			"30d",
+		]);
 		expect(windows.map((line) => line.value)).toEqual([
-			{ text: "10% used", tone: "normal" },
-			{ text: "0% left", tone: "error" },
-			{ text: "20% left", tone: "warning" },
-			{ text: "21% left", tone: "success" },
+			{ text: "91%", tone: "normal" },
+			{ text: "10%", tone: "normal" },
+			{ text: "80%", tone: "warning" },
+			{ text: "100%", tone: "error" },
 			{ text: "Unknown (not reported)", tone: "muted" },
+			{ text: "79%", tone: "normal" },
+		]);
+		expect(windows.map((line) => line.fill)).toEqual([
+			0.91,
+			0.1,
+			0.8,
+			1,
+			undefined,
+			0.79,
 		]);
 		for (const line of windows) {
 			expect(line.reset).toBeUndefined();
@@ -870,18 +931,16 @@ describe("buildSidebarModel", () => {
 			NOW,
 		);
 
-		expect(model.lines[0]).toEqual({
-			id: "0:app:valid",
-			kind: "window",
-			label: "App 7d",
-			value: { text: "75% left", tone: "success" },
-		});
-		expect(model.lines[1]).toEqual({
-			id: "1:shared-plan:status",
-			kind: "status",
-			text: `Shared: ${unavailableCopy("unavailable", "rate_limited")} · retry after 5s`,
-			tone: "error",
-		});
+		expect(model.lines).toEqual([
+			{
+				id: "0:app:valid",
+				kind: "window",
+				label: "7d",
+				value: { text: "25%", tone: "normal" },
+				fill: 0.25,
+			},
+		]);
+		expect(JSON.stringify(model)).not.toContain("rate_limited");
 		expect(JSON.stringify(model)).not.toContain("ago");
 	});
 
@@ -916,10 +975,13 @@ describe("buildSidebarModel", () => {
 			LOCALE,
 			NOW,
 		);
-		expect(model.lines.map((line) => line.id)).toEqual([
-			"0:shared-plan:status",
-			"1:app:valid",
-		]);
+		expect(model.lines.map((line) => line.id)).toEqual(["1:app:valid"]);
+		expect(model.lines[0]).toMatchObject({
+			label: "7d",
+			value: { text: "25%", tone: "normal" },
+			fill: 0.25,
+		});
+		expect(JSON.stringify(model)).not.toContain("timeout");
 		expect(JSON.stringify(model)).not.toContain("ago");
 	});
 
@@ -1010,129 +1072,49 @@ describe("buildSidebarModel", () => {
 		]);
 	});
 
-	test("compares reset dates and years in the configured local calendar", () => {
-		const stockholm = { locale: "en-GB", timeZone: "Europe/Stockholm" };
+	test("formats window reset countdowns with two-unit precision", () => {
+		const day = 86_400_000;
+		const hour = 3_600_000;
+		const minute = 60_000;
 
-		const sameLocalDate = buildSidebarModel(
-			provider,
-			{
-				state: "available",
-				authSource: "opencode",
-				sections: [
-					available("app", [
-						windowMetric({
-							id: "stockholm-same-day",
-							scope: "app",
-							remainingPercent: 50,
-							resetsAt: Date.UTC(2026, 11, 31, 21, 17),
-						}),
-					]),
-				],
-			},
-			stockholm,
-			Date.UTC(2026, 11, 31, 20, 0),
-		);
-		const sameDay = sameLocalDate.lines[0];
-		expect(sameDay?.kind).toBe("window");
-		if (sameDay?.kind === "window") {
-			expect(sameDay.reset).toBe("Resets 22:17");
-		}
-
-		const differentLocalDate = buildSidebarModel(
-			provider,
-			{
-				state: "available",
-				authSource: "opencode",
-				sections: [
-					available("app", [
-						windowMetric({
-							id: "stockholm-previous-day",
-							scope: "app",
-							remainingPercent: 50,
-							resetsAt: Date.UTC(2026, 11, 31, 22, 10),
-						}),
-					]),
-				],
-			},
-			stockholm,
-			Date.UTC(2026, 11, 31, 23, 30),
-		);
-		expect(differentLocalDate.lines[0]).toMatchObject({
-			reset: "31 Dec, 23:10 · 2026",
-		});
-
-		const sameLocalYear = buildSidebarModel(
-			provider,
-			{
-				state: "available",
-				authSource: "opencode",
-				sections: [
-					available("app", [
-						windowMetric({
-							id: "stockholm-same-year",
-							scope: "app",
-							remainingPercent: 50,
-							resetsAt: Date.UTC(2027, 0, 1, 0, 15),
-						}),
-					]),
-				],
-			},
-			stockholm,
-			Date.UTC(2026, 11, 31, 23, 30),
-		);
-		expect(sameLocalYear.lines[0]).toMatchObject({ reset: "Resets 01:15" });
-
-		const losAngeles = { locale: "en-GB", timeZone: "America/Los_Angeles" };
-		const sameLosAngelesDate = buildSidebarModel(
-			provider,
-			{
-				state: "available",
-				authSource: "opencode",
-				sections: [
-					available("app", [
-						windowMetric({
-							id: "los-angeles",
-							scope: "app",
-							remainingPercent: 50,
-							resetsAt: Date.UTC(2027, 0, 1, 1, 45),
-						}),
-					]),
-				],
-			},
-			losAngeles,
-			Date.UTC(2027, 0, 1, 0, 30),
-		);
-		expect(sameLosAngelesDate.lines[0]).toMatchObject({
-			reset: "Resets 17:45",
-		});
-
-		const nextLocalYearNow = Date.UTC(2026, 11, 31, 11, 0);
-		const nextLocalYear = buildSidebarModel(
-			provider,
-			{
-				state: "available",
-				authSource: "opencode",
-				sections: [
-					available(
-						"app",
-						[
+		function windowAt(offsetMs: number | undefined) {
+			const model = buildSidebarModel(
+				provider,
+				{
+					state: "available",
+					authSource: "opencode",
+					sections: [
+						available("app", [
 							windowMetric({
-								id: "next-year",
+								id: "window",
 								scope: "app",
 								remainingPercent: 50,
-								resetsAt: Date.UTC(2026, 11, 31, 23, 15),
+								...(offsetMs === undefined ? {} : { resetsAt: NOW + offsetMs }),
 							}),
-						],
-						nextLocalYearNow - 30_000,
-					),
-				],
-			},
-			stockholm,
-			nextLocalYearNow,
-		);
-		expect(nextLocalYear.lines[0]).toMatchObject({
-			reset: "1 Jan, 00:15 · 2027",
+						]),
+					],
+				},
+				LOCALE,
+				NOW,
+			);
+			return model.lines[0];
+		}
+
+		expect(windowAt(2 * day + 4 * hour)).toMatchObject({
+			reset: "resets 2d 4h",
 		});
-		expect(nextLocalYear.lines).toHaveLength(1);
+		expect(windowAt(2 * day)).toMatchObject({ reset: "resets 2d" });
+		expect(windowAt(2 * day + 4 * hour + 30 * minute)).toMatchObject({
+			reset: "resets 2d 5h",
+		});
+		expect(windowAt(8 * hour)).toMatchObject({ reset: "resets 8h" });
+		expect(windowAt(8 * hour + 30 * minute)).toMatchObject({
+			reset: "resets 8h 30m",
+		});
+		expect(windowAt(45 * minute)).toMatchObject({ reset: "resets 45m" });
+		expect(windowAt(30_000)).toMatchObject({ reset: "resets 30s" });
+		expect(windowAt(0)).toMatchObject({ reset: "resets now" });
+		expect(windowAt(-minute)).toMatchObject({ reset: "resets now" });
+		expect(windowAt(undefined)).not.toHaveProperty("reset");
 	});
 });
