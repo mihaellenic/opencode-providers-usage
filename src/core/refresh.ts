@@ -1,14 +1,21 @@
 import {
 	type CoordinatorDeps,
+	isQuotaPresentation,
 	isQuotaRead,
 	type QuotaCoordinator,
+	type QuotaPresentation,
 	type QuotaRead,
+	type QuotaSectionsRead,
 	type ResolvedQuotaSource,
 	type SectionResult,
 } from "./contracts";
 
-/** Visible supported connections are polled at this cadence. */
+/** Legacy name for the recovery retry interval. */
 export const QUOTA_POLL_MS = 60_000;
+/** Retry spacing while a failure episode is younger than the grace period. */
+export const QUOTA_RECOVERY_INTERVAL_MS = 60_000;
+/** After this much elapsed failure time, the capped backoff takes over. */
+export const QUOTA_RECOVERY_GRACE_MS = 180_000;
 /** Minimum spacing between two request starts for the same provider. */
 export const QUOTA_MANUAL_FLOOR_MS = 15_000;
 /** A section older than this is never presented as current, even if the adapter
@@ -47,25 +54,41 @@ type Entry = {
 	listeners: Set<(value: QuotaRead) => void>;
 	/** Identity of the last resolved source; server-local, never a UI claim. */
 	identityKey?: string;
+	/** Bumped on every identity invalidation so stale resolutions bail out. */
+	generation: number;
 	snapshot?: QuotaRead;
+	/** Last complete, fully available observation from the current identity. */
+	lastKnown?: QuotaSectionsRead;
+	/** Coordinator runtime-wide mutation revision last applied to this entry. */
+	revision: number;
+	/** Start of the active retryable failure episode, at completion time. */
+	failedSince?: number;
+	/** Consecutive retryable failures, for the capped backoff. */
+	failures: number;
+	/** True only while a retryable failure episode is active. */
+	recovering: boolean;
+	/** Start of the most recent request; drives the manual floor. */
+	lastRequestAt?: number;
+	/** The next automatic request may not start before this instant. */
+	cooldownUntil?: number;
+	nextRetryAt?: number;
 	/** In-flight attempt shared by every consumer of this provider. */
 	pending?: Attempt;
 	resolving?: Promise<ResolvedQuotaSource | undefined>;
 	resolveController?: AbortController;
-	/** Start of the most recent request; drives the manual floor. */
-	lastRequestAt?: number;
-	/** Consecutive transient failures, for the capped backoff. */
-	failures: number;
-	cooldownUntil?: number;
-	/** False while the last result must not be retried automatically. */
-	autoRetry: boolean;
 	timer?: unknown;
 };
 
-function hasSections(
-	read: QuotaRead,
-): read is Extract<QuotaRead, { sections: unknown[] }> {
+function hasSections(read: QuotaRead): read is QuotaSectionsRead {
 	return "sections" in read;
+}
+
+function isCompleteRead(read: QuotaRead): read is QuotaSectionsRead {
+	return (
+		hasSections(read) &&
+		read.state === "available" &&
+		read.sections.every((section) => section.result.state === "available")
+	);
 }
 
 function sectionIsCurrent(
@@ -98,6 +121,23 @@ function invalidResponseRead(now: number): QuotaRead {
 
 function timeoutRead(now: number): QuotaRead {
 	return { state: "unavailable", reason: "timeout", attemptedAt: now };
+}
+
+function sectionRetryAfter(read: QuotaSectionsRead): number | undefined {
+	let retryAfterMs: number | undefined;
+	for (const section of read.sections) {
+		if (section.result.state === "available") {
+			continue;
+		}
+		const hint = section.result.retryAfterMs;
+		if (
+			hint !== undefined &&
+			(retryAfterMs === undefined || hint > retryAfterMs)
+		) {
+			retryAfterMs = hint;
+		}
+	}
+	return retryAfterMs;
 }
 
 /**
@@ -137,9 +177,13 @@ function currentView(snapshot: QuotaRead, now: number): QuotaRead {
 /**
  * One refresh/cache/cancellation owner per server plugin runtime. Every mounted
  * UI view subscribes through `watch`; the coordinator, not the widgets, owns
- * the poll timer and the one in-flight request per provider. Two views of the
- * same provider therefore share a single request, and a provider with no
- * listeners is never polled.
+ * recovery timers and the one in-flight request per provider. Two views of the
+ * same provider therefore share a single request.
+ *
+ * Successful reads are idle: they schedule no network timer. Only a retryable
+ * failure episode schedules work, and those retries are server-owned, so they
+ * survive with no presentation listeners. Dispose and identity invalidation
+ * cancel the owned timers and attempts.
  *
  * Deduplication is deliberately in-process only: separate OpenCode server
  * processes each own their coordinator and may each request the same quota.
@@ -151,6 +195,8 @@ export function createQuotaCoordinator(
 ): QuotaCoordinator {
 	const entries = new Map<string, Entry>();
 	let disposed = false;
+	/** Runtime-wide monotonic counter; entries keep their last applied value. */
+	let revisionCounter = 0;
 
 	function entryFor(providerID: string): Entry {
 		let entry = entries.get(providerID);
@@ -158,12 +204,19 @@ export function createQuotaCoordinator(
 			entry = {
 				providerID,
 				listeners: new Set(),
+				generation: 0,
+				revision: 0,
 				failures: 0,
-				autoRetry: false,
+				recovering: false,
 			};
 			entries.set(providerID, entry);
 		}
 		return entry;
+	}
+
+	function bumpRevision(entry: Entry): void {
+		revisionCounter += 1;
+		entry.revision = revisionCounter;
 	}
 
 	function read(providerID: string): QuotaRead {
@@ -172,6 +225,28 @@ export function createQuotaCoordinator(
 			return emptyRead(deps.now());
 		}
 		return currentView(entry.snapshot, deps.now());
+	}
+
+	function presentation(providerID: string): QuotaPresentation {
+		const entry = entries.get(providerID);
+		if (entry === undefined) {
+			return { revision: 0 };
+		}
+		const value: QuotaPresentation = {
+			revision: entry.revision,
+			...(entry.lastKnown === undefined ? {} : { lastKnown: entry.lastKnown }),
+			...(entry.failedSince === undefined
+				? {}
+				: { failedSince: entry.failedSince }),
+		};
+		// History is only exposed when it is a complete available observation.
+		// An inconsistent internal value is dropped rather than crossing the
+		// public boundary.
+		return isQuotaPresentation(value) ? value : { revision: entry.revision };
+	}
+
+	function isRecovering(providerID: string): boolean {
+		return entries.get(providerID)?.recovering === true;
 	}
 
 	function notify(entry: Entry): void {
@@ -188,7 +263,7 @@ export function createQuotaCoordinator(
 		}
 	}
 
-	function clearPoll(entry: Entry): void {
+	function clearTimer(entry: Entry): void {
 		if (entry.timer !== undefined) {
 			deps.clearTimer(entry.timer);
 			entry.timer = undefined;
@@ -196,61 +271,119 @@ export function createQuotaCoordinator(
 	}
 
 	/**
-	 * Poll only while at least one view is subscribed and the last result is
-	 * retryable. Unsupported, auth, and matching failures never schedule a
-	 * timer; a new identity or an explicit refresh is required.
+	 * Clears historical presentation and the recovery episode while leaving the
+	 * current observation (the snapshot) intact for failure-state display.
 	 */
-	function schedulePoll(entry: Entry): void {
-		clearPoll(entry);
-		if (disposed || entry.listeners.size === 0 || !entry.autoRetry) {
+	function clearHistory(entry: Entry): void {
+		entry.lastKnown = undefined;
+		entry.failedSince = undefined;
+		entry.failures = 0;
+		entry.recovering = false;
+		entry.cooldownUntil = undefined;
+		entry.nextRetryAt = undefined;
+		clearTimer(entry);
+	}
+
+	function startFailure(entry: Entry, completedAt: number): void {
+		if (entry.failedSince === undefined) {
+			entry.failedSince = completedAt;
+		}
+		entry.failures += 1;
+		entry.recovering = true;
+	}
+
+	function armRecoveryTimer(entry: Entry): void {
+		if (
+			disposed ||
+			!entry.recovering ||
+			entry.timer !== undefined ||
+			entry.nextRetryAt === undefined
+		) {
 			return;
 		}
-		const now = deps.now();
-		let due = (entry.lastRequestAt ?? now) + QUOTA_POLL_MS;
+		const wait = Math.max(0, entry.nextRetryAt - deps.now());
+		entry.timer = deps.setTimer(() => {
+			entry.timer = undefined;
+			void refresh(entry.providerID);
+		}, wait);
+	}
+
+	/**
+	 * Schedules the next server-owned retry. The first three minutes of an
+	 * episode retry at the recovery interval; after that the capped backoff
+	 * applies. Retry-After is always a lower bound, and the request-start floor
+	 * is respected in every path.
+	 */
+	function scheduleRecovery(
+		entry: Entry,
+		completedAt: number,
+		retryAfterMs: number | undefined,
+	): void {
+		clearTimer(entry);
+		if (disposed || !entry.recovering || entry.failedSince === undefined) {
+			entry.nextRetryAt = undefined;
+			return;
+		}
+
+		const elapsed = Math.max(0, completedAt - entry.failedSince);
+		const backoffIndex = Math.min(
+			Math.max(entry.failures - 1, 0),
+			QUOTA_BACKOFF_MS.length - 1,
+		);
+		const base =
+			elapsed < QUOTA_RECOVERY_GRACE_MS
+				? QUOTA_RECOVERY_INTERVAL_MS
+				: (QUOTA_BACKOFF_MS[backoffIndex] ?? 300_000);
+		const delay = Math.max(base, retryAfterMs ?? 0);
+
+		let due = completedAt + delay;
+		if (entry.lastRequestAt !== undefined) {
+			due = Math.max(due, entry.lastRequestAt + QUOTA_MANUAL_FLOOR_MS);
+		}
 		if (entry.cooldownUntil !== undefined) {
 			due = Math.max(due, entry.cooldownUntil);
 		}
+		entry.cooldownUntil = due;
+		entry.nextRetryAt = due;
 		entry.timer = deps.setTimer(
 			() => {
 				entry.timer = undefined;
 				void refresh(entry.providerID);
 			},
-			Math.max(0, due - now),
+			Math.max(0, due - deps.now()),
 		);
 	}
 
 	function commit(entry: Entry, value: QuotaRead): QuotaRead {
+		const completedAt = deps.now();
 		entry.snapshot = value;
+		bumpRevision(entry);
+
 		if (hasSections(value)) {
-			entry.failures = 0;
-			entry.autoRetry = true;
-			// A partial result can still carry the provider's Retry-After on a
-			// failed section. The next poll must not undercut it.
-			let retryAfterMs = 0;
-			for (const section of value.sections) {
-				if (section.result.state === "available") {
-					continue;
-				}
-				const hint = section.result.retryAfterMs;
-				if (hint !== undefined && hint > retryAfterMs) {
-					retryAfterMs = hint;
-				}
+			if (isCompleteRead(value)) {
+				// Full success is the only path that creates history or ends a
+				// recovery episode.
+				entry.lastKnown = value;
+				entry.failedSince = undefined;
+				entry.failures = 0;
+				entry.recovering = false;
+				entry.cooldownUntil = undefined;
+				entry.nextRetryAt = undefined;
+				clearTimer(entry);
+			} else {
+				// A partial result starts or continues failure timing; it never
+				// replaces the last complete history.
+				startFailure(entry, completedAt);
+				scheduleRecovery(entry, completedAt, sectionRetryAfter(value));
 			}
-			entry.cooldownUntil =
-				retryAfterMs > 0 ? deps.now() + retryAfterMs : undefined;
+		} else if (value.state === "auth-required") {
+			// Rejected credentials invalidate the old identity's figures.
+			clearHistory(entry);
 		} else if (NO_AUTO_RETRY.has(value.reason)) {
-			entry.failures = 0;
-			entry.cooldownUntil = undefined;
-			entry.autoRetry = false;
+			clearHistory(entry);
 		} else {
-			entry.failures += 1;
-			const index = Math.min(entry.failures - 1, QUOTA_BACKOFF_MS.length - 1);
-			const capped = QUOTA_BACKOFF_MS[index] ?? 300_000;
-			const retryAfter = value.retryAfterMs;
-			const delay =
-				retryAfter !== undefined && retryAfter > capped ? retryAfter : capped;
-			entry.cooldownUntil = deps.now() + delay;
-			entry.autoRetry = true;
+			startFailure(entry, completedAt);
+			scheduleRecovery(entry, completedAt, value.retryAfterMs);
 		}
 		notify(entry);
 		return read(entry.providerID);
@@ -343,26 +476,23 @@ export function createQuotaCoordinator(
 				return read(entry.providerID);
 			}
 
-			if (
-				!current &&
-				(value.state === "available" || value.state === "partial")
-			) {
+			if (!current && hasSections(value)) {
 				// A response from an obsolete registration/account/companion
-				// cache must never be committed. The values already cached for
-				// that identity are dropped too, so account A's figures cannot
-				// linger after account B is selected.
-				if (entry.identityKey === source.identityKey) {
-					entry.snapshot = undefined;
-					entry.autoRetry = false;
-					notify(entry);
-				}
+				// cache must never be committed, and the figures already cached
+				// for that identity are dropped with it. History is cleared too:
+				// a rejected currentness check is an identity-integrity failure,
+				// not a transient provider failure.
+				entry.snapshot = undefined;
+				clearHistory(entry);
+				bumpRevision(entry);
+				notify(entry);
 				return read(entry.providerID);
 			}
 
 			// An explicit unavailable result is a failure observation, not stale
-			// figures. Ollama's host-bridge failure source deliberately keeps the
-			// success-path identityKey and reports `isCurrent() === false`; commit
-			// the sanitized reason anyway so the user is not left with silence.
+			// figures. Ollama's host-bridge failure source reports
+			// `isCurrent() === false` alongside a sanitized unavailable read;
+			// commit that reason anyway so the user is not left with silence.
 			return commit(entry, value);
 		} finally {
 			controller.signal.removeEventListener("abort", cancelTimeout);
@@ -375,16 +505,20 @@ export function createQuotaCoordinator(
 			return read(providerID);
 		}
 		const entry = entryFor(providerID);
+		const generation = entry.generation;
 		const source = await resolveSource(entry);
 		if (disposed) {
+			return read(providerID);
+		}
+		if (entry.generation !== generation) {
+			// An invalidation landed while the source was resolving; its result
+			// belongs to the discarded identity.
 			return read(providerID);
 		}
 		if (source === undefined) {
 			// Adapter/registry rejection is a sanitized observation; it must not
 			// crash the watch loop.
-			const value = commit(entry, invalidResponseRead(deps.now()));
-			schedulePoll(entry);
-			return value;
+			return commit(entry, invalidResponseRead(deps.now()));
 		}
 
 		const identityChanged =
@@ -393,19 +527,20 @@ export function createQuotaCoordinator(
 		entry.identityKey = source.identityKey;
 		if (identityChanged) {
 			// A new active account, registration, or companion cache owns the
-			// provider now: the previous identity's snapshot is not current.
+			// provider now: the previous identity's snapshot and history are not
+			// current. In-flight resolutions and attempts from the old identity
+			// are abandoned.
+			entry.generation += 1;
 			entry.snapshot = undefined;
-			entry.failures = 0;
-			entry.cooldownUntil = undefined;
 			entry.lastRequestAt = undefined;
-			entry.autoRetry = false;
+			clearHistory(entry);
+			bumpRevision(entry);
 			notify(entry);
 		}
 
 		const pending = entry.pending;
 		if (pending !== undefined) {
 			if (pending.identityKey === source.identityKey) {
-				schedulePoll(entry);
 				return pending.promise;
 			}
 			// The identity changed while the old request was in flight. Abort it:
@@ -416,18 +551,20 @@ export function createQuotaCoordinator(
 
 		const now = deps.now();
 		if (entry.cooldownUntil !== undefined && now < entry.cooldownUntil) {
-			// A user refresh never bypasses an active provider cooldown.
-			schedulePoll(entry);
+			// A user refresh never bypasses an active provider cooldown or the
+			// scheduled recovery instant.
+			armRecoveryTimer(entry);
 			return read(providerID);
 		}
 		if (
 			entry.lastRequestAt !== undefined &&
 			now - entry.lastRequestAt < QUOTA_MANUAL_FLOOR_MS
 		) {
-			schedulePoll(entry);
+			armRecoveryTimer(entry);
 			return read(providerID);
 		}
 
+		clearTimer(entry);
 		entry.lastRequestAt = now;
 		const controller = new AbortController();
 		const attempt: Attempt = {
@@ -445,7 +582,6 @@ export function createQuotaCoordinator(
 			if (entry.pending === attempt) {
 				entry.pending = undefined;
 			}
-			schedulePoll(entry);
 		});
 		return attempt.promise;
 	}
@@ -467,19 +603,16 @@ export function createQuotaCoordinator(
 			}
 		}
 		if (entry.listeners.size === 1) {
-			// Visibility starts the lifecycle: one request, then polling while
-			// at least one consumer remains subscribed.
+			// Visibility starts the lifecycle: one request. Success is idle;
+			// only a retryable failure schedules follow-up work.
 			void refresh(providerID);
-		} else {
-			schedulePoll(entry);
 		}
 		return () => {
 			if (!entry.listeners.delete(listener)) {
 				return;
 			}
-			if (entry.listeners.size === 0) {
-				clearPoll(entry);
-			}
+			// Server-owned recovery retries survive zero presentation listeners.
+			// Dispose and identity invalidation are the cancellation paths.
 		};
 	}
 
@@ -488,13 +621,16 @@ export function createQuotaCoordinator(
 			if (entry.identityKey !== identityKey) {
 				continue;
 			}
+			entry.generation += 1;
 			entry.pending?.controller.abort();
 			entry.pending = undefined;
+			entry.resolveController?.abort();
+			entry.resolveController = undefined;
+			entry.resolving = undefined;
 			entry.snapshot = undefined;
-			entry.failures = 0;
-			entry.cooldownUntil = undefined;
 			entry.lastRequestAt = undefined;
-			entry.autoRetry = false;
+			clearHistory(entry);
+			bumpRevision(entry);
 			notify(entry);
 		}
 	}
@@ -502,7 +638,7 @@ export function createQuotaCoordinator(
 	function dispose(): void {
 		disposed = true;
 		for (const entry of entries.values()) {
-			clearPoll(entry);
+			clearTimer(entry);
 			entry.pending?.controller.abort();
 			entry.pending = undefined;
 			entry.resolveController?.abort();
@@ -512,5 +648,13 @@ export function createQuotaCoordinator(
 		entries.clear();
 	}
 
-	return { watch, read, refresh, invalidate, dispose };
+	return {
+		watch,
+		read,
+		refresh,
+		presentation,
+		isRecovering,
+		invalidate,
+		dispose,
+	};
 }

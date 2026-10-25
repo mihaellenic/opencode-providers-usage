@@ -23,6 +23,7 @@ const POLL_MS = 60_000;
 const FLOOR_MS = 15_000;
 const MAX_AGE_MS = 90_000;
 const REQUEST_TIMEOUT_MS = 10_000;
+const RECOVERY_INTERVAL_MS = 60_000;
 
 type TimerHandle = { at: number; callback: () => void };
 
@@ -162,6 +163,30 @@ function unavailableRead(
 	};
 }
 
+function partialRead(
+	attemptedAt: number,
+	options: { retryAfterMs?: number } = {},
+): QuotaRead {
+	return {
+		state: "partial",
+		authSource: "opencode",
+		sections: [
+			availableSection(attemptedAt, { remaining: 42 }),
+			{
+				scope: "shared-plan",
+				result: {
+					state: "unavailable",
+					reason: "rate_limited",
+					attemptedAt,
+					...(options.retryAfterMs === undefined
+						? {}
+						: { retryAfterMs: options.retryAfterMs }),
+				},
+			},
+		],
+	};
+}
+
 function metrics(read: QuotaRead): QuotaMetric[] {
 	if (!("sections" in read)) {
 		return [];
@@ -258,11 +283,14 @@ describe("quota refresh lifecycle", () => {
 		expect(sidebar.at(-1)).toEqual(availableRead(NOW));
 		expect(page.at(-1)).toEqual(availableRead(NOW));
 
-		// One provider poll serves both views; neither view owns a timer.
-		await clock.advance(POLL_MS);
-		expect(requests).toBe(2);
-		expect(sidebar).toHaveLength(2);
-		expect(page).toHaveLength(2);
+		// One shared request serves both views, and a successful read is idle:
+		// time passing does not create another provider request.
+		await clock.advance(POLL_MS * 5);
+		expect(requests).toBe(1);
+		expect(sidebar).toHaveLength(1);
+		expect(page).toHaveLength(1);
+		expect(clock.pending()).toBe(0);
+		expect(coordinator.isRecovering("alpha")).toBe(false);
 
 		disposeSidebar();
 		disposePage();
@@ -410,6 +438,11 @@ describe("quota identity isolation and cleanup", () => {
 		expect(
 			observed.some((value) => remainingPercents(value).includes(12)),
 		).toBe(false);
+		const history = coordinator.presentation("alpha").lastKnown;
+		if (history === undefined) {
+			throw new Error("expected the selected account history");
+		}
+		expect(remainingPercents(history)).toEqual([77]);
 
 		expect(requests).toBe(2);
 		disposeWatch();
@@ -604,7 +637,7 @@ describe("quota identity isolation and cleanup", () => {
 		coordinator.dispose();
 	});
 
-	test("capped_backoff_60_120_240_300", async () => {
+	test("retries_at_60_120_180_then_use_capped_backoff", async () => {
 		let requests = 0;
 		const { coordinator, clock } = harness(() =>
 			source({
@@ -619,22 +652,145 @@ describe("quota identity isolation and cleanup", () => {
 		const dispose = coordinator.watch("alpha", () => {});
 		await settle();
 		expect(requests).toBe(1);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+		expect(pollDelays(clock.scheduled).at(-1)).toBe(RECOVERY_INTERVAL_MS);
 
-		for (const nextDelay of [120_000, 240_000, 300_000, 300_000]) {
+		for (const nextDelay of [60_000, 60_000, 300_000, 300_000]) {
 			const delay = pollDelays(clock.scheduled).at(-1);
 			if (delay === undefined) {
-				throw new Error("no poll scheduled");
+				throw new Error("no retry scheduled");
 			}
 			await clock.advance(delay);
 			expect(pollDelays(clock.scheduled).at(-1)).toBe(nextDelay);
 		}
 
 		expect(pollDelays(clock.scheduled)).toEqual([
-			60_000, 120_000, 240_000, 300_000, 300_000,
+			60_000, 60_000, 60_000, 300_000, 300_000,
 		]);
 		expect(requests).toBe(5);
 
 		dispose();
+		coordinator.dispose();
+	});
+
+	test("successful_read_schedules_no_network_timer", async () => {
+		let requests = 0;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					requests += 1;
+					return availableRead(NOW);
+				},
+			}),
+		);
+
+		const dispose = coordinator.watch("alpha", () => {});
+		await settle();
+		expect(requests).toBe(1);
+		expect(clock.pending()).toBe(0);
+		expect(pollDelays(clock.scheduled)).toEqual([]);
+
+		await clock.advance(POLL_MS * 10);
+		expect(requests).toBe(1);
+		expect(coordinator.isRecovering("alpha")).toBe(false);
+
+		dispose();
+		coordinator.dispose();
+	});
+
+	test("recovery_success_stops_retries_and_clears_recovery_state", async () => {
+		let failing = true;
+		let requests = 0;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					requests += 1;
+					return failing
+						? unavailableRead(NOW, "network_error")
+						: availableRead(NOW, { remaining: 55 });
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		expect(requests).toBe(1);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+
+		await clock.advance(RECOVERY_INTERVAL_MS);
+		expect(requests).toBe(2);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+
+		failing = false;
+		await clock.advance(RECOVERY_INTERVAL_MS);
+		expect(requests).toBe(3);
+		expect(coordinator.isRecovering("alpha")).toBe(false);
+		expect(clock.pending()).toBe(0);
+		expect(coordinator.presentation("alpha").failedSince).toBeUndefined();
+		const lastKnown = coordinator.presentation("alpha").lastKnown;
+		if (lastKnown === undefined) {
+			throw new Error("expected complete history after recovery");
+		}
+		expect(remainingPercents(lastKnown)).toEqual([55]);
+
+		await clock.advance(POLL_MS * 10);
+		expect(requests).toBe(3);
+
+		coordinator.dispose();
+	});
+
+	test("invalidation_cancels_owned_recovery_work", async () => {
+		let requests = 0;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					requests += 1;
+					return unavailableRead(NOW, "network_error");
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		expect(clock.pending()).toBe(1);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+
+		coordinator.invalidate("identity-a");
+		expect(clock.pending()).toBe(0);
+		expect(coordinator.isRecovering("alpha")).toBe(false);
+		expect(coordinator.presentation("alpha").failedSince).toBeUndefined();
+
+		await clock.advance(POLL_MS * 10);
+		expect(requests).toBe(1);
+
+		coordinator.dispose();
+	});
+
+	test("partial_results_schedule_recovery_at_the_recovery_interval", async () => {
+		let requests = 0;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					requests += 1;
+					return partialRead(NOW);
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		expect(requests).toBe(1);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+		expect(pollDelays(clock.scheduled).at(-1)).toBe(RECOVERY_INTERVAL_MS);
+
+		await clock.advance(RECOVERY_INTERVAL_MS - 1);
+		expect(requests).toBe(1);
+
+		await clock.advance(1);
+		expect(requests).toBe(2);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+
 		coordinator.dispose();
 	});
 
@@ -705,14 +861,14 @@ describe("quota identity isolation and cleanup", () => {
 		coordinator.dispose();
 	});
 
-	test("unsubscribe_stops_future_requests", async () => {
+	test("retries_survive_zero_presentation_listeners", async () => {
 		let requests = 0;
 		const { coordinator, clock } = harness(() =>
 			source({
 				identityKey: "identity-a",
 				async read() {
 					requests += 1;
-					return availableRead(NOW);
+					return unavailableRead(NOW, "network_error");
 				},
 			}),
 		);
@@ -720,17 +876,21 @@ describe("quota identity isolation and cleanup", () => {
 		const dispose = coordinator.watch("alpha", () => {});
 		await settle();
 		expect(requests).toBe(1);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
 
-		await clock.advance(POLL_MS);
-		expect(requests).toBe(2);
-
+		// Detaching the last view does not cancel the server-owned recovery
+		// timer; unload/invalidation are the cancellation paths.
 		dispose();
-		expect(clock.pending()).toBe(0);
+		expect(clock.pending()).toBe(1);
 
-		await clock.advance(300_000);
+		await clock.advance(RECOVERY_INTERVAL_MS);
 		expect(requests).toBe(2);
+		expect(clock.pending()).toBe(1);
 
 		coordinator.dispose();
+		expect(clock.pending()).toBe(0);
+		await clock.advance(300_000);
+		expect(requests).toBe(2);
 	});
 
 	test("dispose_discards_inflight_and_stops_requests", async () => {
@@ -785,6 +945,8 @@ describe("quota identity isolation and cleanup", () => {
 
 		expect(metrics(coordinator.read("alpha"))).toEqual([]);
 		expect(metrics(coordinator.read("beta"))).toHaveLength(1);
+		expect(coordinator.presentation("alpha").lastKnown).toBeUndefined();
+		expect(coordinator.presentation("beta").lastKnown).not.toBeUndefined();
 
 		coordinator.dispose();
 	});
@@ -859,6 +1021,392 @@ describe("quota identity isolation and cleanup", () => {
 		expect(requests).toBe(1);
 		expect(clock.pending()).toBe(0);
 		expect(pollDelays(clock.scheduled)).toEqual([]);
+
+		coordinator.dispose();
+	});
+});
+
+describe("quota presentation history", () => {
+	test("idle_expiry_removes_current_figures_but_preserves_complete_history", async () => {
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					return availableRead(NOW, { remaining: 42, expiresAt: NOW + 60_000 });
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		expect(remainingPercents(coordinator.read("alpha"))).toEqual([42]);
+
+		await clock.advance(MAX_AGE_MS + 1);
+		expect(metrics(coordinator.read("alpha"))).toEqual([]);
+
+		const lastKnown = coordinator.presentation("alpha").lastKnown;
+		expect(lastKnown?.state).toBe("available");
+		if (lastKnown === undefined) {
+			throw new Error("expected complete history");
+		}
+		expect(remainingPercents(lastKnown)).toEqual([42]);
+		expect(coordinator.presentation("alpha").failedSince).toBeUndefined();
+
+		coordinator.dispose();
+	});
+
+	test("transient_failure_retains_history_and_starts_failed_since_at_completion", async () => {
+		let failNext = false;
+		let release: (value: QuotaRead) => void = () => {};
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					if (!failNext) {
+						return availableRead(NOW, { remaining: 42 });
+					}
+					return new Promise<QuotaRead>((resolve) => {
+						release = resolve;
+					});
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		await clock.advance(FLOOR_MS);
+		failNext = true;
+		const pending = coordinator.refresh("alpha");
+		await settle();
+
+		// Completion happens five seconds after the request started; failure
+		// timing must start at completion, not at request start.
+		await clock.advance(5_000);
+		release(unavailableRead(NOW, "network_error"));
+		await pending;
+
+		const presentation = coordinator.presentation("alpha");
+		expect(presentation.failedSince).toBe(NOW + FLOOR_MS + 5_000);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+		const lastKnown = presentation.lastKnown;
+		if (lastKnown === undefined) {
+			throw new Error("expected complete history");
+		}
+		expect(remainingPercents(lastKnown)).toEqual([42]);
+		expect(remainingPercents(coordinator.read("alpha"))).toEqual([]);
+
+		coordinator.dispose();
+	});
+
+	test("repeated_failures_do_not_move_the_first_failed_since", async () => {
+		let requests = 0;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					requests += 1;
+					return unavailableRead(NOW, "network_error");
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		expect(coordinator.presentation("alpha").failedSince).toBe(NOW);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+
+		await clock.advance(RECOVERY_INTERVAL_MS);
+		expect(requests).toBe(2);
+		expect(coordinator.presentation("alpha").failedSince).toBe(NOW);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+
+		await clock.advance(RECOVERY_INTERVAL_MS);
+		expect(requests).toBe(3);
+		expect(coordinator.presentation("alpha").failedSince).toBe(NOW);
+
+		coordinator.dispose();
+	});
+
+	test("cached_and_throttled_reads_do_not_count_as_failures", async () => {
+		let requests = 0;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					requests += 1;
+					return unavailableRead(NOW, "network_error");
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		const failedSince = coordinator.presentation("alpha").failedSince;
+		const scheduledBefore = clock.scheduled.length;
+
+		await coordinator.refresh("alpha");
+		await clock.advance(10_000);
+		await coordinator.refresh("alpha");
+
+		expect(requests).toBe(1);
+		expect(clock.scheduled.length).toBe(scheduledBefore);
+		expect(coordinator.presentation("alpha").failedSince).toBe(failedSince);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+
+		coordinator.dispose();
+	});
+
+	test("full_success_clears_failure_timing_and_replaces_history", async () => {
+		let failing = false;
+		let requests = 0;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					requests += 1;
+					return failing
+						? unavailableRead(NOW, "network_error")
+						: availableRead(NOW, { remaining: 55 });
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		failing = true;
+		await clock.advance(FLOOR_MS);
+		await coordinator.refresh("alpha");
+		expect(coordinator.presentation("alpha").failedSince).not.toBeUndefined();
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+
+		failing = false;
+		await clock.advance(RECOVERY_INTERVAL_MS);
+		expect(requests).toBe(3);
+
+		const presentation = coordinator.presentation("alpha");
+		expect(presentation.failedSince).toBeUndefined();
+		expect(coordinator.isRecovering("alpha")).toBe(false);
+		expect(clock.pending()).toBe(0);
+		const lastKnown = presentation.lastKnown;
+		if (lastKnown === undefined) {
+			throw new Error("expected complete history");
+		}
+		expect(remainingPercents(lastKnown)).toEqual([55]);
+
+		coordinator.dispose();
+	});
+
+	test("partial_results_track_failure_timing_without_replacing_history", async () => {
+		let partial = false;
+		let requests = 0;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					requests += 1;
+					return partial
+						? partialRead(NOW)
+						: availableRead(NOW, { remaining: 42 });
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		partial = true;
+		await clock.advance(FLOOR_MS);
+		await coordinator.refresh("alpha");
+
+		const firstPartial = coordinator.presentation("alpha");
+		expect(firstPartial.failedSince).toBe(NOW + FLOOR_MS);
+		expect(coordinator.isRecovering("alpha")).toBe(true);
+
+		await clock.advance(RECOVERY_INTERVAL_MS);
+		const secondPartial = coordinator.presentation("alpha");
+		expect(secondPartial.failedSince).toBe(NOW + FLOOR_MS);
+		expect(secondPartial.lastKnown?.state).toBe("available");
+		const lastKnown = secondPartial.lastKnown;
+		if (lastKnown === undefined) {
+			throw new Error("expected complete history");
+		}
+		expect(remainingPercents(lastKnown)).toEqual([42]);
+		expect(requests).toBe(3);
+
+		coordinator.dispose();
+	});
+
+	test("identity_change_drops_history_until_a_new_complete_read", async () => {
+		let failing = false;
+		const { coordinator, clock, setCurrent } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					return availableRead(NOW, { remaining: 42 });
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		expect(coordinator.presentation("alpha").lastKnown).not.toBeUndefined();
+
+		setCurrent(() =>
+			source({
+				identityKey: "identity-b",
+				async read() {
+					return failing
+						? unavailableRead(NOW, "network_error")
+						: availableRead(NOW, { remaining: 77 });
+				},
+			}),
+		);
+		failing = true;
+		await clock.advance(FLOOR_MS);
+		await coordinator.refresh("alpha");
+
+		const afterSwitch = coordinator.presentation("alpha");
+		expect(afterSwitch.lastKnown).toBeUndefined();
+		expect(afterSwitch.failedSince).toBe(NOW + FLOOR_MS);
+
+		failing = false;
+		await clock.advance(RECOVERY_INTERVAL_MS);
+		const recovered = coordinator.presentation("alpha").lastKnown;
+		if (recovered === undefined) {
+			throw new Error("expected new identity history");
+		}
+		expect(remainingPercents(recovered)).toEqual([77]);
+
+		coordinator.dispose();
+	});
+
+	test("invalidation_clears_history_and_recovery_state", async () => {
+		let failing = false;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					return failing
+						? unavailableRead(NOW, "network_error")
+						: availableRead(NOW, { remaining: 42 });
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		failing = true;
+		await clock.advance(FLOOR_MS);
+		await coordinator.refresh("alpha");
+		const before = coordinator.presentation("alpha");
+		expect(before.lastKnown).not.toBeUndefined();
+		expect(before.failedSince).not.toBeUndefined();
+		expect(clock.pending()).toBe(1);
+
+		coordinator.invalidate("identity-a");
+		const after = coordinator.presentation("alpha");
+		expect(after.lastKnown).toBeUndefined();
+		expect(after.failedSince).toBeUndefined();
+		expect(after.revision).toBeGreaterThan(before.revision);
+		expect(coordinator.isRecovering("alpha")).toBe(false);
+		expect(clock.pending()).toBe(0);
+		expect(metrics(coordinator.read("alpha"))).toEqual([]);
+
+		coordinator.dispose();
+	});
+
+	test("auth_rejection_clears_history_and_never_starts_recovery", async () => {
+		let auth = false;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					return auth
+						? unavailableRead(NOW, "companion_expired")
+						: availableRead(NOW, { remaining: 42 });
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		auth = true;
+		await clock.advance(FLOOR_MS);
+		const rejected = await coordinator.refresh("alpha");
+		expect(rejected).toMatchObject({ state: "auth-required" });
+
+		const presentation = coordinator.presentation("alpha");
+		expect(presentation.lastKnown).toBeUndefined();
+		expect(presentation.failedSince).toBeUndefined();
+		expect(coordinator.isRecovering("alpha")).toBe(false);
+		expect(clock.pending()).toBe(0);
+
+		await clock.advance(POLL_MS * 10);
+		coordinator.dispose();
+	});
+
+	test("rejected_currentness_clears_history_and_restores_nothing", async () => {
+		let current = true;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					return availableRead(NOW, { remaining: current ? 42 : 99 });
+				},
+				async isCurrent() {
+					return current;
+				},
+			}),
+		);
+
+		await coordinator.refresh("alpha");
+		const initialHistory = coordinator.presentation("alpha").lastKnown;
+		if (initialHistory === undefined) {
+			throw new Error("expected complete history");
+		}
+		expect(remainingPercents(initialHistory)).toEqual([42]);
+
+		current = false;
+		await clock.advance(FLOOR_MS);
+		await coordinator.refresh("alpha");
+
+		const presentation = coordinator.presentation("alpha");
+		expect(presentation.lastKnown).toBeUndefined();
+		expect(presentation.failedSince).toBeUndefined();
+		expect(metrics(coordinator.read("alpha"))).toEqual([]);
+		expect(coordinator.isRecovering("alpha")).toBe(false);
+
+		coordinator.dispose();
+	});
+
+	test("revisions_change_only_on_committed_mutations", async () => {
+		let failing = false;
+		const { coordinator, clock } = harness(() =>
+			source({
+				identityKey: "identity-a",
+				async read() {
+					return failing
+						? unavailableRead(NOW, "network_error")
+						: availableRead(NOW, { remaining: 42 });
+				},
+			}),
+		);
+
+		expect(coordinator.presentation("alpha").revision).toBe(0);
+		coordinator.read("alpha");
+		await clock.advance(1_000);
+		expect(coordinator.presentation("alpha").revision).toBe(0);
+
+		await coordinator.refresh("alpha");
+		const afterSuccess = coordinator.presentation("alpha").revision;
+		expect(afterSuccess).toBeGreaterThan(0);
+
+		coordinator.read("alpha");
+		await clock.advance(1_000);
+		await coordinator.refresh("alpha");
+		expect(coordinator.presentation("alpha").revision).toBe(afterSuccess);
+
+		await clock.advance(14_000);
+		failing = true;
+		await coordinator.refresh("alpha");
+		const afterFailure = coordinator.presentation("alpha").revision;
+		expect(afterFailure).toBeGreaterThan(afterSuccess);
+
+		coordinator.invalidate("identity-a");
+		expect(coordinator.presentation("alpha").revision).toBeGreaterThan(
+			afterFailure,
+		);
+		expect(coordinator.presentation("unknown").revision).toBe(0);
 
 		coordinator.dispose();
 	});
@@ -1074,12 +1622,11 @@ describe("host wiring smoke", () => {
 				}
 			};
 
-			// No more RPC reads. The polls run until the idle sweep releases the
-			// watch shortly after the five-minute window.
+			// No more RPC reads. A successful read is activity-idle: the watch
+			// does not poll, and the idle sweep only releases the subscription.
 			await advance(QUOTA_RPC_IDLE_UNWATCH_MS + QUOTA_RPC_IDLE_SWEEP_MS);
 			const settled = requests;
-			// The watch was polling before it expired.
-			expect(settled).toBeGreaterThan(1);
+			expect(settled).toBe(1);
 
 			// Once unwatched, no further provider request is made: the last
 			// snapshot is simply no longer pushed or refreshed.

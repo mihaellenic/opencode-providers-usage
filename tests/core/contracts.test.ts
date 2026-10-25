@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { isQuotaRead, type QuotaRead } from "../../src/core/contracts";
+import {
+	isQuotaPresentation,
+	isQuotaRead,
+	type QuotaPresentation,
+	type QuotaRead,
+} from "../../src/core/contracts";
 
 const REASON_CODES = [
 	"companion_disabled",
@@ -135,5 +140,125 @@ describe("quota contracts", () => {
 				],
 			}),
 		).toBe(false);
+	});
+});
+
+const COMPLETE_HISTORY: Extract<QuotaRead, { state: "available" | "partial" }> =
+	{
+		state: "available",
+		authSource: "opencode",
+		sections: [
+			{
+				scope: "provider-balance",
+				result: {
+					state: "available",
+					metrics: [
+						{
+							kind: "money",
+							id: "included",
+							scope: "provider-balance",
+							label: "Included credits",
+							currency: "USD",
+							remaining: 40,
+						},
+					],
+					fetchedAt: 1_799_999_000_000,
+					expiresAt: 1_799_999_060_000,
+				},
+			},
+		],
+	};
+
+describe("quota presentation contract", () => {
+	test("accepts_only_complete_available_history", () => {
+		const valid: QuotaPresentation = {
+			revision: 3,
+			lastKnown: COMPLETE_HISTORY,
+			failedSince: 1_800_000_000_000,
+		};
+		expect(isQuotaPresentation(valid)).toBe(true);
+		expect(isQuotaPresentation({ revision: 0 })).toBe(true);
+
+		expect(
+			isQuotaPresentation({
+				revision: 3,
+				lastKnown: { ...COMPLETE_HISTORY, state: "partial" },
+			}),
+		).toBe(false);
+
+		expect(
+			isQuotaPresentation({
+				revision: 3,
+				lastKnown: {
+					state: "available",
+					authSource: "opencode",
+					sections: [
+						COMPLETE_HISTORY.sections[0],
+						{
+							scope: "shared-plan",
+							result: {
+								state: "unavailable",
+								reason: "network_error",
+								attemptedAt: 1_800_000_000_000,
+							},
+						},
+					],
+				},
+			}),
+		).toBe(false);
+
+		expect(
+			isQuotaPresentation({
+				revision: 3,
+				lastKnown: {
+					state: "unavailable",
+					reason: "timeout",
+					attemptedAt: 1_800_000_000_000,
+				},
+			}),
+		).toBe(false);
+	});
+
+	test("rejects_secret_fields_and_invalid_revisions", () => {
+		expect(
+			isQuotaPresentation({
+				revision: 1,
+				lastKnown: { ...COMPLETE_HISTORY, accessToken: "SECRET" },
+			}),
+		).toBe(false);
+
+		expect(
+			isQuotaPresentation({
+				revision: 1,
+				lastKnown: {
+					...COMPLETE_HISTORY,
+					sections: [
+						{
+							scope: "provider-balance",
+							result: {
+								...(COMPLETE_HISTORY.sections[0]?.result as object),
+								accountID: "ACCOUNT",
+							},
+						},
+					],
+				},
+			}),
+		).toBe(false);
+
+		expect(
+			isQuotaPresentation({
+				revision: 1,
+				lastKnown: COMPLETE_HISTORY,
+				identityKey: "credential-derived",
+			}),
+		).toBe(false);
+
+		for (const revision of [-1, 1.5, Number.NaN, "1"]) {
+			expect(isQuotaPresentation({ revision })).toBe(false);
+		}
+		expect(isQuotaPresentation({ revision: 1, failedSince: -1 })).toBe(false);
+		expect(isQuotaPresentation({ revision: 1, failedSince: "now" })).toBe(
+			false,
+		);
 	});
 });

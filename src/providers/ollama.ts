@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	type AdapterResolveInput,
 	type CredentialReadDeps,
@@ -41,6 +42,20 @@ const TRANSPORT_REASONS: ReadonlySet<string> = new Set([
 
 const DECIMAL_PATTERN = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i;
 const BEARER_PATTERN = /^[\x21-\x7e]+$/;
+const IDENTITY_DOMAIN = "opencode-provider-usage:ollama-balance:v1";
+
+/**
+ * A server-private credential fingerprint. The coordinator uses the identity
+ * key to detect credential rotation and to isolate cached figures; the value
+ * is never included in a QuotaRead, RPC envelope, or log line.
+ */
+function credentialFingerprint(apiKey: string): string {
+	return createHash("sha256")
+		.update(IDENTITY_DOMAIN)
+		.update("\0")
+		.update(apiKey)
+		.digest("hex");
+}
 
 type Decimal = { units: bigint; scale: number };
 
@@ -552,9 +567,10 @@ export function createOllamaAdapter(): ProviderAdapter {
 				return null;
 			}
 			const apiKey = resolution.key;
+			const fingerprint = credentialFingerprint(apiKey);
 
 			return {
-				identityKey: `ollama-balance:${integrationID}`,
+				identityKey: `ollama-balance:${integrationID}:${fingerprint}`,
 				read: (signal) => fetchOllamaQuota(apiKey, signal, input.deps),
 				isCurrent: async () => {
 					const current = await resolveOllamaKey(input, integrationID);

@@ -810,6 +810,43 @@ describe("Ollama adapter connection matching", () => {
 		expect(calls).toHaveLength(0);
 	});
 
+	test("identity_key_carries_a_server_side_credential_fingerprint", async () => {
+		let savedKey = SENTINEL;
+		const credentialDeps: CredentialReadDeps = {
+			now: () => NOW,
+			env: { XDG_DATA_HOME: DATA_HOME },
+			homeDirectory: "/synthetic/home",
+			async readUtf8() {
+				return JSON.stringify({
+					"ollama-cloud": { type: "api", key: savedKey },
+				});
+			},
+		};
+
+		const first = await resolveOrFail(
+			payloadDeps(officialBalance()),
+			credentialDeps,
+		);
+		const sameKey = await resolveOrFail(
+			payloadDeps(officialBalance()),
+			credentialDeps,
+		);
+		expect(sameKey.identityKey).toBe(first.identityKey);
+
+		savedKey = `${SENTINEL}-rotated`;
+		const rotated = await resolveOrFail(
+			payloadDeps(officialBalance()),
+			credentialDeps,
+		);
+
+		expect(rotated.identityKey).not.toBe(first.identityKey);
+		expect(first.identityKey).toContain("ollama-cloud");
+		expect(first.identityKey).not.toContain(SENTINEL);
+		expect(rotated.identityKey).not.toContain(SENTINEL);
+		expect(JSON.stringify(first)).not.toContain(SENTINEL);
+		expect(JSON.stringify(rotated)).not.toContain(SENTINEL);
+	});
+
 	test("declares_both_supported_capability_rows", () => {
 		const adapter = createOllamaAdapter();
 		expect(adapter.id).toBe("ollama-balance");

@@ -56,6 +56,24 @@ export type QuotaRead =
 			retryAfterMs?: number;
 	  };
 
+/** A readable result that carries sections; currentness applies to this shape. */
+export type QuotaSectionsRead = Extract<
+	QuotaRead,
+	{ state: "available" | "partial" }
+>;
+
+/**
+ * Identity-safe historical presentation. `revision` changes only when the
+ * coordinator commits an observation or invalidates an identity; reads and
+ * clock ticks never move it. `lastKnown` is always a complete, fully available
+ * observation and is never a claim that those figures are current.
+ */
+export type QuotaPresentation = {
+	revision: number;
+	lastKnown?: QuotaSectionsRead;
+	failedSince?: number;
+};
+
 // Native time values below are epoch milliseconds; provider reset epochs are
 // converted from seconds exactly once at the adapter boundary.
 export type CodexCompanion = {
@@ -123,6 +141,10 @@ export type QuotaCoordinator = {
 	watch(providerID: string, listener: (value: QuotaRead) => void): () => void;
 	read(providerID: string): QuotaRead;
 	refresh(providerID: string): Promise<QuotaRead>;
+	/** Complete history plus mutation revision; independent of currentness. */
+	presentation(providerID: string): QuotaPresentation;
+	/** True only while a retryable failure episode is active. */
+	isRecovering(providerID: string): boolean;
 	invalidate(identityKey: string): void;
 	dispose(): void;
 };
@@ -397,6 +419,47 @@ function isQuotaReadValue(value: unknown): value is QuotaRead {
 export function isQuotaRead(value: unknown): value is QuotaRead {
 	try {
 		return isQuotaReadValue(value);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Validates the public presentation envelope. A historical result is accepted
+ * only when it is a complete available observation: partial, unavailable, or
+ * mixed-section history would claim a coherence that was never observed.
+ */
+export function isQuotaPresentation(
+	value: unknown,
+): value is QuotaPresentation {
+	try {
+		if (!isRecord(value)) {
+			return false;
+		}
+		if (!hasOnlyKeys(value, ["revision", "lastKnown", "failedSince"])) {
+			return false;
+		}
+		if (
+			typeof value.revision !== "number" ||
+			!Number.isSafeInteger(value.revision) ||
+			value.revision < 0
+		) {
+			return false;
+		}
+		if (!isOptionalNonNegativeNumber(value.failedSince)) {
+			return false;
+		}
+
+		const lastKnown = value.lastKnown;
+		if (lastKnown === undefined) {
+			return true;
+		}
+		if (!isQuotaReadValue(lastKnown) || lastKnown.state !== "available") {
+			return false;
+		}
+		return lastKnown.sections.every(
+			(section) => section.result.state === "available",
+		);
 	} catch {
 		return false;
 	}
