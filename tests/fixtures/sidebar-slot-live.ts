@@ -61,7 +61,7 @@ function quotaView(
 	quota: QuotaRead,
 ): QuotaGetResult {
 	return {
-		version: 1,
+		version: 2,
 		provider: {
 			providerID,
 			name,
@@ -235,7 +235,7 @@ async function main(): Promise<void> {
 		location: { directory: "/tmp/provider-usage-live-slot" },
 		client: {
 			rpc: () => ({
-				list: async () => ({ version: 1, providers: [] }),
+				list: async () => ({ version: 2, providers: [] }),
 				get: async (input: { providerID: string }) => {
 					calls.push({ method: "get", providerID: input.providerID });
 					return quotaFor(input.providerID);

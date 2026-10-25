@@ -19,7 +19,11 @@ import {
 	setupQuotaServer,
 } from "../../src/index";
 import { createOllamaAdapter } from "../../src/providers/ollama";
-import type { QuotaUpdatedEvent } from "../../src/rpc";
+import type {
+	QuotaGetResult,
+	QuotaListResult,
+	QuotaUpdatedEvent,
+} from "../../src/rpc";
 import { type QuotaTuiContext, subscribeQuotaUpdates } from "../../src/tui";
 
 const NOW = 1_800_000_000_000;
@@ -1598,6 +1602,7 @@ function fakeHostContext(input: {
 		handlers: RegisteredHandlers;
 		disposed: boolean;
 	}> = [];
+	const emitted: QuotaUpdatedEvent[] = [];
 	const context = {
 		options: input.options ?? {},
 		provider: {
@@ -1620,7 +1625,13 @@ function fakeHostContext(input: {
 					dispose: async () => {
 						record.disposed = true;
 					},
-					events: { emit: async () => {} },
+					events: {
+						emit: async (name: string, event: QuotaUpdatedEvent) => {
+							if (name === "updated") {
+								emitted.push(event);
+							}
+						},
+					},
 				};
 			},
 		},
@@ -1628,6 +1639,7 @@ function fakeHostContext(input: {
 	return {
 		context: context as never,
 		registrations,
+		emitted,
 	};
 }
 
@@ -1803,6 +1815,234 @@ describe("host wiring smoke", () => {
 		}
 	});
 
+	test("rpc_paths_share_presentation_revision_history_and_failure_timing", async () => {
+		jest.useFakeTimers();
+		jest.setSystemTime(NOW);
+		const originalFetch = globalThis.fetch;
+		let failing = false;
+		let requests = 0;
+		globalThis.fetch = (async () => {
+			requests += 1;
+			if (failing) {
+				throw new Error("synthetic network failure");
+			}
+			return new Response(JSON.stringify(balancePayload()), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}) as unknown as typeof fetch;
+		try {
+			const host = fakeHostContext({
+				providers: [{ id: "ollama", integrationID: "ollama-cloud" }],
+				async active() {
+					return {
+						type: "credential",
+						id: "credential-1",
+						label: "Account",
+						method: "key",
+					};
+				},
+				resolve: async () => ({ type: "key", key: "synthetic-ollama-key" }),
+			});
+			const cleanup = await setupQuotaServer(host.context);
+			const handlers = host.registrations[0]?.handlers;
+			if (handlers === undefined) {
+				throw new Error("rpc was not registered");
+			}
+
+			const success = (await handlers.get(
+				{ providerID: "ollama" },
+				emptyRpcContext(),
+			)) as QuotaGetResult;
+			expect(success.version).toBe(2);
+			expect(success.presentation?.revision).toBeGreaterThan(0);
+			expect(success.presentation?.lastKnown).toBeDefined();
+			expect(success.presentation?.failedSince).toBeUndefined();
+			expect(host.emitted.at(-1)?.presentation).toEqual(success.presentation);
+
+			failing = true;
+			jest.advanceTimersByTime(FLOOR_MS);
+			const failed = (await handlers.get(
+				{ providerID: "ollama" },
+				emptyRpcContext(),
+			)) as QuotaGetResult;
+			const final = failed.presentation;
+			expect(final?.failedSince).toBe(NOW + FLOOR_MS);
+			expect(final?.revision).toBeGreaterThan(
+				success.presentation?.revision ?? 0,
+			);
+			expect(
+				moneyRemaining(final?.lastKnown ?? unavailableRead(0, "timeout")),
+			).toBe(40);
+
+			const list = (await handlers.list(
+				{},
+				emptyRpcContext(),
+			)) as QuotaListResult;
+			const refreshed = (await handlers.refresh(
+				{ providerID: "ollama" },
+				emptyRpcContext(),
+			)) as QuotaGetResult;
+			expect(list.providers[0]?.presentation).toEqual(final);
+			expect(refreshed.presentation).toEqual(final);
+			expect(host.emitted.at(-1)?.presentation).toEqual(final);
+			expect(requests).toBe(2);
+
+			const serialized = JSON.stringify({
+				success,
+				failed,
+				list,
+				refreshed,
+				events: host.emitted,
+			});
+			expect(serialized).not.toContain("synthetic-ollama-key");
+			expect(serialized).not.toContain("identityKey");
+			expect(serialized).not.toContain("fingerprint");
+
+			await cleanup();
+		} finally {
+			globalThis.fetch = originalFetch;
+			jest.useRealTimers();
+		}
+	});
+
+	test("idle_released_watch_keeps_history_for_a_later_failure", async () => {
+		jest.useFakeTimers();
+		jest.setSystemTime(NOW);
+		const originalFetch = globalThis.fetch;
+		let failing = false;
+		let requests = 0;
+		globalThis.fetch = (async () => {
+			requests += 1;
+			if (failing) {
+				throw new Error("synthetic network failure");
+			}
+			return new Response(JSON.stringify(balancePayload()), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}) as unknown as typeof fetch;
+		try {
+			const host = fakeHostContext({
+				providers: [{ id: "ollama", integrationID: "ollama-cloud" }],
+				async active() {
+					return {
+						type: "credential",
+						id: "credential-1",
+						label: "Account",
+						method: "key",
+					};
+				},
+				resolve: async () => ({ type: "key", key: "synthetic-ollama-key" }),
+			});
+			const cleanup = await setupQuotaServer(host.context);
+			const handlers = host.registrations[0]?.handlers;
+			if (handlers === undefined) {
+				throw new Error("rpc was not registered");
+			}
+			const advance = async (ms: number) => {
+				for (let elapsed = 0; elapsed < ms; elapsed += 1_000) {
+					jest.advanceTimersByTime(1_000);
+					for (let drain = 0; drain < 100; drain += 1) {
+						await Promise.resolve();
+					}
+				}
+			};
+
+			const success = (await handlers.get(
+				{ providerID: "ollama" },
+				emptyRpcContext(),
+			)) as QuotaGetResult;
+			const historical = success.presentation?.lastKnown;
+			expect(historical).toBeDefined();
+			expect(requests).toBe(1);
+
+			await advance(QUOTA_RPC_IDLE_UNWATCH_MS + QUOTA_RPC_IDLE_SWEEP_MS * 2);
+			expect(requests).toBe(1);
+
+			failing = true;
+			const later = (await handlers.get(
+				{ providerID: "ollama" },
+				emptyRpcContext(),
+			)) as QuotaGetResult;
+			expect(requests).toBe(2);
+			expect(later.quota.state).toBe("unavailable");
+			expect(later.presentation?.failedSince).not.toBeUndefined();
+			expect(later.presentation?.lastKnown).toEqual(historical);
+			expect(
+				moneyRemaining(
+					later.presentation?.lastKnown ?? unavailableRead(0, "timeout"),
+				),
+			).toBe(40);
+
+			await cleanup();
+		} finally {
+			globalThis.fetch = originalFetch;
+			jest.useRealTimers();
+		}
+	});
+
+	test("active_recovery_is_not_released_by_the_idle_sweep_after_five_minutes", async () => {
+		jest.useFakeTimers();
+		jest.setSystemTime(NOW);
+		const originalFetch = globalThis.fetch;
+		let requests = 0;
+		globalThis.fetch = (async () => {
+			requests += 1;
+			throw new Error("synthetic network failure");
+		}) as unknown as typeof fetch;
+		try {
+			const host = fakeHostContext({
+				providers: [{ id: "ollama", integrationID: "ollama-cloud" }],
+				async active() {
+					return {
+						type: "credential",
+						id: "credential-1",
+						label: "Account",
+						method: "key",
+					};
+				},
+				resolve: async () => ({ type: "key", key: "synthetic-ollama-key" }),
+			});
+			const cleanup = await setupQuotaServer(host.context);
+			const handlers = host.registrations[0]?.handlers;
+			if (handlers === undefined) {
+				throw new Error("rpc was not registered");
+			}
+			const advance = async (ms: number) => {
+				for (let elapsed = 0; elapsed < ms; elapsed += 1_000) {
+					jest.advanceTimersByTime(1_000);
+					for (let drain = 0; drain < 100; drain += 1) {
+						await Promise.resolve();
+					}
+				}
+			};
+
+			const failed = (await handlers.get(
+				{ providerID: "ollama" },
+				emptyRpcContext(),
+			)) as QuotaGetResult;
+			expect(failed.quota.state).toBe("unavailable");
+			expect(failed.presentation?.failedSince).toBe(NOW);
+			expect(requests).toBe(1);
+
+			// The idle threshold passes while the recovery episode is active. A
+			// non-recovering watch would be released at the next sweep; the
+			// server-owned retry at the backoff boundary must still fire.
+			await advance(QUOTA_RPC_IDLE_UNWATCH_MS);
+			const atFiveMinutes = requests;
+			expect(atFiveMinutes).toBeGreaterThanOrEqual(4);
+
+			await advance(QUOTA_RPC_IDLE_UNWATCH_MS + QUOTA_RPC_IDLE_SWEEP_MS * 3);
+			expect(requests).toBeGreaterThan(atFiveMinutes);
+
+			await cleanup();
+		} finally {
+			globalThis.fetch = originalFetch;
+			jest.useRealTimers();
+		}
+	});
+
 	test("enabled_companion_uses_real_bounded_reads_without_stub_mislabel", async () => {
 		const codexHome = await mkdtemp(join(tmpdir(), "quota-refresh-"));
 		const clientID = "synthetic-refresh-client-id";
@@ -1962,15 +2202,45 @@ describe("tui update subscription", () => {
 		);
 
 		const data: QuotaUpdatedEvent = {
-			version: 1,
+			version: 2,
 			providerID: "alpha",
 			quota: availableRead(NOW),
+			presentation: {
+				revision: 2,
+				lastKnown: availableRead(NOW) as never,
+				failedSince: NOW,
+			},
 		};
 		handlers[0]?.({ type: "rpc.provider-usage.updated", data });
 		handlers[0]?.({ type: "rpc.provider-usage.updated", data: { foo: 1 } });
+		handlers[0]?.({
+			type: "rpc.provider-usage.updated",
+			data: { ...data, version: 1 },
+		});
+		handlers[0]?.({
+			type: "rpc.provider-usage.updated",
+			data: { ...data, presentation: { revision: 1.5 } },
+		});
+		handlers[0]?.({
+			type: "rpc.provider-usage.updated",
+			data: {
+				...data,
+				presentation: { revision: 1, identityKey: "synthetic-identity" },
+			},
+		});
 		handlers[0]?.(undefined);
 
-		expect(received).toEqual([data]);
+		const withoutPresentation: QuotaUpdatedEvent = {
+			version: 2,
+			providerID: "beta",
+			quota: availableRead(NOW),
+		};
+		handlers[0]?.({
+			type: "rpc.provider-usage.updated",
+			data: withoutPresentation,
+		});
+
+		expect(received).toEqual([data, withoutPresentation]);
 		dispose();
 		expect(disposals).toBe(1);
 	});

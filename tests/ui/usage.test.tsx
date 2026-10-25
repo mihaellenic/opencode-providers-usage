@@ -1308,7 +1308,7 @@ describe("host-rendered wrappers", () => {
 
 	test("inventory_failure_is_truthful_and_retryable", () => {
 		const ready = {
-			version: 1,
+			version: 2,
 			providers: [{ provider: FUTURE_PROVIDER, quota: futureQuota() }],
 		};
 		expect(quotaInventory(undefined, undefined)).toEqual({

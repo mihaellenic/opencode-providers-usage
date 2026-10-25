@@ -64,6 +64,7 @@ describe("QuotaRpc credential boundary", () => {
 				registry,
 				now: () => NOW,
 				providers: async () => [{ providerID: "alpha", authMethod: "key" }],
+				presentation: () => ({ revision: 0 }),
 				read: async () => {
 					reads += 1;
 					return unsupportedRead();
@@ -111,7 +112,7 @@ type TuiRpcCall = { method: "get" | "refresh"; providerID: string };
 
 function getResult(providerID: string) {
 	return {
-		version: 1,
+		version: 2,
 		provider: {
 			providerID,
 			name: providerID,
@@ -150,7 +151,7 @@ function fakeTuiContext(options: {
 		},
 		client: {
 			rpc: () => ({
-				list: async () => ({ version: 1, providers: [] }),
+				list: async () => ({ version: 2, providers: [] }),
 				get: async (input: { providerID: string }) => {
 					options.calls.push({ method: "get", providerID: input.providerID });
 					return getResult(input.providerID);
@@ -354,6 +355,7 @@ describe("QuotaRpc registry summaries", () => {
 				registry,
 				now: () => NOW,
 				providers: async () => providers,
+				presentation: () => ({ revision: 0 }),
 				read: async () => unsupportedRead(),
 			},
 		});
@@ -363,7 +365,7 @@ describe("QuotaRpc registry summaries", () => {
 			emptyRpcContext() as never,
 		)) as QuotaListResult;
 
-		expect(result.version).toBe(1);
+		expect(result.version).toBe(2);
 		expect(result.providers.map((view) => view.provider)).toEqual([
 			{
 				providerID: "ollama",

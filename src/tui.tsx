@@ -8,15 +8,15 @@ import {
 	createSignal,
 	onCleanup,
 } from "solid-js";
-import {
-	isQuotaRead,
-	type LocaleContext,
-	type ProviderSummary,
-	type QuotaRead,
+import type {
+	LocaleContext,
+	ProviderSummary,
+	QuotaRead,
 } from "./core/contracts";
 import {
 	isQuotaGetResult,
 	isQuotaListResult,
+	isQuotaUpdatedEvent,
 	QUOTA_PLUGIN_ID,
 	type QuotaGetResult,
 	type QuotaListResult,
@@ -64,17 +64,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isQuotaUpdatedEventData(value: unknown): value is QuotaUpdatedEvent {
-	return (
-		isRecord(value) &&
-		value.version === 1 &&
-		typeof value.providerID === "string" &&
-		value.providerID.length > 0 &&
-		isQuotaRead(value.quota) &&
-		Object.keys(value).length === 3
-	);
-}
-
 type QuotaEventSubscription = {
 	on(name: "updated", handler: (payload: unknown) => void): () => void;
 };
@@ -96,7 +85,7 @@ export function subscribeQuotaUpdates(
 	}
 	try {
 		return events.on("updated", (payload) => {
-			if (isRecord(payload) && isQuotaUpdatedEventData(payload.data)) {
+			if (isRecord(payload) && isQuotaUpdatedEvent(payload.data)) {
 				handler(payload.data);
 			}
 		});

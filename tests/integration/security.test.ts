@@ -7,8 +7,10 @@ import {
 	type ProviderCapability,
 	type ProviderDeps,
 	QUOTA_REASON_CODES,
+	type QuotaPresentation,
 	type QuotaRead,
 	QuotaRequestError,
+	type QuotaSectionsRead,
 } from "../../src/core/contracts";
 import { createAdapterRegistry } from "../../src/core/registry";
 import { getQuotaJson } from "../../src/providers/http";
@@ -16,10 +18,18 @@ import { createOllamaAdapter } from "../../src/providers/ollama";
 import { createOpenAICompanionAdapter } from "../../src/providers/openai-companion";
 import {
 	createQuotaRpcHandlers,
+	isQuotaGetResult,
+	isQuotaListResult,
+	isQuotaProviderView,
+	isQuotaUpdatedEvent,
+	QUOTA_RPC_VERSION,
+	type QuotaGetResult,
+	type QuotaListResult,
 	type QuotaProviderRef,
 	type QuotaReadRequest,
 	QuotaRpc,
 	type QuotaRpcSource,
+	type QuotaUpdatedEvent,
 } from "../../src/rpc";
 
 const NOW = 1_800_000_000_000;
@@ -116,6 +126,8 @@ function buildStack(options: {
 	credentialDeps: CredentialReadDeps;
 	nativeCredential?: NativeCredentialSource;
 	readCompanion?: () => Promise<CompanionRead>;
+	presentation?: (providerID: string) => unknown;
+	publish?: (event: QuotaUpdatedEvent) => void;
 	onRead?: () => void;
 }) {
 	const registry = createAdapterRegistry([
@@ -131,6 +143,8 @@ function buildStack(options: {
 		registry,
 		now: () => NOW,
 		providers: async () => options.providers,
+		presentation: (providerID: string) =>
+			(options.presentation?.(providerID) ?? { revision: 0 }) as never,
 		read: async (input: QuotaReadRequest) => {
 			options.onRead?.();
 			const resolved = await registry.resolve({
@@ -158,7 +172,10 @@ function buildStack(options: {
 		},
 	};
 
-	return { registry, handlers: createQuotaRpcHandlers({ source }) };
+	return {
+		registry,
+		handlers: createQuotaRpcHandlers({ source, publish: options.publish }),
+	};
 }
 
 function captureLogs(): { lines: string[]; restore: () => void } {
@@ -492,6 +509,7 @@ describe("RPC credential boundary", () => {
 					authMethod: "key",
 				},
 			],
+			presentation: () => ({ revision: 0 }),
 			read: async (input) => {
 				reads += 1;
 				const resolved = await registry.resolve({
@@ -580,6 +598,297 @@ describe("RPC credential boundary", () => {
 		};
 		expect(listInput.additionalProperties).toBe(false);
 		expect(Object.keys(listInput.properties ?? {})).toEqual([]);
+	});
+});
+
+describe("RPC presentation boundary", () => {
+	const completeRead: QuotaSectionsRead = {
+		state: "available",
+		authSource: "opencode",
+		sections: [
+			{
+				scope: "provider-balance",
+				result: {
+					state: "available",
+					metrics: [
+						{
+							kind: "money",
+							id: "balance",
+							scope: "provider-balance",
+							label: "Balance",
+							currency: "USD",
+							remaining: 40,
+						},
+					],
+					fetchedAt: NOW,
+					expiresAt: NOW + 60_000,
+				},
+			},
+		],
+	};
+
+	const summary = {
+		providerID: "alpha",
+		name: "alpha",
+		authMethod: "key",
+		support: "unsupported",
+		evidence: "unverified",
+	} as const;
+
+	function presentationHarness(presentation: (providerID: string) => unknown) {
+		const events: QuotaUpdatedEvent[] = [];
+		const source: QuotaRpcSource = {
+			registry: createAdapterRegistry([]),
+			now: () => NOW,
+			providers: async () => [{ providerID: "alpha", authMethod: "key" }],
+			read: async () => completeRead,
+			presentation: presentation as never,
+		};
+		const handlers = createQuotaRpcHandlers({
+			source,
+			publish: (event) => {
+				events.push(event);
+			},
+		});
+		return { handlers, events };
+	}
+
+	test("presentation_is_identical_on_list_get_refresh_and_update", async () => {
+		const presentation: QuotaPresentation = {
+			revision: 3,
+			lastKnown: completeRead,
+			failedSince: NOW + 5_000,
+		};
+		const { handlers, events } = presentationHarness(() => presentation);
+		const context = emptyContext() as never;
+
+		const get = (await handlers.get(
+			{ providerID: "alpha" },
+			context,
+		)) as QuotaGetResult;
+		const list = (await handlers.list({}, context)) as QuotaListResult;
+		const refresh = (await handlers.refresh(
+			{ providerID: "alpha" },
+			context,
+		)) as QuotaGetResult;
+
+		expect(get.version).toBe(QUOTA_RPC_VERSION);
+		expect(QUOTA_RPC_VERSION).toBe(2);
+		expect(get.presentation).toEqual(presentation);
+		expect(list.providers[0]?.presentation).toEqual(presentation);
+		expect(refresh.presentation).toEqual(presentation);
+		expect(events).toHaveLength(1);
+		expect(events[0]?.version).toBe(QUOTA_RPC_VERSION);
+		expect(events[0]?.presentation).toEqual(presentation);
+
+		const serialized = JSON.stringify({ get, list, refresh, events });
+		expect(serialized).not.toContain("identityKey");
+		expect(serialized).not.toContain("fingerprint");
+		expectNoSentinels(
+			"presentation delivery",
+			{ get, list, refresh, events },
+			[],
+		);
+	});
+
+	test("presentation_rejects_unknown_nested_fields_credentials_and_bad_values", async () => {
+		const partial = {
+			state: "partial",
+			authSource: "opencode",
+			sections: [
+				completeRead.sections[0],
+				{
+					scope: "shared-plan",
+					result: {
+						state: "unavailable",
+						reason: "rate_limited",
+						attemptedAt: NOW,
+					},
+				},
+			],
+		} as const;
+		const unavailable = {
+			state: "unavailable",
+			reason: "timeout",
+			attemptedAt: NOW,
+		} as const;
+		const invalid = [
+			{
+				label: "unknown top-level key",
+				value: { revision: 1, identityKey: ACCOUNT_SENTINEL },
+			},
+			{
+				label: "unknown nested history key",
+				value: {
+					revision: 1,
+					lastKnown: { ...completeRead, fingerprint: ACCOUNT_SENTINEL },
+				},
+			},
+			{
+				label: "credential nested in a metric",
+				value: {
+					revision: 1,
+					lastKnown: {
+						...completeRead,
+						sections: [
+							{
+								scope: "provider-balance",
+								result: {
+									...completeRead.sections[0]?.result,
+									metrics: [
+										{
+											kind: "money",
+											id: "balance",
+											scope: "provider-balance",
+											label: "Balance",
+											currency: "USD",
+											remaining: 40,
+											accessToken: ACCESS_SENTINEL,
+										},
+									],
+								},
+							},
+						],
+					},
+				},
+			},
+			{ label: "partial history", value: { revision: 1, lastKnown: partial } },
+			{
+				label: "unavailable history",
+				value: { revision: 1, lastKnown: unavailable },
+			},
+			{ label: "fractional revision", value: { revision: 1.5 } },
+			{ label: "negative revision", value: { revision: -1 } },
+			{ label: "nonfinite revision", value: { revision: Number.NaN } },
+			{
+				label: "infinite revision",
+				value: { revision: Number.POSITIVE_INFINITY },
+			},
+			{
+				label: "negative failure time",
+				value: { revision: 1, failedSince: -1 },
+			},
+			{
+				label: "nonfinite failure time",
+				value: { revision: 1, failedSince: Number.NaN },
+			},
+			{
+				label: "infinite failure time",
+				value: { revision: 1, failedSince: Number.POSITIVE_INFINITY },
+			},
+			{
+				label: "unknown presentation timing field",
+				value: { revision: 1, failedAt: NOW, accessToken: ACCESS_SENTINEL },
+			},
+		];
+
+		for (const item of invalid) {
+			const { handlers } = presentationHarness(() => item.value);
+			const got = (await handlers.get(
+				{ providerID: "alpha" },
+				emptyContext() as never,
+			)) as QuotaGetResult;
+			expect({ label: item.label, quota: got.quota }).toEqual({
+				label: item.label,
+				quota: completeRead,
+			});
+			expect({ label: item.label, presentation: got.presentation }).toEqual({
+				label: item.label,
+				presentation: undefined,
+			});
+			const serialized = JSON.stringify(got);
+			expect(serialized).not.toContain(ACCOUNT_SENTINEL);
+			expect(serialized).not.toContain(ACCESS_SENTINEL);
+			expect(serialized).not.toContain("identityKey");
+			expect(serialized).not.toContain("fingerprint");
+		}
+	});
+
+	test("presentation_validators_require_matching_v2_and_complete_history", () => {
+		const presentation: QuotaPresentation = {
+			revision: 2,
+			lastKnown: completeRead,
+		};
+		const partialHistory = {
+			state: "partial",
+			authSource: "opencode",
+			sections: completeRead.sections,
+		} as const;
+		const getWithout = { version: 2, provider: summary, quota: completeRead };
+		const getWith = { ...getWithout, presentation };
+
+		expect(isQuotaGetResult(getWithout)).toBe(true);
+		expect(isQuotaGetResult(getWith)).toBe(true);
+		expect(
+			isQuotaProviderView({ provider: summary, quota: completeRead }),
+		).toBe(true);
+		expect(
+			isQuotaListResult({
+				version: 2,
+				providers: [{ provider: summary, quota: completeRead }],
+			}),
+		).toBe(true);
+		expect(
+			isQuotaListResult({
+				version: 2,
+				providers: [{ provider: summary, quota: completeRead, presentation }],
+			}),
+		).toBe(true);
+
+		expect(isQuotaGetResult({ ...getWithout, version: 1 })).toBe(false);
+		expect(isQuotaGetResult({ ...getWith, extra: true })).toBe(false);
+		expect(
+			isQuotaGetResult({
+				...getWith,
+				presentation: { revision: 1.5 },
+			}),
+		).toBe(false);
+		expect(
+			isQuotaGetResult({
+				...getWith,
+				presentation: { revision: 1, lastKnown: partialHistory },
+			}),
+		).toBe(false);
+		expect(
+			isQuotaGetResult({
+				...getWith,
+				presentation: { revision: 1, failedSince: -1 },
+			}),
+		).toBe(false);
+
+		const event = {
+			version: 2,
+			providerID: "alpha",
+			quota: completeRead,
+			presentation,
+		};
+		expect(isQuotaUpdatedEvent(event)).toBe(true);
+		expect(
+			isQuotaUpdatedEvent({
+				version: 2,
+				providerID: "alpha",
+				quota: completeRead,
+			}),
+		).toBe(true);
+		expect(isQuotaUpdatedEvent({ ...event, version: 1 })).toBe(false);
+		expect(isQuotaUpdatedEvent({ ...event, extra: true })).toBe(false);
+		expect(
+			isQuotaUpdatedEvent({
+				...event,
+				presentation: { revision: 1, identityKey: ACCOUNT_SENTINEL },
+			}),
+		).toBe(false);
+
+		const getOutput = QuotaRpc.methods.get.output as {
+			properties?: Record<string, unknown>;
+		};
+		expect(Object.keys(getOutput.properties ?? {})).toContain("presentation");
+		const eventSchema = QuotaRpc.events.updated.schema as {
+			properties?: Record<string, unknown>;
+			additionalProperties?: boolean;
+		};
+		expect(Object.keys(eventSchema.properties ?? {})).toContain("presentation");
+		expect(eventSchema.additionalProperties).toBe(false);
 	});
 });
 

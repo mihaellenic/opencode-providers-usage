@@ -1,15 +1,21 @@
 import { Rpc } from "@opencode/plugin";
 import {
+	isQuotaPresentation,
 	isQuotaRead,
 	type ProviderSummary,
 	QUOTA_REASON_CODES,
+	type QuotaPresentation,
 	type QuotaRead,
 } from "./core/contracts";
 import type { AdapterRegistry } from "./core/registry";
 
 export const QUOTA_RPC_ID = "provider-usage";
 export const QUOTA_PLUGIN_ID = QUOTA_RPC_ID;
-export const QUOTA_RPC_VERSION = 1;
+/**
+ * Version 2 adds the optional presentation envelope. The wire contract is
+ * versioned, not dual-implemented: a client accepts only this exact version.
+ */
+export const QUOTA_RPC_VERSION = 2;
 
 const supportValues = [
 	"supported",
@@ -77,35 +83,36 @@ const moneyMetricSchema = {
 	additionalProperties: false,
 } as const;
 
+const availableSectionResultSchema = {
+	type: "object",
+	properties: {
+		state: { type: "string", const: "available" },
+		metrics: {
+			type: "array",
+			items: { oneOf: [windowMetricSchema, moneyMetricSchema] },
+		},
+		fetchedAt: { type: "number" },
+		expiresAt: { type: "number" },
+		configuredAppCapPercent: { type: "number" },
+	},
+	required: ["state", "metrics", "fetchedAt", "expiresAt"],
+	additionalProperties: false,
+} as const;
+
+const unavailableResultSchema = {
+	type: "object",
+	properties: {
+		state: { type: "string", enum: unavailableStateValues },
+		reason: { type: "string", enum: [...QUOTA_REASON_CODES] },
+		attemptedAt: { type: "number" },
+		retryAfterMs: { type: "number" },
+	},
+	required: ["state", "reason", "attemptedAt"],
+	additionalProperties: false,
+} as const;
+
 const sectionResultSchema = {
-	oneOf: [
-		{
-			type: "object",
-			properties: {
-				state: { type: "string", const: "available" },
-				metrics: {
-					type: "array",
-					items: { oneOf: [windowMetricSchema, moneyMetricSchema] },
-				},
-				fetchedAt: { type: "number" },
-				expiresAt: { type: "number" },
-				configuredAppCapPercent: { type: "number" },
-			},
-			required: ["state", "metrics", "fetchedAt", "expiresAt"],
-			additionalProperties: false,
-		},
-		{
-			type: "object",
-			properties: {
-				state: { type: "string", enum: unavailableStateValues },
-				reason: { type: "string", enum: [...QUOTA_REASON_CODES] },
-				attemptedAt: { type: "number" },
-				retryAfterMs: { type: "number" },
-			},
-			required: ["state", "reason", "attemptedAt"],
-			additionalProperties: false,
-		},
-	],
+	oneOf: [availableSectionResultSchema, unavailableResultSchema],
 } as const;
 
 const quotaReadSchema = {
@@ -131,18 +138,45 @@ const quotaReadSchema = {
 			required: ["state", "authSource", "sections"],
 			additionalProperties: false,
 		},
-		{
-			type: "object",
-			properties: {
-				state: { type: "string", enum: unavailableStateValues },
-				reason: { type: "string", enum: [...QUOTA_REASON_CODES] },
-				attemptedAt: { type: "number" },
-				retryAfterMs: { type: "number" },
-			},
-			required: ["state", "reason", "attemptedAt"],
-			additionalProperties: false,
-		},
+		unavailableResultSchema,
 	],
+} as const;
+
+/**
+ * Historical figures must be one coherent, fully available observation.
+ * Partial or unavailable history would claim a state that was never observed.
+ */
+const completeQuotaReadSchema = {
+	type: "object",
+	properties: {
+		state: { type: "string", const: "available" },
+		authSource: { type: "string", enum: ["opencode", "codex-companion"] },
+		sections: {
+			type: "array",
+			items: {
+				type: "object",
+				properties: {
+					scope: { type: "string", enum: scopeValues },
+					result: availableSectionResultSchema,
+				},
+				required: ["scope", "result"],
+				additionalProperties: false,
+			},
+		},
+	},
+	required: ["state", "authSource", "sections"],
+	additionalProperties: false,
+} as const;
+
+const presentationSchema = {
+	type: "object",
+	properties: {
+		revision: { type: "integer", minimum: 0 },
+		lastKnown: completeQuotaReadSchema,
+		failedSince: { type: "number", minimum: 0 },
+	},
+	required: ["revision"],
+	additionalProperties: false,
 } as const;
 
 const providerViewSchema = {
@@ -150,6 +184,7 @@ const providerViewSchema = {
 	properties: {
 		provider: providerSummarySchema,
 		quota: quotaReadSchema,
+		presentation: presentationSchema,
 	},
 	required: ["provider", "quota"],
 	additionalProperties: false,
@@ -200,6 +235,7 @@ const getOutputSchema = {
 		version: versionSchema,
 		provider: providerSummarySchema,
 		quota: quotaReadSchema,
+		presentation: presentationSchema,
 	},
 	required: ["version", "provider", "quota"],
 	additionalProperties: false,
@@ -211,6 +247,7 @@ const updatedEventSchema = {
 		version: versionSchema,
 		providerID: { type: "string" },
 		quota: quotaReadSchema,
+		presentation: presentationSchema,
 	},
 	required: ["version", "providerID", "quota"],
 	additionalProperties: false,
@@ -254,6 +291,7 @@ export type QuotaProviderRef = {
 export type QuotaProviderView = {
 	provider: ProviderSummary;
 	quota: QuotaRead;
+	presentation?: QuotaPresentation;
 };
 
 export type QuotaListResult = {
@@ -265,12 +303,14 @@ export type QuotaGetResult = {
 	version: number;
 	provider: ProviderSummary;
 	quota: QuotaRead;
+	presentation?: QuotaPresentation;
 };
 
 export type QuotaUpdatedEvent = {
 	version: number;
 	providerID: string;
 	quota: QuotaRead;
+	presentation?: QuotaPresentation;
 };
 
 export type QuotaReadRequest = QuotaProviderRef & { signal: AbortSignal };
@@ -279,6 +319,8 @@ export type QuotaRpcSource = {
 	registry: AdapterRegistry;
 	providers(): Promise<QuotaProviderRef[]>;
 	read(input: QuotaReadRequest): Promise<QuotaRead>;
+	/** Complete, server-derived history; never a client claim of currentness. */
+	presentation(providerID: string): QuotaPresentation;
 	now(): number;
 };
 
@@ -345,9 +387,11 @@ export function isQuotaProviderView(
 ): value is QuotaProviderView {
 	return (
 		isRecord(value) &&
-		hasOnlyKeys(value, ["provider", "quota"]) &&
+		hasOnlyKeys(value, ["provider", "quota", "presentation"]) &&
 		isProviderSummary(value.provider) &&
-		isQuotaRead(value.quota)
+		isQuotaRead(value.quota) &&
+		(value.presentation === undefined ||
+			isQuotaPresentation(value.presentation))
 	);
 }
 
@@ -364,10 +408,27 @@ export function isQuotaListResult(value: unknown): value is QuotaListResult {
 export function isQuotaGetResult(value: unknown): value is QuotaGetResult {
 	return (
 		isRecord(value) &&
-		hasOnlyKeys(value, ["version", "provider", "quota"]) &&
+		hasOnlyKeys(value, ["version", "provider", "quota", "presentation"]) &&
 		value.version === QUOTA_RPC_VERSION &&
 		isProviderSummary(value.provider) &&
-		isQuotaRead(value.quota)
+		isQuotaRead(value.quota) &&
+		(value.presentation === undefined ||
+			isQuotaPresentation(value.presentation))
+	);
+}
+
+export function isQuotaUpdatedEvent(
+	value: unknown,
+): value is QuotaUpdatedEvent {
+	return (
+		isRecord(value) &&
+		hasOnlyKeys(value, ["version", "providerID", "quota", "presentation"]) &&
+		value.version === QUOTA_RPC_VERSION &&
+		typeof value.providerID === "string" &&
+		value.providerID.length > 0 &&
+		isQuotaRead(value.quota) &&
+		(value.presentation === undefined ||
+			isQuotaPresentation(value.presentation))
 	);
 }
 
@@ -412,6 +473,23 @@ function invalidResponseRead(now: number): QuotaRead {
 	return { state: "unavailable", reason: "invalid_response", attemptedAt: now };
 }
 
+/**
+ * Presentation is auxiliary metadata. A custom or buggy source that returns
+ * malformed history, unknown fields, or nonfinite timing loses only the
+ * metadata; the validated quota read still crosses the boundary.
+ */
+function safePresentation(
+	source: QuotaRpcSource,
+	providerID: string,
+): QuotaPresentation | undefined {
+	try {
+		const value = source.presentation(providerID);
+		return isQuotaPresentation(value) ? value : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 async function safeRead(
 	source: QuotaRpcSource,
 	input: QuotaReadRequest,
@@ -431,7 +509,14 @@ async function providerView(
 ): Promise<QuotaProviderView> {
 	const provider = source.registry.summarize(ref);
 	const quota = await safeRead(source, { ...ref, signal });
-	return { provider, quota };
+	// Read metadata only after the shared refresh settles, so every view of
+	// this provider observes the same committed revision and history.
+	const presentation = safePresentation(source, ref.providerID);
+	return {
+		provider,
+		quota,
+		...(presentation === undefined ? {} : { presentation }),
+	};
 }
 
 async function findProvider(
@@ -487,6 +572,9 @@ export function createQuotaRpcHandlers(
 				version: QUOTA_RPC_VERSION,
 				provider: view.provider,
 				quota: view.quota,
+				...(view.presentation === undefined
+					? {}
+					: { presentation: view.presentation }),
 			};
 		},
 
@@ -503,11 +591,17 @@ export function createQuotaRpcHandlers(
 				version: QUOTA_RPC_VERSION,
 				providerID: ref.providerID,
 				quota: view.quota,
+				...(view.presentation === undefined
+					? {}
+					: { presentation: view.presentation }),
 			});
 			return {
 				version: QUOTA_RPC_VERSION,
 				provider: view.provider,
 				quota: view.quota,
+				...(view.presentation === undefined
+					? {}
+					: { presentation: view.presentation }),
 			};
 		},
 	};

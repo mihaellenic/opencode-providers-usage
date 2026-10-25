@@ -328,6 +328,7 @@ export async function setupQuotaServer(
 			version: QUOTA_RPC_VERSION,
 			providerID,
 			quota,
+			presentation: coordinator.presentation(providerID),
 		}).catch(() => undefined);
 	}
 
@@ -363,6 +364,13 @@ export async function setupQuotaServer(
 			if (rpcReadsInFlight.has(providerID)) {
 				continue;
 			}
+			// Recovery is server-owned work, not RPC activity. Releasing the
+			// watch would interrupt the retry episode, so keep it until the
+			// episode ends. The idle clock itself is not renewed by retries or
+			// pushes; only an explicit RPC read moves lastRpcReadAt.
+			if (coordinator.isRecovering(providerID)) {
+				continue;
+			}
 			const lastReadAt = lastRpcReadAt.get(providerID);
 			if (
 				lastReadAt === undefined ||
@@ -381,6 +389,7 @@ export async function setupQuotaServer(
 		registry,
 		now,
 		providers: () => refreshProviderRefs(),
+		presentation: (providerID) => coordinator.presentation(providerID),
 		async read(input) {
 			providerRefs.set(input.providerID, {
 				providerID: input.providerID,
