@@ -26,6 +26,11 @@ export type SidebarProps = {
 
 type HostTheme = QuotaTuiContext["theme"];
 
+// Long runs clipped to their flex segment; the terminal width decides how many
+// glyphs are actually painted, so the renderer never reads the host width.
+const USED_GLYPHS = "━".repeat(1000);
+const REMAINING_GLYPHS = "─".repeat(1000);
+
 /**
  * Snapshots the required theme families into plugin-owned plain values. The
  * live setup calls this from reactively tracked theme reads outside the slot
@@ -68,17 +73,18 @@ function cell(
 		maxWidth: "100%",
 		...(width === undefined ? {} : { width, flexShrink: 0 }),
 		wrapMode: "word",
-		fg: toneColor(theme, value.tone),
+		fg: theme.muted,
 		children: value.text,
 	});
 }
 
 /**
  * Static terminal interpretation of the approved compact quota block:
- * accent rule, `Quota`/provider header, aligned window cells, paired credit
- * metrics, muted freshness footer, and the real page link. Every value comes
- * from the plain data model; this function performs no host reads and returns
- * fresh renderable nodes on every call so a disposed tree is never reused.
+ * provider-name title, a width-adaptive used-quota bar with a compact reset
+ * countdown and percent-only threshold tone, dimmed detail rows, and a
+ * whole-card click target. Every value comes from the plain data model; this
+ * function performs no host reads and returns fresh renderable nodes on every
+ * call so a disposed tree is never reused.
  */
 export function renderSidebar(
 	model: SidebarModel,
@@ -121,7 +127,7 @@ export function renderSidebar(
 						maxWidth: "100%",
 						flexShrink: 0,
 						wrapMode: "word",
-						fg: theme.base,
+						fg: theme.muted,
 						children: line.label,
 					}),
 					cell(theme, line.value, `${line.id}:value`, valueWidth),
@@ -157,7 +163,7 @@ export function renderSidebar(
 								key: `${line.id}:label`,
 								maxWidth: "100%",
 								wrapMode: "word",
-								fg: theme.base,
+								fg: theme.muted,
 								children: line.label,
 							}),
 							cell(theme, line.value, `${line.id}:value`),
@@ -186,7 +192,85 @@ export function renderSidebar(
 				columnGap: 1,
 				children: [
 					cell(theme, line.left, `${line.id}:left`),
-					cell(theme, line.right, `${line.id}:right`),
+					...(line.right === undefined
+						? []
+						: [cell(theme, line.right, `${line.id}:right`)]),
+				],
+			});
+		}
+		if (line.kind === "bar") {
+			const percentTone =
+				line.percent.tone === "normal"
+					? theme.muted
+					: toneColor(theme, line.percent.tone);
+			const fill = Math.min(1, Math.max(0, line.fill));
+			return jsx("box", {
+				key: line.id,
+				flexDirection: "row",
+				flexWrap: "wrap",
+				width: "100%",
+				columnGap: 1,
+				children: [
+					// The track grows to the parent width, and the used/remaining
+					// segments grow in proportion to the reported used fraction. Each
+					// glyph run is clipped by its segment, so the bar adapts to the
+					// frame without the renderer reading a host width.
+					jsx("box", {
+						key: `${line.id}:bar`,
+						flexDirection: "row",
+						flexGrow: 1,
+						flexBasis: 0,
+						minWidth: 1,
+						children: [
+							...(fill <= 0
+								? []
+								: [
+										jsx("text", {
+											key: `${line.id}:used`,
+											flexGrow: fill,
+											flexBasis: 0,
+											flexShrink: 0,
+											overflow: "hidden",
+											wrapMode: "none",
+											fg: theme.muted,
+											children: USED_GLYPHS,
+										}),
+									]),
+							...(fill >= 1
+								? []
+								: [
+										jsx("text", {
+											key: `${line.id}:remaining`,
+											flexGrow: 1 - fill,
+											flexBasis: 0,
+											flexShrink: 0,
+											overflow: "hidden",
+											wrapMode: "none",
+											fg: theme.muted,
+											children: REMAINING_GLYPHS,
+										}),
+									]),
+						],
+					}),
+					jsx("text", {
+						key: `${line.id}:percent`,
+						flexShrink: 0,
+						wrapMode: "none",
+						fg: percentTone,
+						children: line.percent.text,
+					}),
+					...(line.reset === undefined
+						? []
+						: [
+								jsx("text", {
+									key: `${line.id}:reset`,
+									flexShrink: 0,
+									maxWidth: "100%",
+									wrapMode: "word",
+									fg: theme.muted,
+									children: `· ${line.reset}`,
+								}),
+							]),
 				],
 			});
 		}
@@ -194,7 +278,7 @@ export function renderSidebar(
 			key: line.id,
 			maxWidth: "100%",
 			wrapMode: "word",
-			fg: toneColor(theme, line.tone),
+			fg: theme.muted,
 			children: line.text,
 		});
 	});
@@ -202,54 +286,17 @@ export function renderSidebar(
 	return jsx("box", {
 		flexDirection: "column",
 		maxWidth: "100%",
-		border: ["left"],
-		borderStyle: "single",
-		borderColor: theme.action,
 		paddingLeft: 1,
+		onMouseDown: openUsage,
 		children: [
-			jsx("box", {
-				key: "header",
-				flexDirection: "row",
-				flexWrap: "wrap",
-				justifyContent: "space-between",
-				columnGap: 1,
+			jsx("text", {
+				key: "provider",
 				maxWidth: "100%",
-				children: [
-					jsx("text", {
-						key: "header:title",
-						wrapMode: "word",
-						fg: theme.base,
-						children: "Quota",
-					}),
-					jsx("text", {
-						key: "header:provider",
-						flexGrow: 1,
-						flexShrink: 1,
-						minWidth: 10,
-						maxWidth: "100%",
-						textAlign: "right",
-						wrapMode: "word",
-						fg: theme.muted,
-						children: model.provider,
-					}),
-				],
+				wrapMode: "word",
+				fg: theme.base,
+				children: model.provider,
 			}),
 			...rows,
-			jsx("text", {
-				key: "footer",
-				maxWidth: "100%",
-				wrapMode: "word",
-				fg: theme.muted,
-				children: model.footer,
-			}),
-			jsx("text", {
-				key: "open-usage",
-				maxWidth: "100%",
-				wrapMode: "word",
-				fg: theme.action,
-				onMouseDown: openUsage,
-				children: "View all providers →",
-			}),
 		],
 	});
 }

@@ -288,7 +288,7 @@ async function main(): Promise<void> {
 	let setup: Awaited<ReturnType<typeof testRender>> | undefined;
 	try {
 		assert.equal(slots.length, 1);
-		assert.equal(slots[0]?.append, "sidebar.content");
+		assert.equal(slots[0]?.append, "sidebar.footer");
 		assert.ok(layer);
 		setup = await testRender(
 			() =>
@@ -336,15 +336,15 @@ async function main(): Promise<void> {
 		};
 
 		const fresh = await waitForFrame(
-			(frame) =>
-				frame.includes("90% left") && frame.includes("View all providers →"),
+			(frame) => frame.includes("90% left") && frame.includes("Alpha provider"),
 		);
 		const freshLines = paintedLines(fresh);
-		assert.ok(freshLines[0]?.startsWith("│ Quota"));
-		assert.ok(freshLines[0]?.endsWith("Alpha provider"));
+		assert.equal(freshLines[0], " Alpha provider");
 		assert.ok(freshLines.some((line) => line.includes("App 7d")));
 		assert.ok(fresh.includes("Resets"));
-		assert.ok(fresh.includes("updated 12s ago ·"));
+		assert.ok(!fresh.includes("updated"));
+		assert.ok(!fresh.includes("12s ago"));
+		assert.ok(!fresh.includes("View all providers"));
 		assert.ok(!fresh.includes("requires companion"));
 		assert.ok(!fresh.includes("live-validated"));
 		assert.ok(!fresh.includes("2026-"));
@@ -368,28 +368,22 @@ async function main(): Promise<void> {
 		const initialTheme = theme();
 		const initialSpans = setup.captureSpans();
 		assert.ok(
-			spanFor(initialSpans, "90% left").fg.equals(
-				initialTheme.text.feedback.success.base,
-			),
+			spanFor(initialSpans, "90% left").fg.equals(initialTheme.text.muted),
 		);
 		assert.ok(
 			spanFor(initialSpans, "Resets").fg.equals(initialTheme.text.muted),
 		);
 		assert.ok(
-			spanFor(initialSpans, "View all providers →").fg.equals(
-				initialTheme.text.action.primary.base,
-			),
+			spanFor(initialSpans, "Alpha provider").fg.equals(initialTheme.text.base),
 		);
 
 		const alternate = fixtureTheme(ALTERNATE_COLORS);
 		setTheme(alternate);
-		await waitForSpanColor("90% left", alternate.text.feedback.success.base);
+		await waitForSpanColor("90% left", alternate.text.muted);
 		await waitForSpanColor("Resets", alternate.text.muted);
 		const alternateSpans = setup.captureSpans();
 		assert.ok(
-			spanFor(alternateSpans, "View all providers →").fg.equals(
-				alternate.text.action.primary.base,
-			),
+			spanFor(alternateSpans, "Alpha provider").fg.equals(alternate.text.base),
 		);
 		assert.equal(calls.length, callsBeforeTheme);
 
@@ -408,15 +402,10 @@ async function main(): Promise<void> {
 		assert.equal(calls.length, callsBeforeTheme);
 		console.log("sidebar-slot-live: theme-updates");
 
-		// Clicking the real action navigates to the existing page route and
+		// Clicking anywhere in the card navigates to the existing page route and
 		// triggers no new quota read.
 		const callsBeforeClick = calls.length;
-		const linkLine = setup
-			.captureCharFrame()
-			.split("\n")
-			.findIndex((line) => line.includes("View all providers →"));
-		assert.ok(linkLine >= 0);
-		await setup.mockMouse.click(3, linkLine);
+		await setup.mockMouse.click(3, 1);
 		await setup.renderOnce();
 		assert.deepEqual(navigations, [{ type: "plugin", name: "provider-usage" }]);
 		assert.equal(calls.length, callsBeforeClick);
@@ -428,7 +417,8 @@ async function main(): Promise<void> {
 			return squashed.includes(expected);
 		});
 		assert.ok(expired.includes("Quota unavailable"));
-		assert.ok(expired.includes("last attempt"));
+		assert.ok(!expired.includes("last attempt"));
+		assert.ok(!expired.includes("ago"));
 		assert.ok(!expired.includes("33% left"));
 		assert.ok(!expired.includes("Resets"));
 

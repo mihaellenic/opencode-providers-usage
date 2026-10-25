@@ -19,6 +19,14 @@ const OPENAI_PROVIDER: ProviderSummary = {
 	evidence: "live-validated",
 };
 
+const OLLAMA_PROVIDER: ProviderSummary = {
+	providerID: "ollama",
+	name: "Ollama Cloud",
+	authMethod: "api-key",
+	support: "supported",
+	evidence: "live-validated",
+};
+
 function productionRead(): QuotaRead {
 	return {
 		state: "available",
@@ -58,6 +66,51 @@ function productionRead(): QuotaRead {
 	};
 }
 
+function ollamaRead(): QuotaRead {
+	return {
+		state: "available",
+		authSource: "opencode",
+		sections: [
+			{
+				scope: "provider-balance",
+				result: {
+					state: "available",
+					metrics: [
+						{
+							kind: "money",
+							id: "included",
+							scope: "provider-balance",
+							label: "Included credits",
+							currency: "USD",
+							remaining: 35.03,
+							allowance: 60,
+							resetsAt: PRODUCTION_NOW + 25 * 86_400_000 + 15 * 3_600_000,
+						},
+						{
+							kind: "money",
+							id: "purchased",
+							scope: "provider-balance",
+							label: "Purchased credits",
+							currency: "USD",
+							remaining: 4.27,
+						},
+						{
+							kind: "money",
+							id: "total",
+							scope: "provider-balance",
+							label: "Total credits",
+							currency: "USD",
+							remaining: 39.31,
+						},
+					],
+					fetchedAt: PRODUCTION_NOW - 12_000,
+					expiresAt: PRODUCTION_NOW + 60_000,
+				},
+			},
+		],
+	};
+}
+
 export const LAYOUT_THEME: SidebarTheme = {
 	base: RGBA.fromHex("#ffffff"),
 	muted: RGBA.fromHex("#aaaaaa"),
@@ -85,7 +138,6 @@ const TWO_WINDOWS: SidebarModel = {
 			reset: "Resets 18:00",
 		},
 	],
-	footer: "updated 30s ago · Europe/Stockholm",
 };
 
 const COMPLETE_CREDITS: SidebarModel = {
@@ -93,20 +145,19 @@ const COMPLETE_CREDITS: SidebarModel = {
 	lines: [
 		{
 			id: "included",
-			kind: "credit",
-			label: "Included",
-			value: { text: "83.5% left", tone: "success" },
-			detail: "$50.10 of $60 left · refills in 3w",
+			kind: "bar",
+			fill: (60 - 35.03) / 60,
+			percent: { text: "41.6%", tone: "normal" },
+			reset: "resets 25d 15h",
 		},
 		{
-			id: "purchased-total",
+			id: "included-stats",
 			kind: "pair",
-			left: { text: "Purchased $4.27", tone: "normal" },
-			right: { text: "Total $54.37", tone: "normal" },
-			metricIDs: ["purchased", "total"],
+			left: { text: "$24.97 / $60.00 used", tone: "normal" },
+			right: { text: "+$4.27 credits", tone: "normal" },
+			metricIDs: ["included", "purchased", "total"],
 		},
 	],
-	footer: "updated 30s ago · Europe/Stockholm",
 };
 
 const UNAVAILABLE: SidebarModel = {
@@ -119,7 +170,6 @@ const UNAVAILABLE: SidebarModel = {
 			tone: "warning",
 		},
 	],
-	footer: "last attempt 30s ago · Europe/Stockholm",
 };
 
 const LONG_CUSTOM_LABELS: SidebarModel = {
@@ -139,7 +189,6 @@ const LONG_CUSTOM_LABELS: SidebarModel = {
 			value: { text: "Unknown (not reported)", tone: "muted" },
 		},
 	],
-	footer: "updated 12s ago · Europe/Stockholm",
 };
 
 function paintedLines(frame: string): string[] {
@@ -184,18 +233,14 @@ function spanFor(
 describe("approved sidebar layout", () => {
 	test("60_and_40_columns_match_the_mock_derived_two_window_layout", async () => {
 		expect(await capture(TWO_WINDOWS, 60)).toEqual([
-			"│ Quota                                 OpenAI · Codex quota",
-			"│ App 7d    90% left                        Resets Thu 14:00",
-			"│ Shared 5h 9% left                             Resets 18:00",
-			"│ updated 30s ago · Europe/Stockholm",
-			"│ View all providers →",
+			" OpenAI · Codex quota",
+			" App 7d    90% left                         Resets Thu 14:00",
+			" Shared 5h 9% left                              Resets 18:00",
 		]);
 		expect(await capture(TWO_WINDOWS, 40)).toEqual([
-			"│ Quota             OpenAI · Codex quota",
-			"│ App 7d    90% left    Resets Thu 14:00",
-			"│ Shared 5h 9% left         Resets 18:00",
-			"│ updated 30s ago · Europe/Stockholm",
-			"│ View all providers →",
+			" OpenAI · Codex quota",
+			" App 7d    90% left     Resets Thu 14:00",
+			" Shared 5h 9% left          Resets 18:00",
 		]);
 	});
 
@@ -227,11 +272,9 @@ describe("approved sidebar layout", () => {
 		expect(resets).toHaveLength(2);
 
 		expect(await capture(model, 40)).toEqual([
-			"│ Quota             OpenAI · Codex quota",
-			"│ Shared 5h 97% left        Resets 17:00",
-			"│ Shared 7d 9% left        29 Oct, 11:00",
-			"│ updated 30s ago · UTC",
-			"│ View all providers →",
+			" OpenAI · Codex quota",
+			" Shared 5h 97% left         Resets 17:00",
+			" Shared 7d 9% left         29 Oct, 11:00",
 		]);
 
 		for (const width of [24, 32, 40, 60]) {
@@ -253,27 +296,49 @@ describe("approved sidebar layout", () => {
 		}
 	});
 
+	test("production_ollama_credits_render_the_used_bar_and_stat_row", async () => {
+		const model = buildSidebarModel(
+			OLLAMA_PROVIDER,
+			ollamaRead(),
+			PRODUCTION_LOCALE,
+			PRODUCTION_NOW,
+		);
+		expect(model.lines[0]).toMatchObject({
+			kind: "bar",
+			reset: "resets 25d 15h",
+			percent: { text: "41.6%", tone: "normal" },
+		});
+		expect(model.lines[1]).toMatchObject({
+			kind: "pair",
+			left: { text: "US$24.97 / US$60.00 used", tone: "normal" },
+			right: { text: "+US$4.27 credits", tone: "normal" },
+			metricIDs: ["included", "purchased", "total"],
+		});
+		const frame = await capture(model, 40);
+		expect(frame).toEqual([
+			" Ollama Cloud",
+			" ━━━━━━────────── 41.6% · resets 25d 15h",
+			" US$24.97 / US$60.00 used",
+			" +US$4.27 credits",
+		]);
+		expect(frame.join("\n")).not.toContain("updated");
+		expect(frame.join("\n")).not.toContain("Purchased");
+		expect(frame.join("\n")).not.toContain("Total");
+	});
+
 	test("32_and_24_columns_preserve_every_value_and_reset_without_clipping", async () => {
 		expect(await capture(TWO_WINDOWS, 32)).toEqual([
-			"│ Quota     OpenAI · Codex quota",
-			"│ App 7d    90% left",
-			"│               Resets Thu 14:00",
-			"│ Shared 5h 9% left",
-			"│                   Resets 18:00",
-			"│ updated 30s ago · Europe/",
-			"│ Stockholm",
-			"│ View all providers →",
+			" OpenAI · Codex quota",
+			" App 7d    90% left",
+			"                Resets Thu 14:00",
+			" Shared 5h 9% left  Resets 18:00",
 		]);
 		expect(await capture(TWO_WINDOWS, 24)).toEqual([
-			"│ Quota",
-			"│   OpenAI · Codex quota",
-			"│ App 7d    90% left",
-			"│       Resets Thu 14:00",
-			"│ Shared 5h 9% left",
-			"│           Resets 18:00",
-			"│ updated 30s ago ·",
-			"│ Europe/Stockholm",
-			"│ View all providers →",
+			" OpenAI · Codex quota",
+			" App 7d    90% left",
+			"        Resets Thu 14:00",
+			" Shared 5h 9% left",
+			"            Resets 18:00",
 		]);
 
 		for (const width of [24, 32, 40, 60]) {
@@ -281,7 +346,6 @@ describe("approved sidebar layout", () => {
 			expect(lines.every((line) => line.length <= width)).toBe(true);
 			const painted = lines.join("\n").replace(/[│\s]+/g, "");
 			for (const text of [
-				"Quota",
 				"OpenAI · Codex quota",
 				"App 7d",
 				"90% left",
@@ -289,11 +353,12 @@ describe("approved sidebar layout", () => {
 				"Shared 5h",
 				"9% left",
 				"Resets 18:00",
-				"updated 30s ago · Europe/Stockholm",
-				"View all providers →",
 			]) {
 				expect(painted).toContain(text.replace(/\s+/g, ""));
 			}
+			expect(painted).not.toContain("updated");
+			expect(painted).not.toContain("Europe/Stockholm");
+			expect(painted).not.toContain("Viewallproviders");
 		}
 	});
 
@@ -310,99 +375,187 @@ describe("approved sidebar layout", () => {
 				"Resets Nov 30, 12:00 · 2027",
 				"App 5h",
 				"Unknown (not reported)",
-				"updated 12s ago · Europe/Stockholm",
-				"View all providers →",
 			]) {
 				expect(painted).toContain(text.replace(/\s+/g, ""));
 			}
+			expect(painted).not.toContain("updated");
+			expect(painted).not.toContain("Viewallproviders");
 		}
 	});
 
 	test("long_custom_layout_keeps_intrinsic_columns_wide_and_wraps_only_when_narrow", async () => {
 		expect(await capture(LONG_CUSTOM_LABELS, 60)).toEqual([
-			"│ Quota                  A very long arbitrary provider name",
-			"│ Shared 7d · Custom daily window 45% left",
-			"│                                Resets Nov 30, 12:00 · 2027",
-			"│ App 5h                          Unknown (not reported)",
-			"│ updated 12s ago · Europe/Stockholm",
-			"│ View all providers →",
+			" A very long arbitrary provider name",
+			" Shared 7d · Custom daily window 45% left",
+			"                                 Resets Nov 30, 12:00 · 2027",
+			" App 5h                          Unknown (not reported)",
 		]);
 		expect(await capture(LONG_CUSTOM_LABELS, 24)).toEqual([
-			"│ Quota",
-			"│ A very long arbitrary",
-			"│          provider name",
-			"│ Shared 7d · Custom",
-			"│ daily window",
-			"│ 45% left",
-			"│ Resets Nov 30, 12:00 ·",
-			"│                   2027",
-			"│ App 5h",
-			"│ Unknown (not reported)",
-			"│ updated 12s ago ·",
-			"│ Europe/Stockholm",
-			"│ View all providers →",
+			" A very long arbitrary",
+			" provider name",
+			" Shared 7d · Custom",
+			" daily window",
+			" 45% left",
+			" Resets Nov 30, 12:00 ·",
+			"                    2027",
+			" App 5h",
+			" Unknown (not reported)",
 		]);
 	});
 
 	test("window_cells_share_aligned_label_value_and_right_edges_at_normal_widths", async () => {
 		const lines = await capture(TWO_WINDOWS, 60);
-		expect(lines[1]?.indexOf("90% left")).toBe(12);
-		expect(lines[2]?.indexOf("9% left")).toBe(12);
+		expect(lines[1]?.indexOf("90% left")).toBe(11);
+		expect(lines[2]?.indexOf("9% left")).toBe(11);
 		expect(lines[1]?.endsWith("Resets Thu 14:00")).toBe(true);
 		expect(lines[2]?.endsWith("Resets 18:00")).toBe(true);
 		expect(lines[1]?.length).toBe(60);
 		expect(lines[2]?.length).toBe(60);
 	});
 
-	test("credit_pair_and_status_rows_stay_compact_and_truthful", async () => {
+	test("credit_bar_pair_and_status_rows_stay_compact_and_truthful", async () => {
 		expect(await capture(COMPLETE_CREDITS, 60)).toEqual([
-			"│ Quota                                         Ollama Cloud",
-			"│ Included                                        83.5% left",
-			"│ $50.10 of $60 left · refills in 3w",
-			"│ Purchased $4.27                               Total $54.37",
-			"│ updated 30s ago · Europe/Stockholm",
-			"│ View all providers →",
+			" Ollama Cloud",
+			" ━━━━━━━━━━━━━━────────────────────── 41.6% · resets 25d 15h",
+			" $24.97 / $60.00 used                         +$4.27 credits",
 		]);
 		expect(await capture(COMPLETE_CREDITS, 24)).toEqual([
-			"│ Quota     Ollama Cloud",
-			"│ Included    83.5% left",
-			"│ $50.10 of $60 left ·",
-			"│ refills in 3w",
-			"│ Purchased $4.27",
-			"│ Total $54.37",
-			"│ updated 30s ago ·",
-			"│ Europe/Stockholm",
-			"│ View all providers →",
+			" Ollama Cloud",
+			" ━━━━━━━────────── 41.6%",
+			" · resets 25d 15h",
+			" $24.97 / $60.00 used",
+			" +$4.27 credits",
 		]);
 		expect(await capture(UNAVAILABLE, 32)).toEqual([
-			"│ Quota           OpenCode / Zen",
-			"│ Quota unavailable: no quota",
-			"│ source is validated for this",
-			"│ provider.",
-			"│ last attempt 30s ago · Europe/",
-			"│ Stockholm",
-			"│ View all providers →",
+			" OpenCode / Zen",
+			" Quota unavailable: no quota",
+			" source is validated for this",
+			" provider.",
 		]);
 	});
 
-	test("semantic_values_resets_footer_and_action_use_their_theme_families", async () => {
+	test("full_and_empty_bars_paint_only_their_own_segment", async () => {
+		const bar = (fill: number, percent: string): SidebarModel => ({
+			provider: "Ollama Cloud",
+			lines: [
+				{
+					id: "bar",
+					kind: "bar",
+					fill,
+					percent: { text: percent, tone: fill >= 1 ? "error" : "normal" },
+				},
+			],
+		});
+
+		const empty = (await capture(bar(0, "0%"), 40)).join("\n");
+		expect(empty).toContain("─");
+		expect(empty).not.toContain("━");
+		expect(empty).toContain("0%");
+
+		const full = (await capture(bar(1, "100%"), 40)).join("\n");
+		expect(full).toContain("━");
+		expect(full).not.toContain("─");
+		expect(full).toContain("100%");
+	});
+
+	test("titles_stay_bright_while_rows_stay_dim_and_percent_tones_hold", async () => {
 		const setup = await paint(TWO_WINDOWS, 60);
 		try {
 			const frame = setup.captureSpans();
 			const theme = LAYOUT_THEME;
-			expect(spanFor(frame, "90% left").fg.equals(theme.success)).toBe(true);
-			expect(spanFor(frame, "9% left").fg.equals(theme.warning)).toBe(true);
+			expect(spanFor(frame, "OpenAI · Codex quota").fg.equals(theme.base)).toBe(
+				true,
+			);
+			expect(spanFor(frame, "App 7d").fg.equals(theme.muted)).toBe(true);
+			expect(spanFor(frame, "90% left").fg.equals(theme.muted)).toBe(true);
+			expect(spanFor(frame, "9% left").fg.equals(theme.muted)).toBe(true);
 			expect(spanFor(frame, "Resets Thu 14:00").fg.equals(theme.muted)).toBe(
 				true,
 			);
-			expect(spanFor(frame, "updated 30s ago").fg.equals(theme.muted)).toBe(
-				true,
-			);
-			expect(
-				spanFor(frame, "View all providers →").fg.equals(theme.action),
-			).toBe(true);
 		} finally {
 			await setup.dispose();
+		}
+
+		const barSetup = await paint(COMPLETE_CREDITS, 60);
+		try {
+			const frame = barSetup.captureSpans();
+			// The bar segments, reset note, stat amounts, and neutral percent are
+			// all dimmed; only a threshold percent keeps its semantic color.
+			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			expect(spanFor(frame, "─").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			expect(spanFor(frame, "41.6%").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			expect(
+				spanFor(frame, "· resets 25d 15h").fg.equals(LAYOUT_THEME.muted),
+			).toBe(true);
+			expect(
+				spanFor(frame, "$24.97 / $60.00 used").fg.equals(LAYOUT_THEME.muted),
+			).toBe(true);
+			expect(
+				spanFor(frame, "+$4.27 credits").fg.equals(LAYOUT_THEME.muted),
+			).toBe(true);
+		} finally {
+			await barSetup.dispose();
+		}
+
+		const lowQuota = await paint(
+			{
+				provider: "Ollama Cloud",
+				lines: [
+					{
+						id: "included",
+						kind: "bar",
+						fill: 0.924,
+						percent: { text: "92.4%", tone: "warning" },
+						reset: "resets 15h 30m",
+					},
+					{
+						id: "included-stats",
+						kind: "pair",
+						left: { text: "$55.44 / $60.00 used", tone: "normal" },
+						right: { text: "+$4.27 credits", tone: "normal" },
+						metricIDs: ["included"],
+					},
+				],
+			},
+			60,
+		);
+		try {
+			const frame = lowQuota.captureSpans();
+			expect(spanFor(frame, "92.4%").fg.equals(LAYOUT_THEME.warning)).toBe(
+				true,
+			);
+			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			expect(spanFor(frame, "─").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+			expect(
+				spanFor(frame, "$55.44 / $60.00 used").fg.equals(LAYOUT_THEME.muted),
+			).toBe(true);
+			expect(
+				spanFor(frame, "+$4.27 credits").fg.equals(LAYOUT_THEME.muted),
+			).toBe(true);
+		} finally {
+			await lowQuota.dispose();
+		}
+
+		const exhausted = await paint(
+			{
+				provider: "Ollama Cloud",
+				lines: [
+					{
+						id: "included",
+						kind: "bar",
+						fill: 1,
+						percent: { text: "100%", tone: "error" },
+					},
+				],
+			},
+			60,
+		);
+		try {
+			const frame = exhausted.captureSpans();
+			expect(spanFor(frame, "100%").fg.equals(LAYOUT_THEME.error)).toBe(true);
+			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.muted)).toBe(true);
+		} finally {
+			await exhausted.dispose();
 		}
 
 		const errorSetup = await paint(
@@ -421,13 +574,13 @@ describe("approved sidebar layout", () => {
 		);
 		try {
 			const span = spanFor(errorSetup.captureSpans(), "Quota unavailable");
-			expect(span.fg.equals(LAYOUT_THEME.error)).toBe(true);
+			expect(span.fg.equals(LAYOUT_THEME.muted)).toBe(true);
 		} finally {
 			await errorSetup.dispose();
 		}
 	});
 
-	test("view_all_providers_is_clickable_at_every_verified_width", async () => {
+	test("whole_card_is_clickable_at_every_verified_width", async () => {
 		for (const width of [24, 32, 40, 60]) {
 			let opened = 0;
 			const setup = await testRender(
@@ -440,14 +593,16 @@ describe("approved sidebar layout", () => {
 			try {
 				await setup.renderOnce();
 				const lines = paintedLines(setup.captureCharFrame());
-				const linkLine = lines.findIndex((line) =>
-					line.includes("View all providers →"),
-				);
-				expect(linkLine).toBeGreaterThanOrEqual(0);
-				expect(lines[linkLine]?.length).toBeLessThanOrEqual(width);
-				await setup.mockMouse.click(3, linkLine);
+				expect(lines.every((line) => line.length <= width)).toBe(true);
+				expect(lines.join(" ")).not.toContain("View all providers");
+				// Clicking a body row (not a dedicated link) still opens the page.
+				await setup.mockMouse.click(3, 1);
 				await setup.renderOnce();
 				expect(opened).toBe(1);
+				// Clicking the header cell works too.
+				await setup.mockMouse.click(3, 0);
+				await setup.renderOnce();
+				expect(opened).toBe(2);
 			} finally {
 				await setup.dispose();
 			}
@@ -495,18 +650,15 @@ describe("approved sidebar layout", () => {
 			const frame = setup.captureCharFrame();
 			expect(paintedLines(frame).join(" ")).toContain("Ollama Cloud");
 			const spans = setup.captureSpans();
-			expect(spanFor(spans, "90% left").fg.equals(LAYOUT_THEME.success)).toBe(
+			expect(spanFor(spans, "90% left").fg.equals(LAYOUT_THEME.muted)).toBe(
 				true,
 			);
-			expect(spanFor(spans, "9% left").fg.equals(LAYOUT_THEME.warning)).toBe(
+			expect(spanFor(spans, "9% left").fg.equals(LAYOUT_THEME.muted)).toBe(
 				true,
 			);
 
-			const linkLine = frame
-				.split("\n")
-				.findIndex((line) => line.includes("View all providers →"));
-			expect(linkLine).toBeGreaterThanOrEqual(0);
-			await setup.mockMouse.click(3, linkLine);
+			expect(frame).not.toContain("View all providers");
+			await setup.mockMouse.click(3, 1);
 			await setup.renderOnce();
 			expect(opened).toBe(1);
 		} finally {
@@ -528,6 +680,12 @@ describe("approved sidebar layout", () => {
 		try {
 			await setup.renderOnce();
 			expect(first).not.toBe(second);
+			const root = first as unknown as {
+				border?: unknown;
+				_mouseListeners?: { down?: unknown };
+			};
+			expect(root.border).toBe(false);
+			expect(typeof root._mouseListeners?.down).toBe("function");
 			const children = (first as { getChildren(): unknown[] }).getChildren();
 			expect(children.every((child) => typeof child !== "function")).toBe(true);
 			expect(children.length).toBeGreaterThan(0);

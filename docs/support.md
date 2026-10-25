@@ -246,13 +246,13 @@ must remain independent capabilities, never guessed quota inputs.
 
 ## Sidebar presentation
 
-The earlier conservative workaround rendered the `sidebar.content`
-contribution as one static text node with a plain string child. That avoided
-the host re-entrancy crash seen with nested reactive component trees on
-OpenCode 2.1.4, but it could not express the approved hierarchy: no accent
-rule, aligned cells, semantic tones, paired credits, or clickable navigation.
-That workaround is retained only as the `buildSidebarText` compatibility
-helper. Successful live quota now uses a static nested OpenTUI Box/Text tree
+The earlier conservative workaround rendered the sidebar contribution as one
+static text node with a plain string child. That avoided the host re-entrancy
+crash seen with nested reactive component trees on OpenCode 2.1.4, but it could
+not express the approved hierarchy: no accent rule, aligned cells, semantic
+tones, paired credits, or clickable navigation. That workaround is retained
+only as the `buildSidebarText` compatibility helper. Successful live quota now
+appends a static nested OpenTUI Box/Text tree to the `sidebar.footer` slot,
 built from the plain `SidebarModel` in `src/ui/sidebar-model.ts`.
 
 The live path keeps the host safeguards that mattered:
@@ -265,30 +265,40 @@ The live path keeps the host safeguards that mattered:
   returns fresh renderable nodes. It passes no function-valued children and
   never reuses a disposed renderable.
 - The model is a compact projection of reported quota data, not a second quota
-  source. The header is `Quota` plus the provider name (`OpenAI · Codex quota`
-  for the validated Codex companion capability; arbitrary names unchanged).
+  source. The card title is only the provider name (`OpenAI · Codex quota` for
+  the validated Codex companion capability; arbitrary names unchanged) in the
+  base color. Every row below the title is muted.
 - Window rows keep explicit scope/duration labels (`App 7d`, `Shared 5h`,
   `Balance 7d`), the reported remaining/used value in its own aligned cell, and
   a muted reset cell. Reported remaining takes precedence; used-only input
-  never becomes a fabricated remaining value. Zero remaining is an error,
-  at most 20% left is a warning, and unknown values are muted.
-- Included credits show a computed percentage only when a positive reported
-  allowance exists; otherwise the actual money remaining is shown. Known
-  purchased/total pools are paired on one row. Missing pools are omitted, and
-  the UI never computes a new total.
+  never becomes a fabricated remaining value. Unknown values stay muted.
+- Included credits with a positive reported allowance render one compact bar
+  row followed by one stat row. The bar row shows used (`━`) versus remaining
+  (`─`) in muted colors, then the used percentage and an inline
+  `· resets 25d 15h` countdown derived only from the reported reset timestamp
+  (two units: days/hours, hours/minutes, then minutes or seconds; past resets
+  read `resets now`). Only the percentage is exempt from dimming: 100% used
+  keeps the error tone, at least 80% used keeps the warning tone, and below
+  that it stays muted. The stat row reads
+  `$25.27 / $60.00 used` on the left and, when reported, `+$4.27 credits` on
+  the right. The purchased pool is folded into that right cell and the derived
+  total pool is intentionally omitted. Used is derived only as
+  `allowance − remaining`. Without a positive allowance the actual money
+  remaining is shown and no bar or used figure is invented; the existing
+  purchased/total pair rendering stays in that fallback.
 - Every unavailable section keeps its exact reason/recovery copy and retry
-  delay. Expired sections hide their figures; partial reads keep valid rows.
-  The footer distinguishes `updated` from `last attempt` and names the
-  configured timezone once.
-- `View all providers →` is a real click target that opens the existing
-  `provider-usage` page route. It triggers no new RPC read or refresh.
+  delay, painted in the muted row color. Expired sections hide their figures;
+  partial reads keep valid rows. The compact sidebar no longer repeats an
+  `updated`/`last attempt` timestamp; freshness stays on the full usage page.
+- The whole card is a click target that opens the existing `provider-usage`
+  page route. It triggers no new RPC read or refresh.
 - Painted-line tests cover 24, 32, 40, and 60 columns. Columns use the actual
   label/value content widths and are constrained by the real parent width, so
   ordinary layouts stay aligned and long custom labels/values remain intact at
-  wide panes instead of being split by arbitrary caps. Narrow panes wrap reset,
-  detail, header, and footer content instead of clipping or hiding a
-  constraint, and a reset that cannot share a row moves intact rather than
-  splitting mid-clock. Semantic colors, including live theme repaints, are
+  wide panes instead of being split by arbitrary caps. The quota bar grows to
+  the frame width and clips its used/remaining glyph runs proportionally. Narrow
+  panes wrap the reset countdown, detail, and title content instead of clipping
+  or hiding a constraint. Semantic colors, including live theme repaints, are
   asserted from captured spans.
 
 **Validation limitation:** these checks use OpenTUI's test renderer plus an

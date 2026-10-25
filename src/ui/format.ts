@@ -531,9 +531,10 @@ function updateAgeRow(
 }
 
 /**
- * Compact sidebar rows: one header, one row per reported quota constraint
- * (configured caps stay on the full page), and a truthful update age. Rows
- * are never truncated to a hard cap; extra constraints grow the list.
+ * Compact sidebar rows: one header and one row per reported quota constraint
+ * (configured caps stay on the full page). Rows are never truncated to a hard
+ * cap; extra constraints grow the list. The update timestamp is not repeated
+ * here; it remains on the full usage page.
  */
 export function formatSidebarRows(
 	provider: ProviderSummary,
@@ -666,12 +667,7 @@ export function formatSidebarRows(
 			});
 		}
 	}
-	const age = updateAgeRow(read, now, locale);
-	return [
-		header,
-		...quotaRows,
-		{ ...age, value: `${age.value} · ${locale.timeZone}` },
-	];
+	return [header, ...quotaRows];
 }
 
 /** Plain-text sidebar presentation. This intentionally keeps each reported

@@ -8,13 +8,10 @@ import type {
 	UnavailableState,
 } from "../core/contracts";
 import {
-	ageText,
 	dateParts,
 	durationText,
 	formatCurrency,
 	formatPercent,
-	latestAttemptTime,
-	latestFetchedTime,
 	unavailableCopy,
 } from "./format";
 
@@ -42,8 +39,17 @@ export type SidebarPairLine = {
 	id: string;
 	kind: "pair";
 	left: SidebarCell;
-	right: SidebarCell;
+	right?: SidebarCell;
 	metricIDs: string[];
+};
+
+export type SidebarBarLine = {
+	id: string;
+	kind: "bar";
+	/** Used fraction of the reported allowance, clamped to 0..1 for drawing. */
+	fill: number;
+	percent: SidebarCell;
+	reset?: string;
 };
 
 export type SidebarStatusLine = {
@@ -57,12 +63,12 @@ export type SidebarLine =
 	| SidebarWindowLine
 	| SidebarCreditLine
 	| SidebarPairLine
+	| SidebarBarLine
 	| SidebarStatusLine;
 
 export type SidebarModel = {
 	provider: string;
 	lines: SidebarLine[];
-	footer: string;
 };
 
 const PROVIDER_NAMES = new Map([
@@ -97,6 +103,7 @@ const GENERIC_WINDOW_LABELS = new Set([
 
 type AvailableSection = Extract<SectionResult, { state: "available" }>;
 type SectionsRead = Extract<QuotaRead, { state: "available" | "partial" }>;
+type MoneyMetric = Extract<QuotaMetric, { kind: "money" }>;
 
 function statusTone(state: UnavailableState): SidebarTone {
 	return state === "unsupported" || state === "not-applicable"
@@ -195,6 +202,47 @@ function futureSpan(milliseconds: number): string {
 	return `${Math.ceil(days / 7)}w`;
 }
 
+/**
+ * Two-unit countdown for the compact credit bar. Seconds/minutes are rounded
+ * up once, then the first two units are shown. A day-scale duration never
+ * reports a partial hour as `0h`; sub-hour durations fall back to minutes or
+ * seconds. The countdown uses only the reported reset timestamp.
+ */
+function resetCountdown(milliseconds: number): string {
+	const seconds = Math.max(1, Math.ceil(milliseconds / 1000));
+	if (seconds < 60) {
+		return `${seconds}s`;
+	}
+	const minutes = Math.ceil(seconds / 60);
+	if (minutes < 60) {
+		return `${minutes}m`;
+	}
+	if (minutes < 1_440) {
+		const hours = Math.floor(minutes / 60);
+		const rest = minutes - hours * 60;
+		return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`;
+	}
+	let days = Math.floor(minutes / 1_440);
+	let hours = Math.ceil((minutes - days * 1_440) / 60);
+	if (hours === 24) {
+		days += 1;
+		hours = 0;
+	}
+	return hours === 0 ? `${days}d` : `${days}d ${hours}h`;
+}
+
+function barResetText(
+	resetsAt: number | undefined,
+	now: number,
+): string | undefined {
+	if (resetsAt === undefined) {
+		return undefined;
+	}
+	return resetsAt <= now
+		? "resets now"
+		: `resets ${resetCountdown(resetsAt - now)}`;
+}
+
 function refillText(
 	resetsAt: number | undefined,
 	now: number,
@@ -240,21 +288,66 @@ function moneyValue(
 	};
 }
 
-function includedCredit(
-	metric: Extract<QuotaMetric, { kind: "money" }>,
+function includedLines(
+	metric: MoneyMetric,
+	purchased: MoneyMetric | undefined,
+	total: MoneyMetric | undefined,
 	sectionIndex: number,
 	locale: LocaleContext,
 	now: number,
-): SidebarCreditLine {
+): SidebarLine[] {
+	const id = `${sectionIndex}:${metric.scope}:${metric.id}`;
+	const label = CREDIT_NAMES.get(metric.label) ?? metric.label;
 	const refill = refillText(metric.resetsAt, now);
 	const allowance = metric.allowance;
 	const positiveAllowance = allowance !== undefined && allowance > 0;
-	const parts: string[] = [];
+
 	if (positiveAllowance) {
-		parts.push(
-			`${formatCurrency(metric.remaining, locale)} of ${formatCurrency(allowance, locale)} left`,
-		);
-	} else if (metric.used !== undefined) {
+		// Used is derivable only from a positive reported allowance. The values
+		// are used-based so the bar and stat row agree; only the percentage
+		// carries the threshold tone (the bar and amounts stay neutral).
+		const used = allowance - metric.remaining;
+		const usedPercent = (used / allowance) * 100;
+		const tone: SidebarTone =
+			usedPercent >= 100 ? "error" : usedPercent >= 80 ? "warning" : "normal";
+		const reset = barResetText(metric.resetsAt, now);
+		return [
+			{
+				id,
+				kind: "bar",
+				fill: Math.min(1, Math.max(0, used / allowance)),
+				percent: {
+					text: `${formatPercent(usedPercent, locale)}%`,
+					tone,
+				},
+				...(reset === undefined ? {} : { reset }),
+			},
+			{
+				id: `${id}:stats`,
+				kind: "pair",
+				left: {
+					text: `${formatCurrency(used, locale)} / ${formatCurrency(allowance, locale)} used`,
+					tone: "normal",
+				},
+				...(purchased === undefined
+					? {}
+					: {
+							right: {
+								text: `+${formatCurrency(purchased.remaining, locale)} credits`,
+								tone: "normal",
+							},
+						}),
+				metricIDs: [
+					metric.id,
+					...(purchased === undefined ? [] : [purchased.id]),
+					...(total === undefined ? [] : [total.id]),
+				],
+			},
+		];
+	}
+
+	const parts: string[] = [];
+	if (metric.used !== undefined) {
 		// Without a positive allowance, used is not derivable from the figures
 		// shown here, so it remains an independent reported value.
 		parts.push(`${formatCurrency(metric.used, locale)} used`);
@@ -263,27 +356,15 @@ function includedCredit(
 		parts.push(refill);
 	}
 	const detail = parts.length === 0 ? undefined : parts.join(" · ");
-
-	if (positiveAllowance) {
-		const percent = (metric.remaining / allowance) * 100;
-		return {
-			id: `${sectionIndex}:${metric.scope}:${metric.id}`,
+	return [
+		{
+			id,
 			kind: "credit",
-			label: CREDIT_NAMES.get(metric.label) ?? metric.label,
-			value: {
-				text: `${formatPercent(percent, locale)}% left`,
-				tone: percent === 0 ? "error" : percent <= 20 ? "warning" : "success",
-			},
+			label,
+			value: moneyValue(metric, locale),
 			...(detail === undefined ? {} : { detail }),
-		};
-	}
-	return {
-		id: `${sectionIndex}:${metric.scope}:${metric.id}`,
-		kind: "credit",
-		label: CREDIT_NAMES.get(metric.label) ?? metric.label,
-		value: moneyValue(metric, locale),
-		...(detail === undefined ? {} : { detail }),
-	};
+		},
+	];
 }
 
 function otherCredit(
@@ -313,23 +394,35 @@ function otherCredit(
 	};
 }
 
+function isPurchasedMetric(
+	metric: QuotaMetric | undefined,
+): metric is MoneyMetric {
+	return (
+		metric !== undefined &&
+		metric.kind === "money" &&
+		metric.label === PURCHASED_LABEL &&
+		metric.resetsAt === undefined &&
+		metric.allowance === undefined &&
+		metric.used === undefined
+	);
+}
+
+function isTotalMetric(metric: QuotaMetric | undefined): metric is MoneyMetric {
+	return (
+		metric !== undefined &&
+		metric.kind === "money" &&
+		metric.label === TOTAL_LABEL &&
+		metric.resetsAt === undefined &&
+		metric.allowance === undefined &&
+		metric.used === undefined
+	);
+}
+
 function isKnownPair(
 	current: QuotaMetric,
 	next: QuotaMetric | undefined,
-): next is Extract<QuotaMetric, { kind: "money" }> {
-	return (
-		current.kind === "money" &&
-		current.label === PURCHASED_LABEL &&
-		current.resetsAt === undefined &&
-		current.allowance === undefined &&
-		current.used === undefined &&
-		next !== undefined &&
-		next.kind === "money" &&
-		next.label === TOTAL_LABEL &&
-		next.resetsAt === undefined &&
-		next.allowance === undefined &&
-		next.used === undefined
-	);
+): next is MoneyMetric {
+	return isPurchasedMetric(current) && isTotalMetric(next);
 }
 
 function pairLine(
@@ -400,15 +493,38 @@ function availableLines(
 		}
 
 		const next = result.metrics[index + 1];
+		if (
+			metric.kind === "money" &&
+			metric.label === INCLUDED_LABEL &&
+			metric.allowance !== undefined &&
+			metric.allowance > 0
+		) {
+			// The compact bar folds the purchased pool into its stat row and drops
+			// the derived total row. Only the reported purchased metric sources the
+			// right cell; the total is recognized and consumed but never displayed.
+			const purchased = isPurchasedMetric(next) ? next : undefined;
+			const after = result.metrics[index + 2];
+			const total =
+				purchased !== undefined && isTotalMetric(after) ? after : undefined;
+			lines.push(
+				...includedLines(metric, purchased, total, sectionIndex, locale, now),
+			);
+			if (total !== undefined) {
+				index += 2;
+			} else if (purchased !== undefined) {
+				index += 1;
+			}
+			continue;
+		}
 		if (isKnownPair(metric, next)) {
 			lines.push(pairLine(metric, next, sectionIndex, locale));
 			index += 1;
 			continue;
 		}
 		lines.push(
-			metric.label === INCLUDED_LABEL
-				? includedCredit(metric, sectionIndex, locale, now)
-				: otherCredit(metric, sectionIndex, locale, now),
+			...(metric.label === INCLUDED_LABEL
+				? includedLines(metric, undefined, undefined, sectionIndex, locale, now)
+				: [otherCredit(metric, sectionIndex, locale, now)]),
 		);
 	}
 	return lines;
@@ -418,22 +534,6 @@ function retrySuffix(retryAfterMs: number | undefined): string {
 	return retryAfterMs === undefined
 		? ""
 		: ` · retry after ${Math.ceil(retryAfterMs / 1000)}s`;
-}
-
-function footerText(
-	read: QuotaRead,
-	locale: LocaleContext,
-	now: number,
-): string {
-	const fetched = latestFetchedTime(read);
-	if (fetched !== undefined) {
-		return `updated ${ageText(now - fetched)} · ${locale.timeZone}`;
-	}
-	const attempted = latestAttemptTime(read);
-	if (attempted !== undefined) {
-		return `last attempt ${ageText(now - attempted)} · ${locale.timeZone}`;
-	}
-	return `updated never · ${locale.timeZone}`;
 }
 
 /**
@@ -469,7 +569,7 @@ export function buildSidebarModel(
 			text: `${unavailableCopy(read.state, read.reason)}${retrySuffix(read.retryAfterMs)}`,
 			tone,
 		});
-		return { provider: header, lines, footer: footerText(read, locale, now) };
+		return { provider: header, lines };
 	}
 
 	const counts = windowCounts(read);
@@ -498,5 +598,5 @@ export function buildSidebarModel(
 		});
 	}
 
-	return { provider: header, lines, footer: footerText(read, locale, now) };
+	return { provider: header, lines };
 }

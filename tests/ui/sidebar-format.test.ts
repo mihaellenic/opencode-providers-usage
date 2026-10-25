@@ -82,14 +82,12 @@ describe("formatSidebarText", () => {
 			"provider-balance",
 			"shared-plan",
 			"app",
-			undefined,
 		]);
 		expect(rows.map(({ id }) => id)).toEqual([
 			"provider",
 			"0:provider-balance:credits",
 			"1:shared-plan:empty",
 			"2:app:known",
-			"quota:age",
 		]);
 		expect(rows[1]).toMatchObject({
 			label: "Included",
@@ -312,7 +310,7 @@ describe("formatSidebarText", () => {
 		expect(text).not.toContain("resets 1 Jan 01:15 · 2027");
 	});
 
-	test("keeps the expected six-row baseline and grows to every independent constraint", () => {
+	test("keeps the expected five-row baseline and grows to every independent constraint", () => {
 		const windows = (count: number): QuotaMetric[] =>
 			Array.from(
 				{ length: count },
@@ -338,8 +336,8 @@ describe("formatSidebarText", () => {
 			LOCALE,
 			NOW,
 		);
-		expect(four.split("\n")).toHaveLength(6);
-		expect(eight.split("\n")).toHaveLength(10);
+		expect(four.split("\n")).toHaveLength(5);
+		expect(eight.split("\n")).toHaveLength(9);
 		expect(eight).toContain("App 8h · Limit 7");
 	});
 
@@ -420,7 +418,7 @@ describe("formatSidebarText", () => {
 		]);
 		const text = formatSidebarText(provider, quota, LOCALE, NOW);
 		const rows = text.split("\n");
-		expect(rows).toHaveLength(9); // header + seven distinct metrics + updated age
+		expect(rows).toHaveLength(8); // header + seven distinct metrics, no timestamp footer
 		expect(rows[0]).toBe("Fixture");
 		expect(text).toContain("Included: US$0.00 remaining");
 		expect(text).toContain("Purchased: US$4.00 remaining");
@@ -429,7 +427,7 @@ describe("formatSidebarText", () => {
 		expect(text).toContain("App 1h · Burst: 33% used");
 		expect(text).toContain("Shared 7d: 12% used");
 		expect(text).toContain("Shared 5h: Unknown (not reported)");
-		expect(text).toContain("Updated: 12s ago · UTC");
+		expect(text).not.toContain("Updated");
 		expect(text).not.toContain("supported");
 		const sidebarRows = formatSidebarRows(provider, quota, LOCALE, NOW);
 		expect(sidebarRows.filter((row) => row.scope !== undefined)).toHaveLength(
@@ -484,7 +482,7 @@ describe("formatSidebarText", () => {
 		expect(text).toContain("App 7d · Current app limit: 50% remaining");
 		expect(text).toContain("App 7d · Custom cap: 70% remaining");
 		expect(text).toContain("retry after 3s");
-		expect(text).toContain("Updated: 1s ago · UTC");
+		expect(text).not.toContain("Updated");
 		const rows = formatSidebarRows(provider, quota, LOCALE, NOW);
 		expect(rows[1]?.label).toBe("App 7d · Current app limit");
 		expect(rows[3]?.id).toBe("1:shared-plan:status");

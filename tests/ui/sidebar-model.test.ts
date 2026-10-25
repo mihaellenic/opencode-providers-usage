@@ -127,13 +127,13 @@ describe("buildSidebarModel", () => {
 				reset: "Jan 5, 01:16 · 2027",
 			},
 		]);
-		expect(model.footer).toBe("updated 30s ago · UTC");
 		const serialized = JSON.stringify(model);
 		expect(serialized).not.toContain("Account-wide");
 		expect(serialized).not.toContain("ChatGPT Plus");
+		expect(serialized).not.toContain("ago");
 	});
 
-	test("computes the complete-credit percentage and pairs purchased with total", () => {
+	test("renders a used bar and folds purchased credits into the stat row", () => {
 		const model = buildSidebarModel(
 			{ ...provider, name: "Ollama Cloud" },
 			{
@@ -170,27 +170,26 @@ describe("buildSidebarModel", () => {
 		expect(model.lines).toEqual([
 			{
 				id: "0:provider-balance:included",
-				kind: "credit",
-				label: "Included",
-				value: { text: "83.5% left", tone: "success" },
-				detail: "$50.10 of $60.00 left · refills in 3w",
+				kind: "bar",
+				fill: (60 - 50.1) / 60,
+				percent: { text: "16.5%", tone: "normal" },
+				reset: "resets 21d",
 			},
 			{
-				id: "0:provider-balance:pair:purchased+total",
+				id: "0:provider-balance:included:stats",
 				kind: "pair",
-				left: { text: "Purchased $4.27", tone: "normal" },
-				right: { text: "Total $54.37", tone: "normal" },
-				metricIDs: ["purchased", "total"],
+				left: { text: "$9.90 / $60.00 used", tone: "normal" },
+				right: { text: "+$4.27 credits", tone: "normal" },
+				metricIDs: ["included", "purchased", "total"],
 			},
 		]);
-		const included = model.lines[0];
-		expect(included?.kind).toBe("credit");
-		if (included?.kind === "credit") {
-			expect(included.detail).not.toContain("used");
-			expect(included.detail).not.toContain("no allowance");
-			expect(included.detail).not.toContain("no refill");
-		}
-		expect(model.footer).toBe("updated 30s ago · UTC");
+		const serialized = JSON.stringify(model);
+		expect(serialized).not.toContain("% left");
+		expect(serialized).not.toContain("of $60.00");
+		expect(serialized).not.toContain("Purchased $");
+		expect(serialized).not.toContain("Total $");
+		expect(serialized).not.toContain("no refill");
+		expect(serialized).not.toContain("ago");
 	});
 
 	test("preserves four independent app/shared constraints and distinguishes collisions", () => {
@@ -433,7 +432,7 @@ describe("buildSidebarModel", () => {
 		expect(JSON.stringify(zeroAllowance)).not.toContain("allowance $0.00");
 	});
 
-	test("shows a reported allowance percentage without cluttering the concise detail", () => {
+	test("renders a used-based bar and stat row from a reported allowance", () => {
 		const model = buildSidebarModel(
 			provider,
 			{
@@ -456,12 +455,157 @@ describe("buildSidebarModel", () => {
 		expect(model.lines).toEqual([
 			{
 				id: "0:provider-balance:included",
-				kind: "credit",
-				label: "Included",
-				value: { text: "50% left", tone: "success" },
-				detail: "$5.00 of $10.00 left",
+				kind: "bar",
+				fill: 0.5,
+				percent: { text: "50%", tone: "normal" },
+			},
+			{
+				id: "0:provider-balance:included:stats",
+				kind: "pair",
+				left: { text: "$5.00 / $10.00 used", tone: "normal" },
+				metricIDs: ["included"],
 			},
 		]);
+		expect(JSON.stringify(model)).not.toContain("% left");
+	});
+
+	test("tones only the percent at used thresholds", () => {
+		function included(
+			remaining: number,
+			allowance: number,
+			resetsAt?: number,
+		): QuotaRead {
+			return {
+				state: "available",
+				authSource: "opencode",
+				sections: [
+					available("provider-balance", [
+						moneyMetric({
+							id: "included",
+							label: "Included credits",
+							remaining,
+							allowance,
+							...(resetsAt === undefined ? {} : { resetsAt }),
+						}),
+					]),
+				],
+			};
+		}
+
+		const untouched = buildSidebarModel(
+			provider,
+			included(10, 10),
+			LOCALE,
+			NOW,
+		);
+		expect(untouched.lines[0]).toEqual({
+			id: "0:provider-balance:included",
+			kind: "bar",
+			fill: 0,
+			percent: { text: "0%", tone: "normal" },
+		});
+		expect(untouched.lines[1]).toMatchObject({
+			left: { text: "$0.00 / $10.00 used", tone: "normal" },
+			metricIDs: ["included"],
+		});
+
+		const belowThreshold = buildSidebarModel(
+			provider,
+			included(2.1, 10),
+			LOCALE,
+			NOW,
+		);
+		expect(belowThreshold.lines[0]).toMatchObject({
+			percent: { text: "79%", tone: "normal" },
+		});
+		expect(belowThreshold.lines[1]).toMatchObject({
+			left: { text: "$7.90 / $10.00 used", tone: "normal" },
+		});
+
+		const warning = buildSidebarModel(provider, included(2, 10), LOCALE, NOW);
+		expect(warning.lines[0]).toMatchObject({
+			fill: 0.8,
+			percent: { text: "80%", tone: "warning" },
+		});
+		expect(warning.lines[1]).toMatchObject({
+			left: { text: "$8.00 / $10.00 used", tone: "normal" },
+		});
+
+		const exhausted = buildSidebarModel(provider, included(0, 10), LOCALE, NOW);
+		expect(exhausted.lines[0]).toMatchObject({
+			fill: 1,
+			percent: { text: "100%", tone: "error" },
+		});
+		expect(exhausted.lines[1]).toMatchObject({
+			left: { text: "$10.00 / $10.00 used", tone: "normal" },
+		});
+
+		const withReset = buildSidebarModel(
+			provider,
+			included(2, 10, NOW + 2 * 86_400_000),
+			LOCALE,
+			NOW,
+		);
+		expect(withReset.lines[0]).toMatchObject({
+			reset: "resets 2d",
+			percent: { tone: "warning" },
+		});
+	});
+
+	test("formats the bar reset countdown with two-unit precision", () => {
+		function resetAt(offsetMs: number | undefined): QuotaRead {
+			return {
+				state: "available",
+				authSource: "opencode",
+				sections: [
+					available("provider-balance", [
+						moneyMetric({
+							id: "included",
+							label: "Included credits",
+							remaining: 5,
+							allowance: 10,
+							...(offsetMs === undefined ? {} : { resetsAt: NOW + offsetMs }),
+						}),
+					]),
+				],
+			};
+		}
+
+		const day = 86_400_000;
+		const hour = 3_600_000;
+		const minute = 60_000;
+
+		expect(
+			buildSidebarModel(provider, resetAt(25 * day + 15 * hour), LOCALE, NOW)
+				.lines[0],
+		).toMatchObject({ reset: "resets 25d 15h" });
+		expect(
+			buildSidebarModel(
+				provider,
+				resetAt(25 * day + 15 * hour + 30 * minute),
+				LOCALE,
+				NOW,
+			).lines[0],
+		).toMatchObject({ reset: "resets 25d 16h" });
+		expect(
+			buildSidebarModel(provider, resetAt(15 * hour + 30 * minute), LOCALE, NOW)
+				.lines[0],
+		).toMatchObject({ reset: "resets 15h 30m" });
+		expect(
+			buildSidebarModel(provider, resetAt(30 * minute), LOCALE, NOW).lines[0],
+		).toMatchObject({ reset: "resets 30m" });
+		expect(
+			buildSidebarModel(provider, resetAt(45_000), LOCALE, NOW).lines[0],
+		).toMatchObject({ reset: "resets 45s" });
+		expect(
+			buildSidebarModel(provider, resetAt(0), LOCALE, NOW).lines[0],
+		).toMatchObject({ reset: "resets now" });
+		expect(
+			buildSidebarModel(provider, resetAt(-minute), LOCALE, NOW).lines[0],
+		).toMatchObject({ reset: "resets now" });
+		expect(
+			buildSidebarModel(provider, resetAt(undefined), LOCALE, NOW).lines[0],
+		).not.toHaveProperty("reset");
 	});
 
 	test("keeps reset-bearing and non-adjacent money metrics on their own ordered rows", () => {
@@ -690,7 +834,7 @@ describe("buildSidebarModel", () => {
 				tone: "warning",
 			},
 		]);
-		expect(emptyRead.footer).toBe("updated never · UTC");
+		expect(emptyRead).not.toHaveProperty("footer");
 	});
 
 	test("retains valid rows, failed scopes, retry delays, and source order in a partial read", () => {
@@ -738,7 +882,7 @@ describe("buildSidebarModel", () => {
 			text: `Shared: ${unavailableCopy("unavailable", "rate_limited")} · retry after 5s`,
 			tone: "error",
 		});
-		expect(model.footer).toBe("updated 1s ago · UTC");
+		expect(JSON.stringify(model)).not.toContain("ago");
 	});
 
 	test("preserves source section order when a failure precedes a valid section", () => {
@@ -776,10 +920,10 @@ describe("buildSidebarModel", () => {
 			"0:shared-plan:status",
 			"1:app:valid",
 		]);
-		expect(model.footer).toBe("updated 2s ago · UTC");
+		expect(JSON.stringify(model)).not.toContain("ago");
 	});
 
-	test("shows the short unavailable title, exact copy, retry delay, and last attempt", () => {
+	test("shows the short unavailable title, exact copy, and retry delay without a footer", () => {
 		const model = buildSidebarModel(
 			provider,
 			{
@@ -805,8 +949,9 @@ describe("buildSidebarModel", () => {
 				tone: "error",
 			},
 		]);
-		expect(model.footer).toBe("last attempt 5m ago · UTC");
+		expect(model).not.toHaveProperty("footer");
 		const serialized = JSON.stringify(model);
+		expect(serialized).not.toContain("last attempt");
 		expect(serialized).not.toContain("0%");
 		expect(serialized).not.toContain("unlimited");
 	});
@@ -988,7 +1133,6 @@ describe("buildSidebarModel", () => {
 		expect(nextLocalYear.lines[0]).toMatchObject({
 			reset: "1 Jan, 00:15 · 2027",
 		});
-		expect(nextLocalYear.footer).toBe("updated 30s ago · Europe/Stockholm");
-		expect(nextLocalYear.footer.split("Europe/Stockholm")).toHaveLength(2);
+		expect(nextLocalYear.lines).toHaveLength(1);
 	});
 });

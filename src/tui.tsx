@@ -376,7 +376,6 @@ export function sidebarFallbackModel(input: {
 					tone: "muted",
 				},
 			],
-			footer: "",
 		};
 	}
 	return {
@@ -391,7 +390,6 @@ export function sidebarFallbackModel(input: {
 				tone: input.loading ? "muted" : "error",
 			},
 		],
-		footer: "",
 	};
 }
 
@@ -590,7 +588,7 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 			);
 		});
 		const disposeSidebar = context.ui.slot({
-			append: "sidebar.content",
+			append: "sidebar.footer",
 			render: () => {
 				setSidebarActive(true);
 				const model = sidebarModel();

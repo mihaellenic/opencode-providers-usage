@@ -759,14 +759,14 @@ describe("row grouping and narrow terminals", () => {
 		});
 		expect(text).not.toBeNull();
 		const lines = text?.split("\n") ?? [];
-		// Header + four independently reported windows + footer.
-		expect(lines).toHaveLength(6);
+		// Header + four independently reported windows, no timestamp footer.
+		expect(lines).toHaveLength(5);
 		expect(lines[0]).toBe("OpenAI");
 		expect(lines.filter((line) => line.includes("% remaining"))).toHaveLength(
 			4,
 		);
 		expect(text).not.toContain("100% allowed");
-		expect(lines.at(-1)).toBe("Updated: 12s ago · UTC");
+		expect(text).not.toContain("Updated");
 
 		const many = available([
 			{
@@ -789,8 +789,8 @@ describe("row grouping and narrow terminals", () => {
 			now: NOW,
 		});
 		const manyLines = manyText?.split("\n") ?? [];
-		// Header + eight independent constraints + footer; never truncated.
-		expect(manyLines).toHaveLength(10);
+		// Header + eight independent constraints; never truncated or footed.
+		expect(manyLines).toHaveLength(9);
 		expect(
 			manyLines.filter((line) => line.includes("% remaining")),
 		).toHaveLength(8);
@@ -1004,9 +1004,9 @@ describe("host-rendered wrappers", () => {
 			await setup.renderOnce();
 			const wideFrame = setup.captureCharFrame();
 			const wideLines = capturedLines(wideFrame);
-			// The block starts with the mock's Quota/provider header, not one
-			// joined diagnostic string.
-			expect(wideLines[0]?.startsWith("│ Quota")).toBe(true);
+			// The block starts with the provider-name title, not one joined
+			// diagnostic string.
+			expect(wideLines[0]?.startsWith(" OpenAI")).toBe(true);
 			expect(wideLines[0]?.endsWith("OpenAI")).toBe(true);
 			expect(wideLines.every((line) => line.length <= 60)).toBe(true);
 			const wide = wideLines.join(" ");
@@ -1017,23 +1017,20 @@ describe("host-rendered wrappers", () => {
 			expect(wide.replace(/\s+/g, "")).toContain(
 				"Quotaunavailable:theproviderratelimit".replace(/\s+/g, ""),
 			);
-			expect(wide).toContain("updated 12s ago · UTC");
-			expect(wide).toContain("View all providers →");
+			expect(wide).not.toContain("updated");
+			expect(wide).not.toContain("View all providers");
 			expect(wide).not.toContain("requires companion");
 			expect(wide).not.toContain("live-validated");
 
-			const linkLine = wideFrame
-				.split("\n")
-				.findIndex((line) => line.includes("View all providers →"));
-			expect(linkLine).toBeGreaterThanOrEqual(0);
-			await setup.mockMouse.click(3, linkLine);
+			// The whole card is the click target, including body rows.
+			await setup.mockMouse.click(3, 1);
 			await setup.renderOnce();
 			expect(opened).toBe(1);
 
 			setup.resize(24, 30);
 			await setup.renderOnce();
 			const narrowLines = capturedLines(setup.captureCharFrame());
-			expect(narrowLines[0]?.startsWith("│ Quota")).toBe(true);
+			expect(narrowLines[0]?.startsWith(" OpenAI")).toBe(true);
 			expect(narrowLines.every((line) => line.length <= 24)).toBe(true);
 			expect(narrowLines.length).toBeGreaterThan(wideLines.length);
 			const narrow = narrowLines.join(" ");
@@ -1041,8 +1038,8 @@ describe("host-rendered wrappers", () => {
 			expect(narrow).toContain("90% left");
 			expect(narrow).toContain("Shared 5h");
 			expect(narrow).toContain("70% left");
-			expect(narrow).toContain("updated 12s ago ·");
-			expect(narrow).toContain("View all providers →");
+			expect(narrow).not.toContain("updated");
+			expect(narrow).not.toContain("View all providers");
 		} finally {
 			await setup.dispose();
 		}
@@ -1107,8 +1104,9 @@ describe("host-rendered wrappers", () => {
 		// sidebar never carries full timestamp details.
 		expect(rows).not.toContain("100% allowed");
 		expect(rows).not.toContain("2026-");
-		// Timezone appears once, in the footer.
-		expect(lines.at(-1)).toBe("Updated: 12s ago · UTC");
+		// The old timestamp footer is gone from both text and rendered forms.
+		expect(rows).not.toContain("Updated");
+		expect(lines.at(-1)).toContain("Shared 5h:");
 
 		expect(
 			buildSidebarText({
@@ -1262,7 +1260,7 @@ describe("host-rendered wrappers", () => {
 		expect(tui).toContain(
 			"setSidebarTheme(resolveSidebarTheme(context.theme))",
 		);
-		const slotStart = tui.indexOf('append: "sidebar.content"');
+		const slotStart = tui.indexOf('append: "sidebar.footer"');
 		expect(slotStart).toBeGreaterThanOrEqual(0);
 		const renderStart = tui.indexOf("render: () => {", slotStart);
 		const renderEnd = tui.indexOf("\n\t\t\t},", renderStart);
@@ -1287,7 +1285,10 @@ describe("host-rendered wrappers", () => {
 		expect(sidebar).toContain("export function renderSidebar");
 		expect(sidebar).toContain("resolveSidebarTheme(props.theme)");
 		expect(sidebar).toContain("onMouseDown: openUsage");
-		expect(sidebar).toContain('children: "View all providers →"');
+		expect(sidebar).toMatch(/paddingLeft: 1,\s*onMouseDown: openUsage/);
+		expect(sidebar).not.toContain("View all providers");
+		expect(sidebar).not.toContain('border: ["left"]');
+		expect(sidebar).not.toContain('key: "open-usage"');
 		expect(sidebar).not.toContain("createEffect");
 		expect(sidebar).not.toContain("createMemo");
 		expect(sidebar).not.toContain("usePlugin");
