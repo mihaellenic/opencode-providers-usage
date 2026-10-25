@@ -6,11 +6,7 @@ import type {
 	QuotaScope,
 	SectionResult,
 } from "../../src/core/contracts";
-import {
-	NOT_APPLICABLE_COPY,
-	UNSUPPORTED_NO_SOURCE_COPY,
-	unavailableCopy,
-} from "../../src/ui/format";
+import { NOT_APPLICABLE_COPY, unavailableCopy } from "../../src/ui/format";
 import { buildSidebarModel } from "../../src/ui/sidebar-model";
 
 const NOW = Date.UTC(2026, 11, 31, 20, 0);
@@ -1069,6 +1065,8 @@ describe("buildSidebarModel", () => {
 			LOCALE,
 			NOW,
 		);
+		// The unsupported case is purely informational: the sidebar shows only
+		// the plain title, and never a second explanation line.
 		expect(unsupported.lines).toEqual([
 			{
 				id: "quota:title",
@@ -1076,13 +1074,10 @@ describe("buildSidebarModel", () => {
 				text: "Quota unavailable",
 				tone: "warning",
 			},
-			{
-				id: "quota:status",
-				kind: "status",
-				text: UNSUPPORTED_NO_SOURCE_COPY,
-				tone: "warning",
-			},
 		]);
+		expect(JSON.stringify(unsupported)).not.toContain(
+			"no quota source is validated",
+		);
 		expect(JSON.stringify(unsupported)).not.toContain("0%");
 		expect(JSON.stringify(unsupported)).not.toContain("unlimited");
 

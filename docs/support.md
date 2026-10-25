@@ -156,6 +156,12 @@ method itself is unsupported. Re-authenticate through `/connect`, then refresh.
 | State / reason | Exact user-facing copy (from `src/ui/format.ts`) |
 | --- | --- |
 | state `unsupported` | Quota unavailable: no quota source is validated for this provider. |
+
+The sidebar card never renders the `unsupported` explanation as a second
+line. For that purely informational state the card shows only the plain
+status line `Quota unavailable`; every other state keeps the copy above
+because it carries actionable guidance. The full sentence still appears
+anywhere the detailed copy is listed (for example the usage page).
 | state `not-applicable` | Quota not applicable: this provider has no cloud quota to report. |
 | state `unavailable`, reason `no_validated_quota_source` | Quota unavailable: no current validated quota. The last result expired or has not completed. Refresh to try again. |
 | state `auth-required`, reason `companion_expired` | Quota unavailable: Codex companion login expired. Renew that login in Codex, then refresh. |

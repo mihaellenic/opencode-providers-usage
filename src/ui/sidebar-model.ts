@@ -589,12 +589,17 @@ export function buildSidebarModel(
 				: "Quota unavailable";
 		const tone = statusTone(read.state);
 		lines.push({ id: "quota:title", kind: "status", text: title, tone });
-		lines.push({
-			id: "quota:status",
-			kind: "status",
-			text: `${unavailableCopy(read.state, read.reason)}${retrySuffix(read.retryAfterMs)}`,
-			tone,
-		});
+		// The unsupported state is purely informational: the title already says
+		// the quota is unavailable, so the card shows no second explanation
+		// line. Every state with actionable guidance keeps its exact copy.
+		if (read.state !== "unsupported") {
+			lines.push({
+				id: "quota:status",
+				kind: "status",
+				text: `${unavailableCopy(read.state, read.reason)}${retrySuffix(read.retryAfterMs)}`,
+				tone,
+			});
+		}
 		return { provider: header, lines };
 	}
 
