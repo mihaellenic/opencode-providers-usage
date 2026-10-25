@@ -250,8 +250,8 @@ async function main(): Promise<void> {
 			location: {
 				provider: {
 					list: () => [
-						{ id: "alpha", name: "Alpha provider" },
-						{ id: "beta", name: "Beta provider" },
+						{ id: "alpha", name: "Alpha host title" },
+						{ id: "beta", name: "Beta host title" },
 					],
 				},
 			},
@@ -336,10 +336,10 @@ async function main(): Promise<void> {
 		};
 
 		const fresh = await waitForFrame(
-			(frame) => frame.includes("10%") && frame.includes("Alpha provider"),
+			(frame) => frame.includes("10%") && frame.includes("Alpha host title"),
 		);
 		const freshLines = paintedLines(fresh);
-		assert.equal(freshLines[0], " Alpha provider");
+		assert.equal(freshLines[0], " Alpha host title");
 		assert.ok(freshLines.some((line) => line.includes("7d")));
 		assert.ok(fresh.includes("━"));
 		assert.ok(fresh.includes("resets 1h"));
@@ -373,7 +373,9 @@ async function main(): Promise<void> {
 			spanFor(initialSpans, "resets 1h").fg.equals(initialTheme.text.muted),
 		);
 		assert.ok(
-			spanFor(initialSpans, "Alpha provider").fg.equals(initialTheme.text.base),
+			spanFor(initialSpans, "Alpha host title").fg.equals(
+				initialTheme.text.base,
+			),
 		);
 
 		const alternate = fixtureTheme(ALTERNATE_COLORS);
@@ -382,7 +384,9 @@ async function main(): Promise<void> {
 		await waitForSpanColor("resets 1h", alternate.text.muted);
 		const alternateSpans = setup.captureSpans();
 		assert.ok(
-			spanFor(alternateSpans, "Alpha provider").fg.equals(alternate.text.base),
+			spanFor(alternateSpans, "Alpha host title").fg.equals(
+				alternate.text.base,
+			),
 		);
 		assert.equal(calls.length, callsBeforeTheme);
 
@@ -426,7 +430,7 @@ async function main(): Promise<void> {
 		const failed = await waitForFrame((frame) =>
 			frame.includes("no current result was returned"),
 		);
-		assert.ok(failed.includes("Alpha provider"));
+		assert.ok(failed.includes("Alpha host title"));
 		assert.ok(!/%/.test(failed));
 		assert.ok(!failed.includes("resets"));
 		assert.deepEqual(calls, [

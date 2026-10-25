@@ -578,12 +578,16 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 				return;
 			}
 			const now = Date.now();
+			// `selected.label` is the host provider-registry display name resolved by
+			// currentSelection(); the model falls back to the summary name when the
+			// registry has no entry and only the providerID is available.
 			setSidebarModel(
 				buildSidebarModel(
 					matching.provider,
 					revalidateQuota(quota, now),
 					sidebarLocale,
 					now,
+					selected.label,
 				),
 			);
 		});

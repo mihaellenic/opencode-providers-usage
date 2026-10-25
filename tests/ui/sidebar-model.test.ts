@@ -115,9 +115,10 @@ describe("buildSidebarModel", () => {
 			},
 			LOCALE,
 			NOW,
+			"OpenAI",
 		);
 
-		expect(model.provider).toBe("OpenAI · Codex quota");
+		expect(model.provider).toBe("OpenAI");
 		expect(model.lines).toEqual([
 			{
 				id: "0:app:five-hour",
@@ -141,6 +142,45 @@ describe("buildSidebarModel", () => {
 		expect(serialized).not.toContain("Account-wide");
 		expect(serialized).not.toContain("ChatGPT Plus");
 		expect(serialized).not.toContain("ago");
+	});
+
+	test("uses the caller display name and falls back to the summary name", () => {
+		const summary: ProviderSummary = {
+			...provider,
+			providerID: "openai",
+			name: "OpenAI ChatGPT with Codex companion",
+		};
+		const read: QuotaRead = {
+			state: "available",
+			authSource: "codex-companion",
+			sections: [
+				available("app", [
+					windowMetric({
+						id: "five-hour",
+						scope: "app",
+						windowSeconds: 18_000,
+						remainingPercent: 50,
+					}),
+				]),
+			],
+		};
+
+		expect(
+			buildSidebarModel(summary, read, LOCALE, NOW, "OpenAI").provider,
+		).toBe("OpenAI");
+		expect(buildSidebarModel(summary, read, LOCALE, NOW).provider).toBe(
+			summary.name,
+		);
+		expect(buildSidebarModel(summary, read, LOCALE, NOW, "").provider).toBe(
+			summary.name,
+		);
+		expect(buildSidebarModel(summary, read, LOCALE, NOW, "   ").provider).toBe(
+			summary.name,
+		);
+		expect(
+			buildSidebarModel(summary, read, LOCALE, NOW, summary.providerID)
+				.provider,
+		).toBe(summary.name);
 	});
 
 	test("shared-plan sections and failures produce no sidebar lines", () => {

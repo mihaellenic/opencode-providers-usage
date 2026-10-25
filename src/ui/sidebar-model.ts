@@ -73,10 +73,6 @@ export type SidebarModel = {
 	lines: SidebarLine[];
 };
 
-const PROVIDER_NAMES = new Map([
-	["OpenAI ChatGPT with Codex companion", "OpenAI · Codex quota"],
-]);
-
 const SCOPE_NAMES: Record<QuotaScope, string> = {
 	app: "App",
 	"shared-plan": "Shared",
@@ -561,6 +557,10 @@ function retrySuffix(retryAfterMs: number | undefined): string {
  * are stably sorted by duration ascending, missing values stay absent, and no
  * allowance, total, or remaining value is inferred.
  *
+ * `displayName` is the caller-resolved host provider name. The model never
+ * reads host state: when the name is absent, empty, or just the providerID, the
+ * summary's declared name is used. `locale`/`now` are formatting references.
+ *
  * Caller precondition: apply `revalidateQuota()` to quota snapshots before
  * rendering. `now` is a formatting and age reference only; this function does
  * not compare `expiresAt` and therefore does not enforce freshness. Runtime
@@ -571,8 +571,15 @@ export function buildSidebarModel(
 	read: QuotaRead,
 	locale: LocaleContext,
 	now: number,
+	displayName?: string,
 ): SidebarModel {
-	const header = PROVIDER_NAMES.get(provider.name) ?? provider.name;
+	const plainName = displayName?.trim();
+	const header =
+		plainName !== undefined &&
+		plainName !== "" &&
+		plainName !== provider.providerID
+			? plainName
+			: provider.name;
 	const lines: SidebarLine[] = [];
 
 	if (!("sections" in read)) {

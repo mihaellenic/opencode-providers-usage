@@ -265,10 +265,12 @@ The live path keeps the host safeguards that mattered:
   returns fresh renderable nodes. It passes no function-valued children and
   never reuses a disposed renderable.
 - The model is a compact projection of reported quota data, not a second quota
-  source. The card title is only the provider name (`OpenAI · Codex quota` for
-  the validated Codex companion capability; arbitrary names unchanged) in the
-  base color. Row labels, values, and detail text below the title are muted;
-  the used bar fill is the one bright element.
+  source. The card title is the plain host provider display name resolved by
+  providerID from the host registry (for example `OpenAI` or `Ollama Cloud`) in
+  the base color. If the registry has no entry and only the raw providerID is
+  available, the card falls back to the declared summary name. Row labels,
+  values, and detail text below the title are muted; the used bar fill is the
+  one bright element.
 - Window rows use duration-only labels (`5h`, `7d`) and the same compact bar:
   used (`━`, base color) versus remaining (`─`, muted), the used percentage,
   then an inline `· resets 8h` countdown. Rows sort by duration ascending

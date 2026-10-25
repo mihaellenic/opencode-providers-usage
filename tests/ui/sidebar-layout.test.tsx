@@ -121,7 +121,7 @@ export const LAYOUT_THEME: SidebarTheme = {
 };
 
 const TWO_WINDOWS: SidebarModel = {
-	provider: "OpenAI · Codex quota",
+	provider: "OpenAI",
 	lines: [
 		{
 			id: "app-5h",
@@ -236,12 +236,12 @@ function spanFor(
 describe("approved sidebar layout", () => {
 	test("60_and_40_columns_match_the_mock_derived_two_window_layout", async () => {
 		expect(await capture(TWO_WINDOWS, 60)).toEqual([
-			" OpenAI · Codex quota",
+			" OpenAI",
 			" 5h ━━━━━━━━━━━━━━━━━━━━━━━───────────────── 59% · resets 8h",
 			" 7d ━━━━━━━━━──────────────────────────── 25% · resets 2d 4h",
 		]);
 		expect(await capture(TWO_WINDOWS, 40)).toEqual([
-			" OpenAI · Codex quota",
+			" OpenAI",
 			" 5h ━━━━━━━━━━━───────── 59% · resets 8h",
 			" 7d ━━━━───────────── 25% · resets 2d 4h",
 		]);
@@ -253,8 +253,9 @@ describe("approved sidebar layout", () => {
 			productionRead(),
 			PRODUCTION_LOCALE,
 			PRODUCTION_NOW,
+			"OpenAI",
 		);
-		expect(model.provider).toBe("OpenAI · Codex quota");
+		expect(model.provider).toBe("OpenAI");
 		const windows = model.lines.filter(
 			(
 				line,
@@ -273,7 +274,7 @@ describe("approved sidebar layout", () => {
 		expect(resets).toEqual(["resets 8h", "resets 2d 4h"]);
 
 		expect(await capture(model, 40)).toEqual([
-			" OpenAI · Codex quota",
+			" OpenAI",
 			" 5h ━━━━━━━━━━━───────── 59% · resets 8h",
 			" 7d ━━━━───────────── 25% · resets 2d 4h",
 		]);
@@ -330,12 +331,12 @@ describe("approved sidebar layout", () => {
 
 	test("32_and_24_columns_preserve_every_value_and_reset_without_clipping", async () => {
 		expect(await capture(TWO_WINDOWS, 32)).toEqual([
-			" OpenAI · Codex quota",
+			" OpenAI",
 			" 5h ━━━━━━━───── 59% · resets 8h",
 			" 7d ━━─────── 25% · resets 2d 4h",
 		]);
 		expect(await capture(TWO_WINDOWS, 24)).toEqual([
-			" OpenAI · Codex quota",
+			" OpenAI",
 			" 5h ━━── 59% · resets 8h",
 			" 7d ─ 25% · resets 2d 4h",
 		]);
@@ -345,7 +346,7 @@ describe("approved sidebar layout", () => {
 			expect(lines.every((line) => line.length <= width)).toBe(true);
 			const painted = lines.join("\n").replace(/[│\s]+/g, "");
 			for (const text of [
-				"OpenAI · Codex quota",
+				"OpenAI",
 				"5h",
 				"59%",
 				"resets 8h",
@@ -496,6 +497,7 @@ describe("approved sidebar layout", () => {
 				quota,
 				PRODUCTION_LOCALE,
 				PRODUCTION_NOW,
+				"OpenAI",
 			);
 			expect(model.lines[0]).toMatchObject({
 				kind: "window",
@@ -534,9 +536,7 @@ describe("approved sidebar layout", () => {
 		try {
 			const frame = setup.captureSpans();
 			const theme = LAYOUT_THEME;
-			expect(spanFor(frame, "OpenAI · Codex quota").fg.equals(theme.base)).toBe(
-				true,
-			);
+			expect(spanFor(frame, "OpenAI").fg.equals(theme.base)).toBe(true);
 			expect(spanFor(frame, "5h").fg.equals(theme.muted)).toBe(true);
 			expect(spanFor(frame, "7d").fg.equals(theme.muted)).toBe(true);
 			expect(spanFor(frame, "59%").fg.equals(theme.muted)).toBe(true);
@@ -553,7 +553,7 @@ describe("approved sidebar layout", () => {
 
 		const warningWindow = await paint(
 			{
-				provider: "OpenAI · Codex quota",
+				provider: "OpenAI",
 				lines: [
 					{
 						id: "warning-window",
@@ -726,8 +726,7 @@ describe("approved sidebar layout", () => {
 						renderSidebar(
 							{
 								...TWO_WINDOWS,
-								provider:
-									update % 2 === 1 ? "Ollama Cloud" : "OpenAI · Codex quota",
+								provider: update % 2 === 1 ? "Ollama Cloud" : "OpenAI",
 							},
 							update % 2 === 1 ? LAYOUT_THEME : alternateTheme,
 							() => {},
