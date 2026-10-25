@@ -19,8 +19,8 @@ import {
 	sidebarFallbackModel,
 } from "../../src/tui";
 import {
+	AUTH_UNAVAILABLE_COPY,
 	compactRows,
-	EXPIRED_COMPANION_COPY,
 	formatQuotaRows,
 	formatUpdateAge,
 	formatUsageSections,
@@ -433,21 +433,24 @@ describe("quota presentation values", () => {
 });
 
 describe("unavailable state copy", () => {
-	test("uses_exact_expired_companion_recovery_copy", () => {
-		const rows = formatQuotaRows(
-			{
-				state: "auth-required",
-				reason: "companion_expired",
-				attemptedAt: NOW,
-			},
-			LOCALE,
+	test("auth_unavailable_copy_names_the_chatgpt_codex_app_on_this_machine", () => {
+		for (const reason of [
+			"companion_missing",
+			"companion_expired",
+			"app_registration_mismatch",
+			"invalid_companion",
+		]) {
+			const rows = formatQuotaRows(
+				{ state: "auth-required", reason, attemptedAt: NOW },
+				LOCALE,
+			);
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.value).toBe(AUTH_UNAVAILABLE_COPY);
+			expect(rows[0]?.tone).toBe("error");
+		}
+		expect(AUTH_UNAVAILABLE_COPY).toContain(
+			"ChatGPT/Codex app on this machine",
 		);
-		expect(rows).toHaveLength(1);
-		expect(rows[0]?.value).toBe(
-			"Quota unavailable: Codex companion login expired. Renew that login in Codex, then refresh.",
-		);
-		expect(rows[0]?.value).toBe(EXPIRED_COMPANION_COPY);
-		expect(rows[0]?.tone).toBe("error");
 	});
 
 	test("native_only_openai_copy_is_exact_and_does_not_request_a_new_api_key", () => {
@@ -461,7 +464,7 @@ describe("unavailable state copy", () => {
 		);
 		expect(rows[0]?.value).toBe(NATIVE_ONLY_COPY);
 		expect(rows[0]?.value).toBe(
-			"Quota unavailable: the current OpenCode OpenAI sign-in alone cannot read quota. Enable the Codex companion option on the server to use that existing login.",
+			"Quota unavailable: the Codex companion is turned off in this OpenCode configuration. Remove the codexCompanion opt-out to read the existing ChatGPT/Codex login.",
 		);
 		expect(rows[0]?.value.toLowerCase()).not.toContain("new api key");
 	});
@@ -1172,7 +1175,7 @@ describe("host-rendered wrappers", () => {
 		expect(companion?.split("\n")[0]).toBe("OpenAI · Codex quota");
 		expect(companion).not.toContain("requires companion");
 		expect(companion).not.toContain("live-validated");
-		expect(companion).toContain(EXPIRED_COMPANION_COPY);
+		expect(companion).toContain(AUTH_UNAVAILABLE_COPY);
 
 		const future = buildSidebarText({
 			selection: { providerID: "future-provider", label: FUTURE_PROVIDER.name },

@@ -14,7 +14,7 @@ supported.
 - **Ollama Cloud** — included credits, purchased credits, and their separate
   total, read through the existing `ollama-cloud` API-key connection with
   `GET https://ollama.com/api/balance`. No extra key setup.
-- **OpenAI ChatGPT token-sharing + Codex companion (opt-in)** — current-app
+- **OpenAI ChatGPT token-sharing + Codex companion (on by default)** — current-app
   windows and shared-plan windows, kept separate with their own durations and
   reset times. Uses the existing file-backed Codex login read-only. OpenCode's
   native inference sign-in is preserved.
@@ -88,11 +88,12 @@ The bare-string form (`"plugins": ["file:///absolute/path"]`) is accepted by
 the config schema; it was observed to be silently ignored for local paths on
 `2.1.4` — prefer the forms above.
 
-### Enable the Codex companion (optional, disabled by default)
+### Codex companion (on by default, explicit opt-out)
 
-OpenAI quota requires an explicit **server-side** opt-in and an existing
-file-backed Codex login. Use the object form of the config entry so options
-can flow (Form B):
+OpenAI quota uses an existing **file-backed** Codex login on the server. The
+companion is enabled without configuration; only a literal `enabled: false`
+turns it off. Use the object form of the config entry so that opt-out and the
+optional `home` can flow (Form B):
 
 ```jsonc
 {
@@ -100,14 +101,13 @@ can flow (Form B):
   "plugins": [
     {
       "package": "file:///absolute/path/to/opencode-providers-usage",
-      "options": { "codexCompanion": { "enabled": true } }
+      "options": { "codexCompanion": { "enabled": false } }
     }
   ]
 }
 ```
 
-- `enabled` defaults to `false` and is accepted only when it is literally
-  `true`.
+- The companion is on unless `enabled` is literally `false`.
 - `home` is optional. It is a trusted server-side path; when omitted the reader
   uses `CODEX_HOME`, then `~/.codex`. The TUI cannot supply this path.
 - Only file-backed Codex storage is supported. Keychain, encrypted, ephemeral,

@@ -55,19 +55,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * supplied through plugin configuration; only the consent flag and an optional
  * trusted home directory are read.
  */
-function resolveCompanionOptions(
+/**
+ * Companion is on by default; only a literal `enabled: false` opts out. The
+ * `home` directory stays a trusted server-side path.
+ */
+export function resolveCompanionOptions(
 	options: Plugin.Context["options"] | undefined,
 ): CompanionOptions {
 	const raw = options?.codexCompanion;
 	if (!isRecord(raw)) {
-		return { enabled: false };
+		return { enabled: true };
 	}
 	const home =
 		typeof raw.home === "string" && raw.home.trim() !== ""
 			? raw.home
 			: undefined;
 	return {
-		enabled: raw.enabled === true,
+		enabled: raw.enabled !== false,
 		...(home === undefined ? {} : { home }),
 	};
 }

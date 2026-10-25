@@ -155,7 +155,7 @@ function expectReason(result: CompanionRead, reason: string): void {
 	expectNoCredentialLeak(result);
 }
 
-describe("opt-in consent", () => {
+describe("explicit opt-out", () => {
 	test("disabled_reader_never_accesses_disk", async () => {
 		const files = {
 			[CONFIG_PATH]: 'cli_auth_credentials_store = "file"\n',

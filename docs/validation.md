@@ -139,24 +139,26 @@ provider behavior.
 
 ## Manual smoke procedure
 
-### Companion disabled (default)
+### Companion opted out
 
-1. Install and load the plugin with the object/string form from `README.md`,
-   without `codexCompanion`.
+1. Install and load the plugin with the object/string form from `README.md`.
 2. Confirm the sidebar follows the prompt's selected provider and the full page
    opens via `/usage` (or `/provider-usage` when `/usage` is occupied).
 3. For a saved Ollama Cloud key, confirm the existing key is used with no extra
    setup and the reported included/purchased/total pools remain separate.
-4. For OpenAI token-sharing, confirm the native-only explanation appears and no
-   quota request is made for that provider.
+4. Add `codexCompanion.enabled: false` to the plugin options. For OpenAI
+   token-sharing, confirm the opt-out explanation appears and no companion
+   credential is read.
 5. Confirm no UI action triggers a model request.
 
-### Companion enabled (consented)
+### Companion enabled (default)
 
-1. Ensure Codex uses file-backed storage and has a current ChatGPT login. Do not
-   copy or paste any token into OpenCode configuration.
-2. Add `codexCompanion.enabled: true` (and optionally a trusted server-side
-   `home`) to the plugin entry, then let OpenCode's normal configuration reload
+1. Ensure Codex uses file-backed storage and has a current ChatGPT/Codex app
+   login on the same machine. Do not copy or paste any token into OpenCode
+   configuration.
+2. No configuration is needed: the companion is on by default. A literal
+   `codexCompanion.enabled: false` opts out (and optionally a trusted
+   server-side `home` may be set); let OpenCode's normal configuration reload
    apply it. A restart is not required for the option change.
 3. Refresh. Confirm the app and shared-plan sections appear separately, with
    their own durations and resets, and that the configured app cap is shown as a

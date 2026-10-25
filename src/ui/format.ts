@@ -9,10 +9,10 @@ import type {
 	UnavailableState,
 } from "../core/contracts";
 
-export const EXPIRED_COMPANION_COPY =
-	"Quota unavailable: Codex companion login expired. Renew that login in Codex, then refresh.";
+export const AUTH_UNAVAILABLE_COPY =
+	"Quota unavailable: sign in with the ChatGPT/Codex app on this machine (using the same account), then refresh.";
 export const NATIVE_ONLY_COPY =
-	"Quota unavailable: the current OpenCode OpenAI sign-in alone cannot read quota. Enable the Codex companion option on the server to use that existing login.";
+	"Quota unavailable: the Codex companion is turned off in this OpenCode configuration. Remove the codexCompanion opt-out to read the existing ChatGPT/Codex login.";
 export const REJECTED_AUTH_COPY =
 	"Quota unavailable: credentials were rejected, invalid, or expired. Re-authenticate via /connect, then refresh.";
 export const UNSUPPORTED_NO_SOURCE_COPY =
@@ -42,16 +42,10 @@ const EVIDENCE_LABELS: Record<ProviderSummary["evidence"], string> = {
 };
 
 const REASON_COPY: Record<string, string> = {
-	companion_missing:
-		"Quota unavailable: no Codex companion login was found. Sign in with Codex on the server, then refresh.",
-	unsupported_companion_storage:
-		"Quota unavailable: the Codex companion login uses a storage mode v1 does not support. Use the file-backed Codex login on the server.",
-	invalid_companion:
-		"Quota unavailable: the Codex companion login could not be read. Renew that login in Codex, then refresh.",
-	app_registration_mismatch:
-		"Quota unavailable: no unique Codex app matched the current OpenCode OpenAI sign-in. Sign in with the matching account in Codex, then refresh.",
 	invalid_native_registration:
 		"Quota unavailable: the current OpenCode OpenAI sign-in could not be matched. Re-authenticate via /connect, then refresh.",
+	unsupported_companion_storage:
+		"Quota unavailable: the ChatGPT/Codex login on this machine uses a storage mode this plugin does not support. Use the file-backed Codex login, then refresh.",
 	rate_limited:
 		"Quota unavailable: the provider rate limit is active. Try again after the retry window.",
 	timeout:
@@ -81,8 +75,13 @@ export function unavailableCopy(
 	if (state === "not-applicable") {
 		return NOT_APPLICABLE_COPY;
 	}
-	if (reason === "companion_expired") {
-		return EXPIRED_COMPANION_COPY;
+	if (
+		reason === "companion_missing" ||
+		reason === "companion_expired" ||
+		reason === "app_registration_mismatch" ||
+		reason === "invalid_companion"
+	) {
+		return AUTH_UNAVAILABLE_COPY;
 	}
 	if (reason === "companion_disabled") {
 		return NATIVE_ONLY_COPY;

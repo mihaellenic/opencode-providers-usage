@@ -33,7 +33,7 @@ or auth method that is not named here.
 | Ollama Cloud legacy session/weekly plan with API key | Parse reported legacy windows; clearly distinguish documentation/fixture coverage from live testing. Legacy windows render ONLY when the provider reports a duration; the documented legacy shape has no duration field, so a valid legacy response shows `partial` plus an unavailable section. No five-hour or seven-day window is assumed. | Official API schema; not live-validated. |
 | Signed-in local Ollama cloud proxy | Unsupported in v1; installed endpoint absent. No automatic daemon upgrade or private-key extraction. | Local `404`; newer source only. |
 | Purely local Ollama inference | Not applicable: no provider cloud allowance for that model. Never label this as unlimited. | Scope distinction. |
-| OpenAI current ChatGPT token-sharing OAuth, no companion opt-in | Quota unavailable; explain that the current sign-in alone cannot read quota. | Live rejection and OpenAI maintainer statement. |
+| OpenAI current ChatGPT token-sharing OAuth, companion explicitly opted out | Quota unavailable because the companion is disabled by configuration; explain the opt-out. | Live rejection and OpenAI maintainer statement. |
 | Current token-sharing OAuth plus valid, file-backed, matching Codex companion login | Supported: current-app windows and shared-plan windows, separately labeled. Native inference login unchanged. | Live-validated combination. |
 | Same combination, but missing/expired/mismatched companion login | Unavailable with the specific companion reason; no fallback to Codex totals, another app, or another saved account. | Required fail-closed behavior. |
 | Keychain/encrypted Codex cache | Unsupported companion storage in v1. Never silently read a stale file that does not represent the configured active store. | Not live-validated. |
@@ -82,21 +82,23 @@ combination can produce; every code must be in `QUOTA_REASON_CODES`.
 | `openai-companion` | OpenCode Zen and Go API keys | `integrationID:opencode` | `key` | `unsupported` | `unverified` | `no_validated_quota_source` |
 | `openai-companion` | OpenAI inference API key | `integrationID:openai` | `key` | `unsupported` | `documented-only` | `no_validated_quota_source` |
 
-## Codex companion opt-in
+## Codex companion (on by default)
 
-Companion access is **disabled by default** and requires an explicit
-server-side opt-in. Configuration is read from the server plugin options:
+Companion access is **on by default** and reads the existing server-side
+login. A literal `enabled: false` opts out. Configuration is read from the
+server plugin options:
 
 ```jsonc
 {
   "codexCompanion": {
-    "enabled": true,
+    "enabled": false,
     "home": "/path/to/codex-home"
   }
 }
 ```
 
-- `enabled` is true only when it is literally `true`.
+- `enabled` is on unless it is literally `false`; set `enabled: false` to opt
+  out, which produces `companion_disabled` without touching disk.
 - `home` is an optional **trusted server-side** directory. When omitted, the
   reader uses `CODEX_HOME`, then `~/.codex`. The TUI cannot supply this value
   through RPC.
@@ -164,13 +166,13 @@ because it carries actionable guidance. The full sentence still appears
 anywhere the detailed copy is listed (for example the usage page).
 | state `not-applicable` | Quota not applicable: this provider has no cloud quota to report. |
 | state `unavailable`, reason `no_validated_quota_source` | Quota unavailable: no current validated quota. The last result expired or has not completed. Refresh to try again. |
-| state `auth-required`, reason `companion_expired` | Quota unavailable: Codex companion login expired. Renew that login in Codex, then refresh. |
-| state `auth-required` or `unavailable`, reason `companion_disabled` | Quota unavailable: the current OpenCode OpenAI sign-in alone cannot read quota. Enable the Codex companion option on the server to use that existing login. |
+| state `auth-required`, reason `companion_expired` | Quota unavailable: sign in with the ChatGPT/Codex app on this machine (using the same account), then refresh. |
+| state `auth-required` or `unavailable`, reason `companion_disabled` | Quota unavailable: the Codex companion is turned off in this OpenCode configuration. Remove the codexCompanion opt-out to read the existing ChatGPT/Codex login. |
 | state `auth-required`, reason `unsupported_auth_method` | Quota unavailable: credentials were rejected, invalid, or expired. Re-authenticate via `/connect`, then refresh. |
-| `companion_missing` | Quota unavailable: no Codex companion login was found. Sign in with Codex on the server, then refresh. |
-| `unsupported_companion_storage` | Quota unavailable: the Codex companion login uses a storage mode v1 does not support. Use the file-backed Codex login on the server. |
-| `invalid_companion` | Quota unavailable: the Codex companion login could not be read. Renew that login in Codex, then refresh. |
-| `app_registration_mismatch` | Quota unavailable: no unique Codex app matched the current OpenCode OpenAI sign-in. Sign in with the matching account in Codex, then refresh. |
+| `companion_missing` | Quota unavailable: sign in with the ChatGPT/Codex app on this machine (using the same account), then refresh. |
+| `unsupported_companion_storage` | Quota unavailable: the ChatGPT/Codex login on this machine uses a storage mode this plugin does not support. Use the file-backed Codex login, then refresh. |
+| `invalid_companion` | Quota unavailable: sign in with the ChatGPT/Codex app on this machine (using the same account), then refresh. |
+| `app_registration_mismatch` | Quota unavailable: sign in with the ChatGPT/Codex app on this machine (using the same account), then refresh. |
 | `invalid_native_registration` | Quota unavailable: the current OpenCode OpenAI sign-in could not be matched. Re-authenticate via `/connect`, then refresh. |
 | `rate_limited` | Quota unavailable: the provider rate limit is active. Try again after the retry window. |
 | `timeout` | Quota unavailable: the provider request timed out. Refresh to try again. |
