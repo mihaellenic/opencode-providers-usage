@@ -1,6 +1,13 @@
 import { Plugin } from "@opencode/plugin/tui";
 import { jsx } from "@opentui/solid/jsx-runtime";
-import { createMemo, createResource, createSignal, onCleanup } from "solid-js";
+import {
+	createEffect,
+	createMemo,
+	createResource,
+	createRoot,
+	createSignal,
+	onCleanup,
+} from "solid-js";
 import {
 	isQuotaRead,
 	type LocaleContext,
@@ -19,9 +26,15 @@ import {
 import {
 	defaultLocaleContext,
 	formatQuotaRows,
-	formatSidebarRows,
+	formatSidebarText,
 	revalidateQuota,
 } from "./ui/format";
+import {
+	renderSidebar,
+	resolveSidebarTheme,
+	type SidebarTheme,
+} from "./ui/Sidebar";
+import { buildSidebarModel, type SidebarModel } from "./ui/sidebar-model";
 import { UsagePage } from "./ui/UsagePage";
 
 export type QuotaTuiContext = Pick<
@@ -307,9 +320,10 @@ const UsagePageHost = UsagePage as unknown as (
 ) => unknown;
 
 /**
- * Plain sidebar text for the slot contribution. `null` means the host should
- * render nothing; every other branch is one string joined with newlines so the
- * slot returns exactly one static text node with a plain-string child.
+ * Plain-text compatibility helper retained for callers and pinned formatting
+ * tests. Successful live quota presentation uses the structured
+ * `buildSidebarModel` + `renderSidebar` path instead. `null` means no
+ * contribution; every other branch is one string joined with newlines.
  */
 export function buildSidebarText(input: {
 	selection: QuotaSelection | undefined;
@@ -331,14 +345,54 @@ export function buildSidebarText(input: {
 			? `${selection.label}: checking quota`
 			: `${selection.label}: quota unavailable`;
 	}
-	return formatSidebarRows(
+	return formatSidebarText(
 		input.provider,
 		input.quota,
 		input.locale,
 		input.now ?? Date.now(),
-	)
-		.map((row) => `${row.label}: ${row.value}`)
-		.join("\n");
+	);
+}
+
+/**
+ * Structured placeholders for the states that have no quota read yet. They
+ * keep the explicit no-selection/loading/unavailable wording without
+ * inventing a model from an absent provider or snapshot.
+ */
+export function sidebarFallbackModel(input: {
+	selection: QuotaSelection | undefined;
+	loading: boolean;
+}): SidebarModel | null {
+	if (input.selection === undefined) {
+		return null;
+	}
+	if (input.selection.providerID === undefined) {
+		return {
+			provider: input.selection.label,
+			lines: [
+				{
+					id: "selection",
+					kind: "status",
+					text: "Select a provider to see its quota.",
+					tone: "muted",
+				},
+			],
+			footer: "",
+		};
+	}
+	return {
+		provider: input.selection.label,
+		lines: [
+			{
+				id: "quota:pending",
+				kind: "status",
+				text: input.loading
+					? "Checking quota…"
+					: "Quota unavailable: no current result was returned.",
+				tone: input.loading ? "muted" : "error",
+			},
+		],
+		footer: "",
+	};
 }
 
 export function QuotaUsagePage(props: Record<string, unknown>) {
@@ -464,53 +518,97 @@ async function refreshSelected(context: QuotaTuiContext): Promise<void> {
 }
 
 /**
- * Passive host integration: a compact sidebar line, a namespaced full page,
+ * Passive host integration: a structured sidebar block, a namespaced full page,
  * and palette/slash commands. Nothing here fetches quota directly; the RPC is
  * the only boundary, and the server coordinator is the only refresh owner. No
  * widget owns a timer, so mounting sidebar and page shares one request rate.
  */
 export function setupQuotaTui(context: QuotaTuiContext): () => void {
-	const sidebarSelection = createMemo(() => currentSelection(context));
-	const sidebarPushed = createPushedQuota(context);
-	const sidebarDriver = createSidebarDriver(context);
-	const sidebarLocale = defaultLocaleContext();
-	// The slot contribution is one static text node with a plain-string child.
-	// No component wrapper, box, getter, or async resource sits on the render
-	// path: the driver result is consumed inside this memo and the host
-	// re-diffs only the returned string.
-	const sidebarText = createMemo(() => {
-		const selected = sidebarSelection();
-		const snapshot = sidebarDriver.snapshot();
-		const fetched = snapshot.value;
-		const matching =
-			fetched !== undefined &&
-			selected.providerID !== undefined &&
-			fetched.provider.providerID === selected.providerID
-				? fetched
-				: undefined;
-		const quota =
-			selected.providerID === undefined
-				? undefined
-				: (sidebarPushed.pushed()[selected.providerID] ?? matching?.quota);
-		return buildSidebarText({
-			selection: selected,
-			provider: matching?.provider,
-			quota:
-				quota === undefined ? undefined : revalidateQuota(quota, Date.now()),
-			loading: snapshot.loading,
-			locale: sidebarLocale,
+	const sidebar = createRoot((disposeRoot) => {
+		const sidebarSelection = createMemo(() => currentSelection(context));
+		const sidebarPushed = createPushedQuota(context);
+		const sidebarDriver = createSidebarDriver(context);
+		const sidebarLocale = defaultLocaleContext();
+		// Snapshot only the semantic tokens the block paints into plugin-owned
+		// plain state. The effect reads the host theme outside the slot render, so
+		// a replaced theme object or a changed reactive token updates these values.
+		const [sidebarTheme, setSidebarTheme] = createSignal<SidebarTheme>(
+			resolveSidebarTheme(context.theme),
+		);
+		createEffect(() => {
+			setSidebarTheme(resolveSidebarTheme(context.theme));
 		});
-	});
-	const disposeSidebar = context.ui.slot({
-		append: "sidebar.content",
-		render: () => {
-			sidebarDriver.sync(sidebarSelection().providerID);
-			const text = sidebarText();
-			if (text === null) {
-				return null;
+		const openUsage = () => {
+			context.ui.router.navigate({ type: "plugin", name: USAGE_PAGE_NAME });
+		};
+		// The effect owns all host reactive reads, the driver hand-off, and the
+		// model build. It starts only after the host first asks the slot to
+		// render, so merely loading the plugin does not request quota. The slot
+		// render reads the plain model signal and nothing else.
+		const [sidebarActive, setSidebarActive] = createSignal(false);
+		const [sidebarModel, setSidebarModel] = createSignal<SidebarModel | null>(
+			null,
+		);
+		createEffect(() => {
+			if (!sidebarActive()) {
+				return;
 			}
-			return jsx("text", { children: text });
-		},
+			const selected = sidebarSelection();
+			sidebarDriver.sync(selected.providerID);
+			if (selected.providerID === undefined) {
+				setSidebarModel(
+					sidebarFallbackModel({ selection: selected, loading: false }),
+				);
+				return;
+			}
+			const snapshot = sidebarDriver.snapshot();
+			const fetched = snapshot.value;
+			const matching =
+				fetched !== undefined &&
+				fetched.provider.providerID === selected.providerID
+					? fetched
+					: undefined;
+			const quota =
+				sidebarPushed.pushed()[selected.providerID] ?? matching?.quota;
+			if (matching === undefined || quota === undefined) {
+				setSidebarModel(
+					sidebarFallbackModel({
+						selection: selected,
+						loading: snapshot.loading,
+					}),
+				);
+				return;
+			}
+			const now = Date.now();
+			setSidebarModel(
+				buildSidebarModel(
+					matching.provider,
+					revalidateQuota(quota, now),
+					sidebarLocale,
+					now,
+				),
+			);
+		});
+		const disposeSidebar = context.ui.slot({
+			append: "sidebar.content",
+			render: () => {
+				setSidebarActive(true);
+				const model = sidebarModel();
+				return model === null
+					? null
+					: renderSidebar(model, sidebarTheme(), openUsage);
+			},
+		});
+		return {
+			dispose: () => {
+				// Dispose the reactive owner first so a late host reconciliation
+				// cannot restart the fetch driver, then release the RPC and slots.
+				disposeRoot();
+				sidebarDriver.dispose();
+				sidebarPushed.dispose();
+				disposeSidebar();
+			},
+		};
 	});
 	const disposePage = context.ui.router.register({
 		name: USAGE_PAGE_NAME,
@@ -554,9 +652,7 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 	}));
 
 	return () => {
-		sidebarDriver.dispose();
-		sidebarPushed.dispose();
-		disposeSidebar();
+		sidebar.dispose();
 		disposePage();
 	};
 }

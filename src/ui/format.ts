@@ -109,20 +109,20 @@ function toneForState(state: UnavailableState): DisplayRow["tone"] {
 		: "error";
 }
 
-function formatPercent(value: number, locale: LocaleContext): string {
+export function formatPercent(value: number, locale: LocaleContext): string {
 	return new Intl.NumberFormat(locale.locale, {
 		maximumFractionDigits: 1,
 	}).format(value);
 }
 
-function formatCurrency(value: number, locale: LocaleContext): string {
+export function formatCurrency(value: number, locale: LocaleContext): string {
 	return new Intl.NumberFormat(locale.locale, {
 		style: "currency",
 		currency: "USD",
 	}).format(value);
 }
 
-function durationText(seconds: number): string {
+export function durationText(seconds: number): string {
 	if (seconds < 60) {
 		return `${seconds} s`;
 	}
@@ -138,7 +138,7 @@ function durationText(seconds: number): string {
 	return `${Math.floor(seconds / 60)} min ${seconds % 60} s`;
 }
 
-function dateParts(
+export function dateParts(
 	timestamp: number,
 	locale: LocaleContext,
 ): Record<string, string> {
@@ -439,7 +439,7 @@ export function compactRows(rows: DisplayRow[]): DisplayRow[] {
 	return result;
 }
 
-function latestFetchedTime(read: QuotaRead): number | undefined {
+export function latestFetchedTime(read: QuotaRead): number | undefined {
 	if (!("sections" in read)) {
 		return undefined;
 	}
@@ -456,7 +456,7 @@ function latestFetchedTime(read: QuotaRead): number | undefined {
 	return latest;
 }
 
-function latestAttemptTime(read: QuotaRead): number | undefined {
+export function latestAttemptTime(read: QuotaRead): number | undefined {
 	if (!("sections" in read)) {
 		return read.attemptedAt;
 	}
@@ -472,7 +472,7 @@ function latestAttemptTime(read: QuotaRead): number | undefined {
 	return latest;
 }
 
-function ageText(ageMs: number): string {
+export function ageText(ageMs: number): string {
 	const seconds = Math.max(0, Math.floor(ageMs / 1000));
 	if (seconds < 60) {
 		return `${seconds}s ago`;
@@ -530,10 +530,6 @@ function updateAgeRow(
 	};
 }
 
-function isConfiguredCap(row: DisplayRow): boolean {
-	return row.id.endsWith(":cap");
-}
-
 /**
  * Compact sidebar rows: one header, one row per reported quota constraint
  * (configured caps stay on the full page), and a truthful update age. Rows
@@ -545,20 +541,153 @@ export function formatSidebarRows(
 	locale: LocaleContext,
 	now: number = Date.now(),
 ): DisplayRow[] {
+	const headerName =
+		new Map([
+			["OpenAI ChatGPT with Codex companion", "OpenAI · Codex quota"],
+		]).get(provider.name) ?? provider.name;
 	const header: DisplayRow = {
 		id: "provider",
-		label: provider.name,
-		value: supportLabel(provider),
-		detail:
-			provider.integrationID === undefined
-				? provider.authMethod
-				: `${provider.authMethod} · integration ${provider.integrationID}`,
+		label: headerName,
+		value: "",
 		tone: "normal",
 	};
-	const quotaRows = compactRows(
-		formatQuotaRows(read, locale).filter((row) => !isConfiguredCap(row)),
-	);
-	return [header, ...quotaRows, updateAgeRow(read, now, locale)];
+	const quotaRows: DisplayRow[] = [];
+	if (!("sections" in read)) {
+		const status = formatQuotaRows(read, locale)[0];
+		if (status !== undefined) {
+			quotaRows.push({
+				...status,
+				value:
+					read.retryAfterMs === undefined
+						? status.value
+						: `${status.value} · retry after ${Math.ceil(read.retryAfterMs / 1000)}s`,
+			});
+		}
+	} else {
+		const metrics = read.sections.flatMap((section) =>
+			section.result.state === "available"
+				? section.result.metrics.map((metric) => ({
+						scope: section.scope,
+						metric,
+					}))
+				: [],
+		);
+		const windowCounts = new Map<string, number>();
+		for (const { scope, metric } of metrics) {
+			if (metric.kind !== "window") continue;
+			const key = `${scope}:${metric.windowSeconds}`;
+			windowCounts.set(key, (windowCounts.get(key) ?? 0) + 1);
+		}
+		const scopeNames: Record<QuotaScope, string> = {
+			app: "App",
+			"shared-plan": "Shared",
+			"provider-balance": "Balance",
+		};
+		const moneyNames = new Map([
+			["Included credits", "Included"],
+			["Purchased credits", "Purchased"],
+			["Total credits", "Total"],
+		]);
+		const genericWindowNames = new Set([
+			"Current app limit",
+			"Shared plan primary limit",
+			"Shared plan secondary limit",
+			"Primary",
+			"Secondary",
+		]);
+		read.sections.forEach((section, sectionIndex) => {
+			const result = section.result;
+			if (result.state !== "available") {
+				const row = sectionStatusRow(
+					section.scope,
+					sectionIndex,
+					result,
+					locale,
+				);
+				row.label = `${scopeNames[section.scope]} status`;
+				if (result.retryAfterMs !== undefined) {
+					row.value += ` · retry after ${Math.ceil(result.retryAfterMs / 1000)}s`;
+				}
+				quotaRows.push(row);
+				return;
+			}
+			if (result.metrics.length === 0) {
+				quotaRows.push({
+					id: `${sectionIndex}:${section.scope}:empty`,
+					label: `${scopeNames[section.scope]} status`,
+					value: "No quota values were reported for this scope.",
+					detail: `fetched ${formatFullTimestamp(result.fetchedAt, locale)}`,
+					scope: section.scope,
+					tone: "warning",
+				});
+			}
+			for (const metric of result.metrics) {
+				const row = metricRow(metric, result, sectionIndex, locale);
+				if (metric.kind === "money") {
+					row.label = moneyNames.get(metric.label) ?? metric.label;
+					row.value = `${formatCurrency(metric.remaining, locale)} remaining`;
+				} else {
+					const duration = durationText(metric.windowSeconds).replace(" ", "");
+					row.label = `${scopeNames[section.scope]} ${duration}`;
+					if (
+						(windowCounts.get(`${section.scope}:${metric.windowSeconds}`) ??
+							0) > 1 ||
+						!genericWindowNames.has(metric.label)
+					) {
+						row.label += ` · ${metric.label}`;
+					}
+					row.value =
+						metric.remainingPercent !== undefined
+							? `${formatPercent(metric.remainingPercent, locale)}% remaining`
+							: metric.usedPercent !== undefined
+								? `${formatPercent(metric.usedPercent, locale)}% used`
+								: "Unknown (not reported)";
+				}
+				if (metric.resetsAt !== undefined) {
+					const resetParts = dateParts(metric.resetsAt, locale);
+					const currentYear = dateParts(now, locale).year;
+					const date = new Intl.DateTimeFormat(locale.locale, {
+						timeZone: locale.timeZone,
+						calendar: "gregory",
+						month: "short",
+						day: "numeric",
+					}).format(metric.resetsAt);
+					row.value += ` · resets ${date} ${resetParts.hour}:${resetParts.minute}${resetParts.year !== currentYear ? ` · ${resetParts.year}` : ""}`;
+				}
+				quotaRows.push(row);
+			}
+		});
+		if (read.sections.length === 0) {
+			quotaRows.push({
+				id: "quota:status",
+				label: "Quota",
+				value: "No quota sections were reported.",
+				tone: "warning",
+			});
+		}
+	}
+	const age = updateAgeRow(read, now, locale);
+	return [
+		header,
+		...quotaRows,
+		{ ...age, value: `${age.value} · ${locale.timeZone}` },
+	];
+}
+
+/** Plain-text sidebar presentation. This intentionally keeps each reported
+ * metric separate; the dashboard's row compaction remains unchanged. */
+export function formatSidebarText(
+	provider: ProviderSummary,
+	read: QuotaRead,
+	locale: LocaleContext,
+	now: number = Date.now(),
+): string {
+	const rows = formatSidebarRows(provider, read, locale, now);
+	return rows
+		.map((row) =>
+			row.value.length === 0 ? row.label : `${row.label}: ${row.value}`,
+		)
+		.join("\n");
 }
 
 export type UsageSection = {

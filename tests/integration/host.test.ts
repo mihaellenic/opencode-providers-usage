@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type {
 	AdapterResolveInput,
 	ProviderAdapter,
@@ -133,6 +135,19 @@ function fakeTuiContext(options: {
 	const navigations: unknown[] = [];
 	const context = {
 		location: { directory: "/tmp/provider-usage-test" },
+		theme: {
+			text: {
+				base: "#ffffff",
+				muted: "#aaaaaa",
+				faint: "#666666",
+				action: { primary: { base: "#c3a6ef" } },
+				feedback: {
+					success: { base: "#a7d5b2" },
+					warning: { base: "#ebc588" },
+					error: { base: "#ff3355" },
+				},
+			},
+		},
 		client: {
 			rpc: () => ({
 				list: async () => ({ version: 1, providers: [] }),
@@ -262,6 +277,45 @@ describe("TUI selection binding", () => {
 			.find((command) => command.id === "provider-quota.usage");
 		expect(usage?.slash?.name).toBe("provider-usage");
 		dispose();
+	});
+
+	test("registered_sidebar_slot_updates_under_browser_solid_conditions", () => {
+		// Bun's default resolution picks solid-js/dist/server.js, where memos do
+		// not recompute. Run the live slot probe in an isolated browser
+		// conditions process instead of weakening production memo placement.
+		// The probe is a plain script under tests/fixtures, so the default suite
+		// discovers no skipped test from it.
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--conditions=browser",
+				fileURLToPath(
+					new URL("../fixtures/sidebar-slot-live.ts", import.meta.url),
+				),
+			],
+			{
+				cwd: fileURLToPath(new URL("../..", import.meta.url)),
+				encoding: "utf8",
+				timeout: 60_000,
+			},
+		);
+		const stdout = result.stdout ?? "";
+		const stderr = result.stderr ?? "";
+		if (result.status !== 0 || !stdout.includes("sidebar-slot-live: PASS")) {
+			throw new Error(
+				[
+					`sidebar live slot probe failed (status ${String(result.status)})`,
+					`stdout:\n${stdout}`,
+					`stderr:\n${stderr}`,
+					result.error === undefined ? "" : `error: ${String(result.error)}`,
+				].join("\n"),
+			);
+		}
+		expect(result.status).toBe(0);
+		expect(stdout).toContain("sidebar-slot-live: PASS");
+		expect(stdout).toContain("sidebar-slot-live: static-tree");
+		expect(stdout).toContain("sidebar-slot-live: theme-updates");
+		expect(stdout).toContain("sidebar-slot-live: navigation+disposal");
 	});
 });
 

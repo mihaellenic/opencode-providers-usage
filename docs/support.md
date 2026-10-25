@@ -244,12 +244,58 @@ Model usage, cost, speed, historical charts, alerts, automatic provider
 switching, and purchasing credits are out of scope. Their future data sources
 must remain independent capabilities, never guessed quota inputs.
 
-## Sidebar presentation trade-off
+## Sidebar presentation
 
-The sidebar contribution deliberately renders as a single static text node
-with a joined string (the host-proven shape for slot contributions; nested
-reactive component trees in `sidebar.content` triggered a host re-entrancy
-crash on 2.1.4). Consequences: the sidebar carries plain text rows without
-per-row tone colors and no click affordance — tones, full details, and all
-interaction remain on the full-page dashboard (`/usage`), where the complete
-layout is safe.
+The earlier conservative workaround rendered the `sidebar.content`
+contribution as one static text node with a plain string child. That avoided
+the host re-entrancy crash seen with nested reactive component trees on
+OpenCode 2.1.4, but it could not express the approved hierarchy: no accent
+rule, aligned cells, semantic tones, paired credits, or clickable navigation.
+That workaround is retained only as the `buildSidebarText` compatibility
+helper. Successful live quota now uses a static nested OpenTUI Box/Text tree
+built from the plain `SidebarModel` in `src/ui/sidebar-model.ts`.
+
+The live path keeps the host safeguards that mattered:
+
+- The selected provider, pushed snapshot, fetch result, and expiry check are
+  resolved before the slot render. Required theme tokens are separately
+  snapshotted into plugin-owned plain state by an effect outside the render, so
+  both a replaced theme object and a reactive token update repaint the existing
+  contribution. The slot render reads only that plain model/theme state and
+  returns fresh renderable nodes. It passes no function-valued children and
+  never reuses a disposed renderable.
+- The model is a compact projection of reported quota data, not a second quota
+  source. The header is `Quota` plus the provider name (`OpenAI · Codex quota`
+  for the validated Codex companion capability; arbitrary names unchanged).
+- Window rows keep explicit scope/duration labels (`App 7d`, `Shared 5h`,
+  `Balance 7d`), the reported remaining/used value in its own aligned cell, and
+  a muted reset cell. Reported remaining takes precedence; used-only input
+  never becomes a fabricated remaining value. Zero remaining is an error,
+  at most 20% left is a warning, and unknown values are muted.
+- Included credits show a computed percentage only when a positive reported
+  allowance exists; otherwise the actual money remaining is shown. Known
+  purchased/total pools are paired on one row. Missing pools are omitted, and
+  the UI never computes a new total.
+- Every unavailable section keeps its exact reason/recovery copy and retry
+  delay. Expired sections hide their figures; partial reads keep valid rows.
+  The footer distinguishes `updated` from `last attempt` and names the
+  configured timezone once.
+- `View all providers →` is a real click target that opens the existing
+  `provider-usage` page route. It triggers no new RPC read or refresh.
+- Painted-line tests cover 24, 32, 40, and 60 columns. Columns use the actual
+  label/value content widths and are constrained by the real parent width, so
+  ordinary layouts stay aligned and long custom labels/values remain intact at
+  wide panes instead of being split by arbitrary caps. Narrow panes wrap reset,
+  detail, header, and footer content instead of clipping or hiding a
+  constraint, and a reset that cannot share a row moves intact rather than
+  splitting mid-clock. Semantic colors, including live theme repaints, are
+  asserted from captured spans.
+
+**Validation limitation:** these checks use OpenTUI's test renderer plus an
+isolated `--conditions=browser` client-runtime probe with a fake host. They
+prove repeated selection/snapshot updates, expiry, failure, mounted theme
+replacement/token updates, disposal, and actionable navigation in that
+harness. They are not an interactive OpenCode 2.1.4 session capture. Real-host
+behavior after live sidebar reconciliation, a real host theme switch, and page
+navigation must still be validated manually before claiming a live host
+guarantee.
