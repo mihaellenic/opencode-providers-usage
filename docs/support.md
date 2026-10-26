@@ -158,12 +158,6 @@ method itself is unsupported. Re-authenticate through `/connect`, then refresh.
 | State / reason | Exact user-facing copy (from `src/ui/format.ts`) |
 | --- | --- |
 | state `unsupported` | Quota unavailable: no quota source is validated for this provider. |
-
-The sidebar card never renders the `unsupported` explanation as a second
-line. For that purely informational state the card shows only the plain
-status line `Quota unavailable`; every other state keeps the copy above
-because it carries actionable guidance. The full sentence still appears
-anywhere the detailed copy is listed (for example the usage page).
 | state `not-applicable` | Quota not applicable: this provider has no cloud quota to report. |
 | state `unavailable`, reason `no_validated_quota_source` | Quota unavailable: no current validated quota. The last result expired or has not completed. Refresh to try again. |
 | state `auth-required`, reason `companion_expired` | Quota unavailable: sign in with the ChatGPT/Codex app on this machine (using the same account), then refresh. |
@@ -179,6 +173,11 @@ anywhere the detailed copy is listed (for example the usage page).
 | `network_error` | Quota unavailable: the provider could not be reached. Refresh to try again. |
 | `invalid_response` | Quota unavailable: the provider returned an unusable response. Refresh to try again. |
 | unrecognized reason | Quota unavailable: the provider could not be queried. Refresh to try again. |
+
+The sidebar card and the usage-page card never render the `unsupported`
+explanation as a second line. For that purely informational state both show
+only the plain status line `Quota unavailable`; every other state keeps the copy
+above because it carries actionable guidance.
 
 Reason-specific copy is applied before the generic `auth-required` fallback.
 In particular, a rejected OpenAI `401`/`403` that is not attributable to
@@ -343,6 +342,32 @@ The live path keeps the host safeguards that mattered:
   glyph runs proportionally. Narrow panes wrap the reset countdown, labels, and
   title content instead of hiding a constraint. Semantic colors, including live
   theme repaints, are asserted from captured spans.
+
+## Usage page presentation
+
+The `/usage` page renders one card per connected provider in declaration order
+and paints the same `SidebarLine` widget rows as the sidebar, including any
+credit-line detail text that widget already renders. The page adds only:
+
+- an update-age cell in the card header: `Updated <age>` in the success tone
+  when a fetched timestamp exists, or `Last attempt <age>` in the warning tone
+  when only an attempt exists for a provider expected to report quota. It is
+  omitted for unsupported/not-applicable providers and when no read exists;
+  `Updated never` is never fabricated.
+- absolute reset/refill timestamps (`· resets Oct 26 14:14`, with the year
+  appended outside the current local year) instead of the sidebar's countdowns.
+- an explicit `Total credits` row when a positive allowance uses the folded
+  bar/pair form; the sidebar intentionally hides that derived total.
+- shared-plan windows and a configured app cap, both of which the compact
+  sidebar omits.
+
+Cards contain no badges, support/evidence, auth-method, auth-source,
+per-metric-detail, or footnote rows. An unsupported card is only the provider
+name plus `Quota unavailable`. A missing read shows
+`Not loaded yet. Refresh to load.` without an update cell. Expired sections are
+revalidated before rendering, so they become per-scope unavailable
+explanations rather than yesterday's figures. Footer hints are `esc` back and
+`ctrl+r` refresh.
 
 **Validation limitation:** these checks use OpenTUI's test renderer plus an
 isolated `--conditions=browser` client-runtime probe with a fake host. They

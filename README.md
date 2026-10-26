@@ -139,6 +139,12 @@ has already been imported.
   command is `/usage`; the occupation check runs once at setup — a plugin that
   registers `/usage` later may collide, and OpenCode resolves duplicate slash
   names itself. If occupied at our setup the plugin registers `/provider-usage`.
+  The page renders one card per connected provider with the same compact quota
+  rows as the sidebar, plus an update-age cell (`Updated 30s ago`, or
+  `Last attempt 5m ago` when only an attempt exists), absolute reset timestamps,
+  and an explicit `Total credits` row when reported. Shared-plan rows and a
+  configured app cap appear only on this page. Unsupported providers show only
+  their name and `Quota unavailable`.
 - `Refresh provider usage` (`provider-quota.refresh`) refreshes the selected
   provider and shows a short status toast.
 - On the full page, `ctrl+r` refreshes every listed provider and `escape` goes

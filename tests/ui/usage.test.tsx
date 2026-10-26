@@ -20,15 +20,13 @@ import {
 } from "../../src/tui";
 import {
 	AUTH_UNAVAILABLE_COPY,
-	compactRows,
+	defaultLocaleContext,
+	formatPercent,
 	formatQuotaRows,
-	formatUpdateAge,
-	formatUsageSections,
+	formatResetCompact,
 	NATIVE_ONLY_COPY,
 	REJECTED_AUTH_COPY,
-	renderRowsToLines,
 	revalidateQuota,
-	supportLabel,
 	UNAVAILABLE_NO_CURRENT_COPY,
 	UNSUPPORTED_NO_SOURCE_COPY,
 } from "../../src/ui/format";
@@ -36,6 +34,7 @@ import { sidebarQuotaPresentation } from "../../src/ui/quota-presentation";
 import { Sidebar } from "../../src/ui/Sidebar";
 import { buildSidebarModel } from "../../src/ui/sidebar-model";
 import { UsagePage } from "../../src/ui/UsagePage";
+import { buildUsagePageModel } from "../../src/ui/usage-page-model";
 
 const NOW = Date.UTC(2026, 9, 24, 12, 0, 0);
 const LOCALE = { locale: "en-GB", timeZone: "UTC" };
@@ -103,10 +102,6 @@ function metricRows(rows: ReturnType<typeof formatQuotaRows>) {
 	return rows.filter(
 		(row) => row.scope !== undefined && !row.id.endsWith(":cap"),
 	);
-}
-
-function squash(lines: string[]): string {
-	return lines.join("\n").replace(/\s+/g, "");
 }
 
 const FUTURE_PROVIDER: ProviderSummary = {
@@ -196,7 +191,7 @@ function futureQuota(): QuotaRead {
 }
 
 describe("quota presentation values", () => {
-	test("retained sidebar figures do not replace full-page failure diagnostics or timestamps", () => {
+	test("retained sidebar figures do not replace page failure state or freshness", () => {
 		const lastKnown = available(
 			[
 				{
@@ -221,17 +216,21 @@ describe("quota presentation values", () => {
 		});
 		expect(display.quota).toBe(lastKnown);
 		expect(display.mightBeStale).toBe(true);
-		const detail = formatUsageSections({
+		const model = buildUsagePageModel({
 			providers: [OPENAI_PROVIDER],
 			quotaByProvider: { openai: revalidateQuota(quota, NOW) },
 			locale: LOCALE,
 			now: NOW,
 		});
-		const text = JSON.stringify(detail);
-		expect(text).toContain("provider could not be reached");
-		expect(text).toContain("2026-10-24 11:59:58 UTC");
-		expect(text).not.toContain("remainingPercent");
-		expect(text).not.toContain("Data might be stale");
+		const serialized = JSON.stringify(model);
+		expect(serialized).toContain("provider could not be reached");
+		expect(model.cards[0]?.updated).toEqual({
+			text: "Last attempt 2s ago",
+			tone: "warning",
+		});
+		expect(serialized).not.toContain("42%");
+		expect(serialized).not.toContain("remainingPercent");
+		expect(serialized).not.toContain("Data might be stale");
 	});
 	test("labels_remaining_versus_used_consistently", () => {
 		const read = available([
@@ -428,20 +427,20 @@ describe("quota presentation values", () => {
 		expect(noResetRow?.detail).toContain("no reset reported");
 	});
 
-	test("formats_update_age_truthfully", () => {
+	test("page_freshness_is_updated_or_last_attempt_without_fabricating_never", () => {
 		const read = available([
 			{ scope: "shared-plan", metrics: [windowMetric({ id: "week" })] },
 		]);
-		expect(formatUpdateAge(read, NOW, LOCALE)).toBe("12s ago");
-		const rows = formatUsageSections({
+		const model = buildUsagePageModel({
 			providers: [OPENAI_PROVIDER],
 			quotaByProvider: { openai: read },
 			locale: LOCALE,
 			now: NOW,
 		});
-		const age = rows[0]?.rows.find((row) => row.id.endsWith(":age"));
-		expect(age?.value).toBe("12s ago");
-		expect(age?.detail).toContain("2026-10-24 11:59:48 UTC");
+		expect(model.cards[0]?.updated).toEqual({
+			text: "Updated 12s ago",
+			tone: "success",
+		});
 
 		const partial: QuotaRead = {
 			state: "partial",
@@ -466,7 +465,54 @@ describe("quota presentation values", () => {
 				},
 			],
 		};
-		expect(formatUpdateAge(partial, NOW, LOCALE)).toBe("12s ago");
+		expect(
+			buildUsagePageModel({
+				providers: [OPENAI_PROVIDER],
+				quotaByProvider: { openai: partial },
+				locale: LOCALE,
+				now: NOW,
+			}).cards[0]?.updated,
+		).toEqual({ text: "Updated 12s ago", tone: "success" });
+
+		const attemptOnly = buildUsagePageModel({
+			providers: [OPENAI_PROVIDER],
+			quotaByProvider: {
+				openai: {
+					state: "partial",
+					authSource: "codex-companion",
+					sections: [
+						{
+							scope: "app",
+							result: {
+								state: "unavailable",
+								reason: "rate_limited",
+								attemptedAt: NOW - 2_000,
+							},
+						},
+					],
+				},
+			},
+			locale: LOCALE,
+			now: NOW,
+		});
+		expect(attemptOnly.cards[0]?.updated).toEqual({
+			text: "Last attempt 2s ago",
+			tone: "warning",
+		});
+
+		const unsupported = buildUsagePageModel({
+			providers: [FUTURE_PROVIDER],
+			quotaByProvider: {
+				"future-provider": {
+					state: "unsupported",
+					reason: "no_validated_quota_source",
+					attemptedAt: NOW - 2_000,
+				},
+			},
+			locale: LOCALE,
+			now: NOW,
+		});
+		expect(unsupported.cards[0]?.updated).toBeUndefined();
 	});
 });
 
@@ -546,105 +592,10 @@ describe("unavailable state copy", () => {
 		expect(stale[0]?.value).toContain("expired");
 		expect(unsupported[0]?.value).not.toBe(stale[0]?.value);
 	});
-
-	test("evidence_levels_are_labeled_distinctly_next_to_support", () => {
-		expect(
-			supportLabel({
-				...FUTURE_PROVIDER,
-				support: "supported",
-				evidence: "live-validated",
-			}),
-		).toBe("supported · live-validated");
-		expect(
-			supportLabel({
-				...FUTURE_PROVIDER,
-				support: "requires-companion",
-				evidence: "documented-only",
-			}),
-		).toBe("requires companion · documented-only");
-		expect(
-			supportLabel({
-				...FUTURE_PROVIDER,
-				support: "unsupported",
-				evidence: "unverified",
-			}),
-		).toBe("unsupported · unverified");
-	});
 });
 
-describe("row grouping and narrow terminals", () => {
-	test("equal_percentages_with_different_resets_are_not_merged", () => {
-		const different = available([
-			{
-				scope: "app",
-				metrics: [
-					windowMetric({
-						id: "app-week",
-						scope: "app",
-						remainingPercent: 90,
-						usedPercent: 10,
-						resetsAt: APP_RESET,
-					}),
-				],
-			},
-			{
-				scope: "shared-plan",
-				metrics: [
-					windowMetric({
-						id: "plan-week",
-						remainingPercent: 90,
-						usedPercent: 10,
-						resetsAt: PLAN_RESET,
-					}),
-				],
-			},
-		]);
-		const kept = metricRows(compactRows(formatQuotaRows(different, LOCALE)));
-		expect(kept).toHaveLength(2);
-		expect(kept.map((row) => row.scope)).toEqual(["app", "shared-plan"]);
-		expect(kept[0]?.label).toContain("App");
-		expect(kept[1]?.label).toContain("Shared plan");
-		expect(kept[0]?.detail).toContain("2026-10-30 14:00:00 UTC");
-		expect(kept[1]?.detail).toContain("2026-10-31 09:30:00 UTC");
-	});
-
-	test("truly_identical_rows_combine_only_with_both_scopes_labeled", () => {
-		const identical = available([
-			{
-				scope: "app",
-				metrics: [
-					windowMetric({
-						id: "app-week",
-						scope: "app",
-						remainingPercent: 90,
-						usedPercent: 10,
-						resetsAt: PLAN_RESET,
-					}),
-				],
-			},
-			{
-				scope: "shared-plan",
-				metrics: [
-					windowMetric({
-						id: "plan-week",
-						remainingPercent: 90,
-						usedPercent: 10,
-						resetsAt: PLAN_RESET,
-					}),
-				],
-			},
-		]);
-		const merged = metricRows(compactRows(formatQuotaRows(identical, LOCALE)));
-		expect(merged).toHaveLength(1);
-		expect(merged[0]?.label).toContain("App");
-		expect(merged[0]?.label).toContain("Shared plan");
-		expect(merged[0]?.value).toContain("90% remaining");
-		expect(merged[0]?.detail).toContain("window 7 d");
-		expect(merged[0]?.detail).toContain("2026-10-31 09:30:00 UTC");
-		expect(merged[0]?.detail).toContain("Scopes: App, Shared plan");
-	});
-
-	test("narrow_terminal_never_drops_a_constraint_or_state", () => {
+describe("page constraints and narrow terminals", () => {
+	test("page_model_never_drops_a_constraint_or_state", () => {
 		const metrics = Array.from({ length: 8 }, (_, index) =>
 			windowMetric({
 				id: `window-${index}`,
@@ -688,17 +639,27 @@ describe("row grouping and narrow terminals", () => {
 				},
 			],
 		};
-		const rows = formatQuotaRows(read, LOCALE);
-		const narrow = renderRowsToLines(rows, 20, { details: true });
-		const wide = renderRowsToLines(rows, 120, { details: true });
-
-		expect(squash(narrow)).toBe(squash(wide));
-		for (const row of rows) {
-			expect(squash(narrow)).toContain(squash([`${row.label}: ${row.value}`]));
+		const model = buildUsagePageModel({
+			providers: [OPENAI_PROVIDER],
+			quotaByProvider: { openai: read },
+			locale: LOCALE,
+			now: NOW,
+		});
+		const lines = model.cards[0]?.lines ?? [];
+		expect(lines).toHaveLength(10);
+		expect(lines.filter((line) => line.kind === "window")).toHaveLength(8);
+		expect(model.cards[0]?.updated).toEqual({
+			text: "Updated 12s ago",
+			tone: "success",
+		});
+		const serialized = JSON.stringify(model);
+		for (let index = 1; index <= 8; index += 1) {
+			expect(serialized).toContain(`Window ${index}`);
 		}
-		expect(rows.filter((row) => row.scope !== undefined)).toHaveLength(10);
-		expect(squash(narrow)).toContain("ratelimit");
-		expect(squash(narrow)).toContain("100%allowed");
+		expect(serialized).toContain("rate limit");
+		expect(serialized).toContain("100% allowed");
+		expect(serialized).toContain("Configured app cap");
+		expect(serialized).not.toContain("remainingPercent");
 	});
 
 	test("renders_unregistered_at_construction_provider_from_declarations", () => {
@@ -718,25 +679,44 @@ describe("row grouping and narrow terminals", () => {
 				],
 			},
 		]);
-		const sections = formatUsageSections({
+		const model = buildUsagePageModel({
 			providers: [FUTURE_PROVIDER],
 			quotaByProvider: { "future-provider": quota },
 			locale: LOCALE,
 			now: NOW,
 		});
-		expect(sections).toHaveLength(1);
-		expect(sections[0]?.heading).toBe("Future Provider");
-		expect(sections[0]?.support).toBe("supported · documented-only");
-
-		const lines = renderRowsToLines(sections[0]?.rows ?? [], 32, {
-			details: true,
+		expect(model.cards).toHaveLength(1);
+		expect(model.cards[0]?.id).toBe("future-provider");
+		expect(model.cards[0]?.name).toBe("Future Provider");
+		expect(model.cards[0]?.updated).toEqual({
+			text: "Updated 12s ago",
+			tone: "success",
 		});
-		expect(squash(lines)).toContain("55%remaining");
-		expect(squash(lines)).toContain("Monthlyallowance");
-		expect(squash(lines)).toContain("supported·documented-only");
-		expect(squash(lines)).toContain("Authsource:codex-companion");
+		expect(model.cards[0]?.lines).toEqual([
+			{
+				id: "0:provider-balance:month",
+				kind: "window",
+				label: "Provider balance · Monthly allowance",
+				value: { text: "45%", tone: "normal" },
+				fill: 0.45,
+				reset: formatResetCompact(PLAN_RESET, LOCALE, NOW),
+			},
+		]);
+		const serialized = JSON.stringify(model);
+		expect(serialized).not.toContain("supported");
+		expect(serialized).not.toContain("documented-only");
+		expect(serialized).not.toContain("Auth source");
+		expect(serialized).not.toContain("remainingPercent");
 
-		const uiSource = ["format.ts", "Sidebar.tsx", "UsagePage.tsx"]
+		const uiSource = [
+			"format.ts",
+			"Sidebar.tsx",
+			"UsagePage.tsx",
+			"usage-page-model.ts",
+			"bar-row.tsx",
+			"theme.ts",
+			"sidebar-model.ts",
+		]
 			.map((file) =>
 				readFileSync(new URL(`../../src/ui/${file}`, import.meta.url), "utf8"),
 			)
@@ -885,12 +865,21 @@ describe("row grouping and narrow terminals", () => {
 		expect(revalidated.sections[0]?.result.state).toBe("unavailable");
 		expect(revalidated.sections[1]?.result.state).toBe("available");
 
-		const rows = formatQuotaRows(revalidated, LOCALE);
-		expect(rows.some((row) => row.value.includes("90% remaining"))).toBe(false);
-		expect(rows.some((row) => row.value === UNAVAILABLE_NO_CURRENT_COPY)).toBe(
-			true,
-		);
-		expect(rows.some((row) => row.value.includes("80% remaining"))).toBe(true);
+		const model = buildUsagePageModel({
+			providers: [OPENAI_PROVIDER],
+			quotaByProvider: { openai: revalidated },
+			locale: LOCALE,
+			now: NOW,
+		});
+		const serialized = JSON.stringify(model);
+		expect(serialized).not.toContain("90%");
+		expect(serialized).not.toContain("10%");
+		expect(serialized).toContain(UNAVAILABLE_NO_CURRENT_COPY);
+		expect(serialized).toContain("20%");
+		expect(model.cards[0]?.updated).toEqual({
+			text: "Updated 12s ago",
+			tone: "success",
+		});
 
 		const allExpired = revalidateQuota(
 			available(
@@ -905,13 +894,15 @@ describe("row grouping and narrow terminals", () => {
 			NOW,
 		);
 		expect(allExpired.state).toBe("partial");
-		const staleRows = formatQuotaRows(allExpired, LOCALE);
-		expect(staleRows.some((row) => row.value.includes("90% remaining"))).toBe(
-			false,
-		);
-		expect(
-			staleRows.some((row) => row.value === UNAVAILABLE_NO_CURRENT_COPY),
-		).toBe(true);
+		const staleModel = buildUsagePageModel({
+			providers: [OPENAI_PROVIDER],
+			quotaByProvider: { openai: allExpired },
+			locale: LOCALE,
+			now: NOW,
+		});
+		const staleSerialized = JSON.stringify(staleModel);
+		expect(staleSerialized).not.toContain("90%");
+		expect(staleSerialized).toContain(UNAVAILABLE_NO_CURRENT_COPY);
 	});
 });
 
@@ -937,13 +928,26 @@ describe("host-rendered wrappers", () => {
 				}),
 			{ width: 80, height: 40 },
 		);
+		const pageLocale = defaultLocaleContext();
+		const pageReset = formatResetCompact(
+			PLAN_RESET,
+			pageLocale,
+			Date.now(),
+		).replace(/\s+/g, "");
+		const pagePercent45 = `${formatPercent(45, pageLocale)}%`;
 		try {
 			await setup.renderOnce();
 			const frame = setup.captureCharFrame().replace(/\s+/g, "");
-			expect(frame).toContain("FutureProvider—supported·documented-only");
-			expect(frame).toContain("Authsource:codex-companion");
-			expect(frame).toContain("55%remaining");
-			expect(frame).toContain("Monthlyallowance");
+			expect(frame).toContain("Providerusage");
+			expect(frame).toContain("Connectedaccounts·quota&balances");
+			expect(frame).toContain("FutureProvider");
+			expect(frame).toContain("Updated");
+			expect(frame).toContain("Providerbalance·Monthlyallowance");
+			expect(frame).toContain(pagePercent45);
+			expect(frame).toContain(pageReset);
+			expect(frame).toContain("[esc]back[ctrl+r]refresh");
+			expect(frame).not.toContain("supported·documented-only");
+			expect(frame).not.toContain("Authsource");
 
 			const commands = layers[0]?.commands ?? [];
 			const back = commands.find(
@@ -961,10 +965,20 @@ describe("host-rendered wrappers", () => {
 
 			setup.resize(32, 60);
 			await setup.renderOnce();
-			const narrow = setup.captureCharFrame().replace(/\s+/g, "");
+			const narrowFrame = setup.captureCharFrame();
+			const narrow = narrowFrame.replace(/\s+/g, "");
 			expect(narrow).toContain("FutureProvider");
-			expect(narrow).toContain("55%remaining");
-			expect(narrow).toContain("Monthlyallowance");
+			expect(narrow).toContain("Providerbalance");
+			expect(narrow).toContain("Monthly");
+			expect(narrow).toContain("allowance");
+			expect(narrow).toContain(pagePercent45);
+			expect(narrow).toContain(pageReset);
+			expect(
+				narrowFrame
+					.split("\n")
+					.map((line) => line.trimEnd())
+					.every((line) => line.length <= 32),
+			).toBe(true);
 		} finally {
 			await setup.dispose();
 		}
@@ -1280,6 +1294,10 @@ describe("host-rendered wrappers", () => {
 			"src/tui.tsx",
 			"src/ui/Sidebar.tsx",
 			"src/ui/UsagePage.tsx",
+			"src/ui/usage-page-model.ts",
+			"src/ui/bar-row.tsx",
+			"src/ui/theme.ts",
+			"src/ui/sidebar-model.ts",
 		]) {
 			const source = readFileSync(
 				new URL(`../../${file}`, import.meta.url),

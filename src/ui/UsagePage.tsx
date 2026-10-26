@@ -2,12 +2,14 @@ import { usePlugin } from "@opencode/plugin/tui";
 import { jsx } from "@opentui/solid/jsx-runtime";
 import { createMemo } from "solid-js";
 import type {
-	DisplayRow,
 	LocaleContext,
 	ProviderSummary,
 	QuotaRead,
 } from "../core/contracts";
-import { defaultLocaleContext, formatUsageSections } from "./format";
+import { renderSidebarLines, toneColor } from "./bar-row";
+import { defaultLocaleContext } from "./format";
+import { resolveSidebarTheme } from "./theme";
+import { buildUsagePageModel } from "./usage-page-model";
 
 export type UsagePageProps = {
 	providers: ProviderSummary[];
@@ -16,42 +18,12 @@ export type UsagePageProps = {
 	back: () => void;
 };
 
-type Theme = ReturnType<typeof usePlugin>["theme"];
-
-function toneColor(theme: Theme, tone: DisplayRow["tone"]) {
-	if (tone === "error") {
-		return theme.text.feedback.error.base;
-	}
-	if (tone === "warning") {
-		return theme.text.feedback.warning.base;
-	}
-	return theme.text.base;
-}
-
-function rowElement(theme: Theme, row: DisplayRow) {
-	return [
-		jsx("text", {
-			key: row.id,
-			fg: toneColor(theme, row.tone),
-			children: `${row.label}: ${row.value}`,
-		}),
-		...(row.detail === undefined
-			? []
-			: [
-					jsx("text", {
-						key: `${row.id}:detail`,
-						fg: theme.text.muted,
-						children: `  ${row.detail}`,
-					}),
-				]),
-	];
-}
-
 /**
- * Full-page dashboard. Sections are derived from provider declarations and
- * sanitized quota reads, never from per-provider branches. Escape returns
- * and ctrl+r refreshes every connected provider through the injected
- * callback (RPC only; no inference request).
+ * Full-page dashboard. Every connected provider becomes one card that repeats
+ * the sidebar quota widget for its sanitized read; the page adds only the
+ * update-age cell, absolute reset timestamps, and the reported total-credits
+ * row. Escape returns and ctrl+r refreshes every connected provider through
+ * the injected callback (RPC only; no inference request).
  */
 export function UsagePage(props: UsagePageProps) {
 	const context = usePlugin();
@@ -80,53 +52,99 @@ export function UsagePage(props: UsagePageProps) {
 	}));
 
 	const content = createMemo(() => {
-		const theme = context.theme;
-		const sections = formatUsageSections({
+		const theme = resolveSidebarTheme(context.theme);
+		const model = buildUsagePageModel({
 			providers: props.providers,
 			quotaByProvider: props.quotaByProvider,
 			locale,
+			now: Date.now(),
 		});
 		const children: unknown[] = [
 			jsx("text", {
 				key: "title",
-				fg: theme.text.base,
-				children: "Provider usage",
+				maxWidth: "100%",
+				wrapMode: "word",
+				fg: theme.base,
+				children: model.title,
 			}),
 			jsx("text", {
-				key: "hint",
-				fg: theme.text.faint,
-				children: "[ctrl+r] refresh   [esc] back",
+				key: "subtitle",
+				maxWidth: "100%",
+				wrapMode: "word",
+				fg: theme.muted,
+				children: model.subtitle,
 			}),
 		];
-		if (sections.length === 0) {
+		if (model.cards.length === 0) {
 			children.push(
 				jsx("text", {
 					key: "empty",
-					fg: theme.text.muted,
+					maxWidth: "100%",
+					wrapMode: "word",
+					fg: theme.muted,
 					children: "No connected providers.",
 				}),
 			);
-			return children;
+		} else {
+			model.cards.forEach((card, index) => {
+				if (index > 0) {
+					children.push(
+						jsx("text", {
+							key: `${card.id}:separator`,
+							children: "",
+						}),
+					);
+				}
+				children.push(
+					jsx("box", {
+						key: `${card.id}:card`,
+						flexDirection: "column",
+						maxWidth: "100%",
+						children: [
+							jsx("box", {
+								key: `${card.id}:header`,
+								flexDirection: "row",
+								flexWrap: "wrap",
+								justifyContent: "space-between",
+								columnGap: 1,
+								width: "100%",
+								children: [
+									jsx("text", {
+										key: `${card.id}:name`,
+										maxWidth: "100%",
+										wrapMode: "word",
+										fg: theme.base,
+										children: card.name,
+									}),
+									...(card.updated === undefined
+										? []
+										: [
+												jsx("text", {
+													key: `${card.id}:updated`,
+													maxWidth: "100%",
+													flexShrink: 0,
+													wrapMode: "word",
+													fg: toneColor(theme, card.updated.tone),
+													children: card.updated.text,
+												}),
+											]),
+								],
+							}),
+							...renderSidebarLines(card.lines, theme),
+						],
+					}),
+				);
+			});
 		}
-		for (const section of sections) {
-			children.push(
-				jsx("text", {
-					key: `${section.providerID}:heading`,
-					fg: theme.text.base,
-					children: `${section.heading} — ${section.support}`,
-				}),
-			);
-			for (const row of section.rows) {
-				children.push(...rowElement(theme, row));
-			}
-			children.push(
-				jsx("text", {
-					key: `${section.providerID}:separator`,
-					fg: theme.text.faint,
-					children: "",
-				}),
-			);
-		}
+		children.push(
+			jsx("text", {
+				key: "footer",
+				maxWidth: "100%",
+				wrapMode: "word",
+				fg: theme.muted,
+				children: "[esc] back   [ctrl+r] refresh",
+			}),
+		);
 		return children;
 	});
 

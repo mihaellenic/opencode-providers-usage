@@ -70,7 +70,12 @@ const context = {
 			base: color,
 			muted: color,
 			faint: color,
-			feedback: { error: { base: color }, warning: { base: color } },
+			action: { primary: { base: color } },
+			feedback: {
+				error: { base: color },
+				warning: { base: color },
+				success: { base: color },
+			},
 		},
 	},
 	keymap: { layer: () => {} },

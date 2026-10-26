@@ -22,23 +22,10 @@ export const UNAVAILABLE_NO_CURRENT_COPY =
 export const NOT_APPLICABLE_COPY =
 	"Quota not applicable: this provider has no cloud quota to report.";
 
-const SCOPE_LABELS: Record<QuotaScope, string> = {
+export const SCOPE_LABELS: Record<QuotaScope, string> = {
 	"provider-balance": "Provider balance",
 	"shared-plan": "Shared plan",
 	app: "App",
-};
-
-const SUPPORT_LABELS: Record<ProviderSummary["support"], string> = {
-	supported: "supported",
-	unsupported: "unsupported",
-	"not-applicable": "not applicable",
-	"requires-companion": "requires companion",
-};
-
-const EVIDENCE_LABELS: Record<ProviderSummary["evidence"], string> = {
-	"live-validated": "live-validated",
-	"documented-only": "documented-only",
-	unverified: "unverified",
 };
 
 const REASON_COPY: Record<string, string> = {
@@ -55,10 +42,6 @@ const REASON_COPY: Record<string, string> = {
 	invalid_response:
 		"Quota unavailable: the provider returned an unusable response. Refresh to try again.",
 };
-
-export function supportLabel(provider: ProviderSummary): string {
-	return `${SUPPORT_LABELS[provider.support]} · ${EVIDENCE_LABELS[provider.evidence]}`;
-}
 
 /**
  * The `state` field is authoritative. `no_validated_quota_source` means
@@ -180,6 +163,26 @@ function formatResetShort(timestamp: number, locale: LocaleContext): string {
 		timeStyle: "short",
 	}).format(timestamp);
 	return `${text} (${locale.timeZone})`;
+}
+
+/**
+ * Compact absolute reset used by the full usage page: `resets Oct 26 14:14`,
+ * with the year appended only when it differs from the current local year.
+ */
+export function formatResetCompact(
+	timestamp: number,
+	locale: LocaleContext,
+	now: number,
+): string {
+	const parts = dateParts(timestamp, locale);
+	const currentYear = dateParts(now, locale).year;
+	const date = new Intl.DateTimeFormat(locale.locale, {
+		timeZone: locale.timeZone,
+		calendar: "gregory",
+		month: "short",
+		day: "numeric",
+	}).format(timestamp);
+	return `resets ${date} ${parts.hour}:${parts.minute}${parts.year !== currentYear ? ` · ${parts.year}` : ""}`;
 }
 
 export function defaultLocaleContext(): LocaleContext {
@@ -362,82 +365,6 @@ export function formatQuotaRows(
 	return rows;
 }
 
-function scopedLabel(
-	label: string,
-): { scope: string; base: string } | undefined {
-	const separator = label.indexOf(" · ");
-	if (separator <= 0) {
-		return undefined;
-	}
-	return {
-		scope: label.slice(0, separator),
-		base: label.slice(separator + 3),
-	};
-}
-
-/**
- * Merges only rows whose duration, reset, values, tone, and base explanation
- * are all identical. Merged rows keep both scope labels and the shared
- * detail. A differing reset or value never merges (review failure mode 3).
- */
-export function compactRows(rows: DisplayRow[]): DisplayRow[] {
-	const consumed = new Set<number>();
-	const result: DisplayRow[] = [];
-
-	rows.forEach((row, index) => {
-		if (consumed.has(index)) {
-			return;
-		}
-		const rowLabel = scopedLabel(row.label);
-		if (row.scope === undefined || rowLabel === undefined) {
-			result.push(row);
-			return;
-		}
-		const merged: DisplayRow[] = [row];
-		rows.forEach((other, otherIndex) => {
-			if (otherIndex <= index || consumed.has(otherIndex)) {
-				return;
-			}
-			if (other.scope === undefined || other.scope === row.scope) {
-				return;
-			}
-			const otherLabel = scopedLabel(other.label);
-			if (otherLabel === undefined || otherLabel.base !== rowLabel.base) {
-				return;
-			}
-			if (
-				other.value !== row.value ||
-				other.tone !== row.tone ||
-				(other.detail ?? "") !== (row.detail ?? "")
-			) {
-				return;
-			}
-			merged.push(other);
-			consumed.add(otherIndex);
-		});
-		if (merged.length === 1) {
-			result.push(row);
-			return;
-		}
-		const scopeNames = [
-			...new Set(merged.map((entry) => scopedLabel(entry.label)?.scope ?? "")),
-		].filter((scope) => scope.length > 0);
-		const detail = row.detail;
-		result.push({
-			id: merged.map((entry) => entry.id).join("+"),
-			label: `${scopeNames.join(" + ")} · ${rowLabel.base}`,
-			value: row.value,
-			detail:
-				detail === undefined
-					? `Scopes: ${scopeNames.join(", ")}`
-					: `Scopes: ${scopeNames.join(", ")} · ${detail}`,
-			scope: row.scope,
-			tone: row.tone,
-		});
-	});
-	return result;
-}
-
 export function latestFetchedTime(read: QuotaRead): number | undefined {
 	if (!("sections" in read)) {
 		return undefined;
@@ -484,49 +411,6 @@ export function ageText(ageMs: number): string {
 	const hours = Math.floor(minutes / 60);
 	const rest = minutes % 60;
 	return rest === 0 ? `${hours}h ago` : `${hours}h ${rest}m ago`;
-}
-
-export function formatUpdateAge(
-	read: QuotaRead,
-	now: number,
-	_locale: LocaleContext,
-): string {
-	const time = latestFetchedTime(read) ?? latestAttemptTime(read);
-	return time === undefined ? "never" : ageText(now - time);
-}
-
-function updateAgeRow(
-	read: QuotaRead,
-	now: number,
-	locale: LocaleContext,
-): DisplayRow {
-	const fetchedAt = latestFetchedTime(read);
-	if (fetchedAt !== undefined) {
-		return {
-			id: "quota:age",
-			label: "Updated",
-			value: ageText(now - fetchedAt),
-			detail: `Fetched ${formatFullTimestamp(fetchedAt, locale)}`,
-			tone: "normal",
-		};
-	}
-	const attemptedAt = latestAttemptTime(read);
-	if (attemptedAt !== undefined) {
-		return {
-			id: "quota:age",
-			label: "Last attempt",
-			value: ageText(now - attemptedAt),
-			detail: `Attempted ${formatFullTimestamp(attemptedAt, locale)}`,
-			tone: "warning",
-		};
-	}
-	return {
-		id: "quota:age",
-		label: "Updated",
-		value: "never",
-		detail: "No successful read has been reported.",
-		tone: "warning",
-	};
 }
 
 /**
@@ -644,15 +528,7 @@ export function formatSidebarRows(
 								: "Unknown (not reported)";
 				}
 				if (metric.resetsAt !== undefined) {
-					const resetParts = dateParts(metric.resetsAt, locale);
-					const currentYear = dateParts(now, locale).year;
-					const date = new Intl.DateTimeFormat(locale.locale, {
-						timeZone: locale.timeZone,
-						calendar: "gregory",
-						month: "short",
-						day: "numeric",
-					}).format(metric.resetsAt);
-					row.value += ` · resets ${date} ${resetParts.hour}:${resetParts.minute}${resetParts.year !== currentYear ? ` · ${resetParts.year}` : ""}`;
+					row.value += ` · ${formatResetCompact(metric.resetsAt, locale, now)}`;
 				}
 				quotaRows.push(row);
 			}
@@ -683,84 +559,6 @@ export function formatSidebarText(
 			row.value.length === 0 ? row.label : `${row.label}: ${row.value}`,
 		)
 		.join("\n");
-}
-
-export type UsageSection = {
-	providerID: string;
-	heading: string;
-	support: string;
-	rows: DisplayRow[];
-};
-
-/**
- * Full-page view model derived only from sanitized provider declarations and
- * quota reads. A provider that did not exist when this file was written
- * renders through exactly this path.
- */
-export function formatUsageSections(input: {
-	providers: ProviderSummary[];
-	quotaByProvider: Record<string, QuotaRead>;
-	locale: LocaleContext;
-	now?: number;
-}): UsageSection[] {
-	const now = input.now ?? Date.now();
-	return input.providers.map((provider) => {
-		const read = input.quotaByProvider[provider.providerID];
-		const auth: DisplayRow = {
-			id: "support",
-			label: "Support",
-			value: supportLabel(provider),
-			detail:
-				provider.integrationID === undefined
-					? `${provider.authMethod} · provider ${provider.providerID}`
-					: `${provider.authMethod} · integration ${provider.integrationID} · provider ${provider.providerID}`,
-			tone: "normal",
-		};
-		const quotaRows: DisplayRow[] =
-			read === undefined
-				? [
-						{
-							id: "quota:pending",
-							label: "Quota",
-							value: "Not loaded yet. Refresh to load.",
-							tone: "warning",
-						},
-					]
-				: [
-						...("sections" in read
-							? [
-									{
-										id: "auth-source",
-										label: "Auth source",
-										value: read.authSource,
-										detail:
-											"Read on the server; credentials never cross plugin RPC.",
-										tone: "normal" as const,
-									},
-								]
-							: []),
-						...formatQuotaRows(read, input.locale),
-					];
-		const age =
-			read === undefined
-				? ({
-						id: "quota:age",
-						label: "Updated",
-						value: "never",
-						detail: "No read has completed for this provider yet.",
-						tone: "warning",
-					} satisfies DisplayRow)
-				: updateAgeRow(read, now, input.locale);
-		return {
-			providerID: provider.providerID,
-			heading: provider.name,
-			support: supportLabel(provider),
-			rows: [auth, ...quotaRows, age].map((row) => ({
-				...row,
-				id: `${provider.providerID}:${row.id}`,
-			})),
-		};
-	});
 }
 
 /**
@@ -817,63 +615,4 @@ export function nextQuotaExpiry(
 		return at > now ? [at] : [];
 	});
 	return deadlines.length > 0 ? Math.min(...deadlines) : undefined;
-}
-
-function wrapLine(text: string, width: number): string[] {
-	const limit = Math.max(1, Math.floor(width));
-	const lines: string[] = [];
-	let current = "";
-	const push = () => {
-		if (current.length > 0) {
-			lines.push(current);
-			current = "";
-		}
-	};
-	for (const word of text.split(/\s+/)) {
-		if (word.length === 0) {
-			continue;
-		}
-		if (word.length > limit) {
-			push();
-			let rest = word;
-			while (rest.length > limit) {
-				lines.push(rest.slice(0, limit));
-				rest = rest.slice(limit);
-			}
-			current = rest;
-			continue;
-		}
-		if (current.length === 0) {
-			current = word;
-		} else if (current.length + 1 + word.length <= limit) {
-			current = `${current} ${word}`;
-		} else {
-			push();
-			current = word;
-		}
-	}
-	push();
-	return lines.length === 0 ? [""] : lines;
-}
-
-/**
- * Deterministic render-to-rows reducer used by the thin components and the
- * presentation tests. Wrapping preserves every word; nothing is ellipsized
- * or dropped at any width.
- */
-export function renderRowsToLines(
-	rows: DisplayRow[],
-	width: number,
-	options: { details?: boolean } = {},
-): string[] {
-	const lines: string[] = [];
-	for (const row of rows) {
-		lines.push(...wrapLine(`${row.label}: ${row.value}`, width));
-		if (options.details === true && row.detail !== undefined) {
-			for (const line of wrapLine(row.detail, Math.max(1, width - 2))) {
-				lines.push(`  ${line}`);
-			}
-		}
-	}
-	return lines;
 }
