@@ -4,8 +4,8 @@ import { RGBA } from "@opentui/core";
 import { testRender } from "@opentui/solid";
 import { jsx } from "@opentui/solid/jsx-runtime";
 import { createMemo, createSignal } from "solid-js";
-import type { QuotaRead } from "../../src/core/contracts";
-import type { QuotaGetResult } from "../../src/rpc";
+import type { QuotaPresentation, QuotaRead } from "../../src/core/contracts";
+import type { QuotaGetResult, QuotaUpdatedEvent } from "../../src/rpc";
 import {
 	type QuotaKeymapLayer,
 	type QuotaTuiContext,
@@ -191,6 +191,32 @@ async function main(): Promise<void> {
 	let clock = now;
 	const originalNow = Date.now;
 	Date.now = () => clock;
+	const originalSetTimeout = globalThis.setTimeout;
+	const originalClearTimeout = globalThis.clearTimeout;
+	const deadlines = new Map<
+		ReturnType<typeof setTimeout>,
+		{ at: number; callback(): void }
+	>();
+	globalThis.setTimeout = ((
+		callback: () => void,
+		delay = 0,
+		...args: unknown[]
+	) => {
+		if (delay < 1_000) return originalSetTimeout(callback, delay, ...args);
+		const handle = {} as ReturnType<typeof setTimeout>;
+		deadlines.set(handle, { at: clock + delay, callback });
+		return handle;
+	}) as typeof setTimeout;
+	globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
+		if (!deadlines.delete(handle)) originalClearTimeout(handle);
+	}) as typeof clearTimeout;
+	const advanceClock = async (ms: number) => {
+		clock += ms;
+		for (const [id, deadline] of [...deadlines]) {
+			if (deadline.at <= clock && deadlines.delete(id)) deadline.callback();
+		}
+		await new Promise((resolve) => originalSetTimeout(resolve, 5));
+	};
 	const keyInput = new EventEmitter();
 	const renderer = new EventEmitter();
 	const stepEvents = new Map<string, (event: unknown) => void>();
@@ -224,6 +250,9 @@ async function main(): Promise<void> {
 	const tokenMutedB = RGBA.fromHex("#1122cc");
 	const [tokenMuted, setTokenMuted] = createSignal(tokenMutedA);
 	const calls: { method: "get" | "refresh"; providerID: string }[] = [];
+	const presentations: Record<string, QuotaPresentation> = {};
+	let updated: ((payload: { data: QuotaUpdatedEvent }) => void) | undefined;
+	let pushDisposals = 0;
 	const slots: CapturedSlot[] = [];
 	const navigations: unknown[] = [];
 	let slotDisposals = 0;
@@ -236,17 +265,31 @@ async function main(): Promise<void> {
 		if (quota === undefined) {
 			throw new Error(`no synthetic quota for ${providerID}`);
 		}
-		return quotaView(
-			providerID,
-			providerID === "alpha" ? "Alpha provider" : "Beta provider",
-			quota,
-		);
+		return {
+			...quotaView(
+				providerID,
+				providerID === "alpha" ? "Alpha provider" : "Beta provider",
+				quota,
+			),
+			...(presentations[providerID] === undefined
+				? {}
+				: { presentation: presentations[providerID] }),
+		};
 	};
 	const context = {
 		renderer: Object.assign(renderer, { keyInput }),
 		location: { directory: "/tmp/provider-usage-live-slot" },
 		client: {
 			rpc: () => ({
+				events: {
+					on: (_name: string, handler: typeof updated) => {
+						updated = handler;
+						return () => {
+							updated = undefined;
+							pushDisposals++;
+						};
+					},
+				},
 				list: async () => ({ version: 2, providers: [] }),
 				get: async (input: { providerID: string }) => {
 					calls.push({ method: "get", providerID: input.providerID });
@@ -502,6 +545,145 @@ async function main(): Promise<void> {
 		assert.equal(calls.filter((call) => call.providerID === "gamma").length, 1);
 		assert.equal(calls.filter((call) => call.providerID === "delta").length, 1);
 
+		// Retain an hour-old success even beyond expiry/reset. Render
+		// reconciliation is display-only and must not request quota.
+		failAlpha = false;
+		const retained = reads.alpha;
+		assert.ok(retained && "sections" in retained);
+		const emitQuota = (quota: QuotaRead, presentation: QuotaPresentation) =>
+			updated?.({
+				data: {
+					version: 2,
+					providerID: "alpha",
+					quota,
+					presentation,
+				},
+			});
+		const noCurrent: QuotaRead = {
+			state: "unavailable",
+			reason: "network_error",
+			attemptedAt: clock,
+		};
+		// Establish the summary again after the earlier initial-read transport error.
+		clock += 61_000;
+		presentations.alpha = { revision: 1, lastKnown: retained };
+		keyInput.emit("keypress");
+		await waitForFrame((frame) => frame.includes("10%"));
+		await advanceClock(3_600_000);
+		const idleCalls = calls.length;
+		setTheme(fixtureTheme(INITIAL_COLORS));
+		const idleFrame = await waitForFrame((frame) => frame.includes("10%"));
+		assert.ok(!idleFrame.includes("Data might be stale"));
+		assert.equal(calls.length, idleCalls);
+
+		// Failure alone starts a display deadline, not a fetch. Let time pass
+		// without a pushed event: warning at 180 seconds, not before.
+		emitQuota(noCurrent, {
+			revision: 2,
+			lastKnown: retained,
+			failedSince: clock,
+		});
+		await advanceClock(179_999);
+		await setup.renderOnce();
+		assert.ok(!setup.captureCharFrame().includes("Data might be stale"));
+		const beforeDeadlineCalls = calls.length;
+		await advanceClock(1);
+		const staleFrame = await waitForFrame((frame) =>
+			frame.includes("Data might be stale"),
+		);
+		assert.ok(staleFrame.includes("10%"));
+		assert.equal(calls.length, beforeDeadlineCalls);
+
+		// Newer RPC success supersedes pushed failure, even if replayed later.
+		const recoveredAt = clock;
+		const recovered = windowQuota({
+			remainingPercent: 85,
+			fetchedAt: recoveredAt,
+			expiresAt: clock + 90_000,
+			resetsAt: clock + 3_600_000,
+		});
+		assert.ok("sections" in recovered);
+		reads.alpha = recovered;
+		presentations.alpha = { revision: 4, lastKnown: recovered };
+		keyInput.emit("keypress");
+		const recoveredFrame = await waitForFrame((frame) => frame.includes("15%"));
+		assert.ok(!recoveredFrame.includes("Data might be stale"));
+		emitQuota(noCurrent, {
+			revision: 2,
+			lastKnown: retained,
+			failedSince: clock - 180_000,
+		});
+		await setup.renderOnce();
+		assert.ok(setup.captureCharFrame().includes("15%"));
+		assert.ok(!setup.captureCharFrame().includes("Data might be stale"));
+
+		// A transport error cannot erase the card or fabricate a server failure.
+		failAlpha = true;
+		await advanceClock(61_000);
+		keyInput.emit("keypress");
+		await new Promise((resolve) => originalSetTimeout(resolve, 5));
+		await setup.renderOnce();
+		assert.ok(setup.captureCharFrame().includes("15%"));
+
+		// Invalidation has no history. Old pushes must not restore old figures.
+		emitQuota(
+			{
+				state: "auth-required",
+				reason: "unsupported_auth_method",
+				attemptedAt: clock,
+			},
+			{ revision: 5 },
+		);
+		const invalidated = await waitForFrame((frame) =>
+			frame.includes("credentials were rejected"),
+		);
+		assert.ok(!invalidated.includes("15%"));
+		assert.ok(!invalidated.includes("Data might be stale"));
+		emitQuota(retained, { revision: 1, lastKnown: retained });
+		await setup.renderOnce();
+		assert.ok(!setup.captureCharFrame().includes("10%"));
+
+		// Long-running failure still cannot warn until the data itself is old.
+		emitQuota(noCurrent, {
+			revision: 6,
+			lastKnown: recovered,
+			failedSince: clock - 180_000,
+		});
+		await setup.renderOnce();
+		assert.ok(!setup.captureCharFrame().includes("Data might be stale"));
+		await advanceClock(1_800_000 - (clock - recoveredAt));
+		await setup.renderOnce();
+		assert.ok(!setup.captureCharFrame().includes("Data might be stale"));
+		await advanceClock(1);
+		await waitForFrame((frame) => frame.includes("Data might be stale"));
+
+		// Selection changes and unload each cancel the display-only timer.
+		const pendingHistory = windowQuota({
+			remainingPercent: 85,
+			fetchedAt: clock,
+			expiresAt: clock + 90_000,
+			resetsAt: clock + 3_600_000,
+		});
+		assert.ok("sections" in pendingHistory);
+		const pendingPresentation = {
+			revision: 7,
+			lastKnown: pendingHistory,
+			failedSince: clock,
+		};
+		emitQuota(noCurrent, pendingPresentation);
+		const deadlineAt = clock + 1_800_001;
+		assert.ok([...deadlines.values()].some((timer) => timer.at === deadlineAt));
+		setSelected({ providerID: "beta", modelID: "model-a" });
+		await setup.renderOnce();
+		assert.ok(
+			![...deadlines.values()].some((timer) => timer.at === deadlineAt),
+		);
+		failAlpha = false;
+		presentations.alpha = pendingPresentation;
+		setSelected({ providerID: "alpha", modelID: "model-a" });
+		await waitForFrame((frame) => frame.includes("15%"));
+		assert.ok([...deadlines.values()].some((timer) => timer.at === deadlineAt));
+
 		// Repeated host reconciliation builds fresh renderables; no disposed node
 		// is ever reused.
 		assert.ok(nodes.length >= 3);
@@ -512,6 +694,8 @@ async function main(): Promise<void> {
 		dispose();
 		assert.equal(slotDisposals, 1);
 		assert.equal(eventDisposals, 3);
+		assert.equal(pushDisposals, 1);
+		assert.equal(deadlines.size, 0);
 		assert.equal(keyInput.listenerCount("keypress"), 0);
 		assert.equal(renderer.listenerCount("focus"), 0);
 		const callsAfterDispose = calls.length;
@@ -522,6 +706,8 @@ async function main(): Promise<void> {
 		await setup?.dispose();
 		dispose();
 		Date.now = originalNow;
+		globalThis.setTimeout = originalSetTimeout;
+		globalThis.clearTimeout = originalClearTimeout;
 	}
 	console.log(SUCCESS_MARKER);
 	console.log("sidebar-slot-live: navigation+disposal");

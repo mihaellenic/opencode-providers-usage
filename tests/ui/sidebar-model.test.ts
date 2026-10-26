@@ -75,6 +75,33 @@ function moneyMetric(
 }
 
 describe("buildSidebarModel", () => {
+	test("stale status appends one muted line without changing the figure rows", () => {
+		const read: QuotaRead = {
+			state: "available",
+			authSource: "opencode",
+			sections: [
+				available("app", [
+					windowMetric({ id: "w", scope: "app", remainingPercent: 40 }),
+				]),
+			],
+		};
+		const plain = buildSidebarModel(provider, read, LOCALE, NOW);
+		const stale = buildSidebarModel(provider, read, LOCALE, NOW, undefined, {
+			mightBeStale: true,
+		});
+		expect(stale.lines.slice(0, -1)).toEqual(plain.lines);
+		expect(stale.lines.at(-1)).toEqual({
+			id: "quota:stale",
+			kind: "status",
+			text: "Data might be stale",
+			tone: "muted",
+		});
+		expect(
+			buildSidebarModel(provider, read, LOCALE, NOW, undefined, {
+				mightBeStale: false,
+			}),
+		).toEqual(plain);
+	});
 	test("sorts compact app-only window bars and ignores shared-plan", () => {
 		const model = buildSidebarModel(
 			{ ...provider, name: "OpenAI ChatGPT with Codex companion" },

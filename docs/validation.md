@@ -61,6 +61,37 @@ the sanitized read path.
 
 ## Automated verification for this release
 
+### Activity-driven quota update (synthetic verification)
+
+The activity/history update uses quota RPC **v2**, requiring matching server and
+TUI reloads. Its tests use synthetic credentials, fake clocks, and OpenTUI's real
+test renderer with a fake host; no new live-provider or live-host smoke is claimed.
+The older verification table below records the 2026-10-24 baseline, not this update.
+
+Coverage added for this update:
+
+- Successful reads cause no idle polling; activity at the 60-second freshness
+  threshold and attributed model completions refresh through one shared throttle.
+  Completions inside the 15-second floor get one trailing request; duplicate
+  completion events are ignored and missed starts use the public message cache.
+- Transient failures keep coherent full-success history and retry server-side
+  after interaction stops, through the three-minute grace and beyond the
+  five-minute idle sweep. Longer Retry-After and existing timeout/floor protections
+  remain enforced. Non-retryable errors stop retries; auth/identity changes clear
+  history. Partial responses do not hide another scope's failure.
+- Sidebar history survives idle expiry and passed resets without inferred refills.
+  `Data might be stale` needs age > 30 minutes AND continuous failures >= 3 minutes.
+  A display-only deadline updates the indicator without a push or network call.
+  Recovery and identity invalidation cannot be overridden by older pushed events.
+- Full-page current-state diagnostics and timestamps remain strict; malformed
+  presentation metadata, nested unknown keys, credential sentinels, invalid
+  revisions/timing, and incomplete history cannot cross the RPC boundary.
+- Timers, renderer/data listeners, slots, and late work are released on teardown.
+
+Before release, run every gate below and perform the consented manual host smoke.
+
+### Original automated baseline (2026-10-24)
+
 All commands use the pinned runtime via `npx bun@1.4.4`.
 
 | Check | Result |

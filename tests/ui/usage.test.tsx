@@ -32,6 +32,7 @@ import {
 	UNAVAILABLE_NO_CURRENT_COPY,
 	UNSUPPORTED_NO_SOURCE_COPY,
 } from "../../src/ui/format";
+import { sidebarQuotaPresentation } from "../../src/ui/quota-presentation";
 import { Sidebar } from "../../src/ui/Sidebar";
 import { buildSidebarModel } from "../../src/ui/sidebar-model";
 import { UsagePage } from "../../src/ui/UsagePage";
@@ -195,6 +196,43 @@ function futureQuota(): QuotaRead {
 }
 
 describe("quota presentation values", () => {
+	test("retained sidebar figures do not replace full-page failure diagnostics or timestamps", () => {
+		const lastKnown = available(
+			[
+				{
+					scope: "app",
+					metrics: [
+						windowMetric({ id: "old", scope: "app", remainingPercent: 42 }),
+					],
+				},
+			],
+			{ fetchedAt: NOW - 3_600_000, expiresAt: NOW - 3_510_000 },
+		);
+		if (!("sections" in lastKnown)) throw new Error("expected history fixture");
+		const quota: QuotaRead = {
+			state: "unavailable",
+			reason: "network_error",
+			attemptedAt: NOW - 2_000,
+		};
+		const display = sidebarQuotaPresentation({
+			quota,
+			presentation: { revision: 2, lastKnown, failedSince: NOW - 180_000 },
+			now: NOW,
+		});
+		expect(display.quota).toBe(lastKnown);
+		expect(display.mightBeStale).toBe(true);
+		const detail = formatUsageSections({
+			providers: [OPENAI_PROVIDER],
+			quotaByProvider: { openai: revalidateQuota(quota, NOW) },
+			locale: LOCALE,
+			now: NOW,
+		});
+		const text = JSON.stringify(detail);
+		expect(text).toContain("provider could not be reached");
+		expect(text).toContain("2026-10-24 11:59:58 UTC");
+		expect(text).not.toContain("remainingPercent");
+		expect(text).not.toContain("Data might be stale");
+	});
 	test("labels_remaining_versus_used_consistently", () => {
 		const read = available([
 			{

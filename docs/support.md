@@ -192,25 +192,44 @@ the Ollama adapter.
 
 | Behavior | Value |
 | --- | --- |
-| Poll cadence for visible supported connections | `60_000` ms |
+| Ordinary activity freshness threshold | `60_000` ms since last full success; initial sidebar activation loads once |
+| Automatic successful-read polling | None; activity/completion driven |
 | Minimum spacing between request starts for one provider/account | `15_000` ms |
 | Request timeout | `10_000` ms |
 | Maximum snapshot age treated as current | `90_000` ms, or earlier at a reset boundary or companion-token expiry |
-| Transient-failure backoff | `60_000`, `120_000`, `240_000`, `300_000` ms, capped at the last; provider `Retry-After` wins when longer |
+| Transient-failure retries | Every `60_000` ms through the first three minutes, then capped backoff up to `300_000` ms; provider `Retry-After` wins when longer |
 | Automatic retry | Only transient failures; unsupported, auth, matching, and companion errors do not loop |
-| Idle server-side unwatch | After the last RPC read is older than `300_000` ms, checked by a sweep every `60_000` ms |
+| Idle server-side unwatch | After the last RPC read is older than `300_000` ms, checked every `60_000` ms; active recovery keeps its push watch |
+| Sidebar stale indicator | `Data might be stale` only at age > `1_800_000` ms AND continuous failure >= `180_000` ms |
+| RPC contract | Version **2** only; server/TUI must be reloaded together |
 | Cross-process deduplication | **Not promised**; each OpenCode server process owns its own coordinator and may request the same quota |
 
-A provider enters the poll lifecycle when an RPC consumer first reads it. The
-frozen RPC surface has no unwatch method, so without a server-side policy a
-watcher remains active until the plugin unloads. Instead, a server-side sweep
-releases the watch once the last RPC read is older than `300_000` ms.
-After the unwatch, polling stops and the last snapshot is no longer pushed; it
-ages out through the normal freshness checks instead of being presented as
-fresh. A later RPC read re-watches the provider. Providers never read by a
-consumer are never resolved or polled, and unsupported or authentication
-failures never get a timer. This is an operational fact, not a per-widget timer:
-multiple widgets share the same server-owned request.
+A provider is watched when an RPC consumer first reads it. Successful reads
+schedule no network timer. Without the server-side idle cleanup, a watcher
+remains active until the plugin unloads because RPC has no unwatch method.
+Keyboard input, terminal focus, route/session changes,
+and model selection refresh old/missing data; completed/failed model steps refresh
+their actual provider, using public event attribution or the assistant-message
+cache (unattributed completions are skipped). Bursts share a throttle and trailing
+completion request; input is observed without consuming it or reading key contents.
+
+The server alone owns recovery retries, including with zero listeners and after
+interaction stops. The idle sweep skips active recovery to keep pushes alive;
+neither retries nor pushes renew the RPC idle clock. Once recovery ends, ordinary
+five-minute watch cleanup applies. A later RPC read re-watches the provider.
+Providers never read are never resolved; non-retryable authentication, unsupported,
+matching, and companion failures do not automatically loop.
+
+Only the sidebar may use the sanitized last **fully successful** snapshot.
+Failures and partial reads do not replace that coherent history or restart the
+failure clock. Idle expiry alone never warns. The local stale-indicator deadline
+is display-only, and full recovery clears it. Account/credential identity changes,
+explicit invalidation, rejected successful-response currentness, and auth rejection
+clear history immediately; historical data never becomes a current `available`
+observation. History is runtime-only, not persisted across restart, and reset times
+never imply replenishment. The detailed page retains strict current-state
+validation and real diagnostic timestamps. V2 sources without optional presentation
+metadata retain strict sidebar behavior too.
 
 ## Security boundary
 
@@ -265,7 +284,7 @@ built from the plain `SidebarModel` in `src/ui/sidebar-model.ts`.
 
 The live path keeps the host safeguards that mattered:
 
-- The selected provider, pushed snapshot, fetch result, and expiry check are
+- The selected provider, revision-ordered snapshots, fetch result, and presentation selection are
   resolved before the slot render. Required theme tokens are separately
   snapshotted into plugin-owned plain state by an effect outside the render, so
   both a replaced theme object and a reactive token update repaint the existing
@@ -301,12 +320,14 @@ The live path keeps the host safeguards that mattered:
   Used is derived only as `allowance − remaining`. Without a positive allowance
   the actual money remaining is shown and no bar or used figure is invented;
   the existing purchased/total pair rendering stays in that fallback.
-- Every unavailable section keeps its exact reason/recovery copy and retry
-  delay, painted in the muted row color. Expired sections hide their figures;
-  partial reads keep valid rows. The compact sidebar no longer repeats an
+- Without coherent history every unavailable section keeps its exact recovery
+  copy/retry delay and expired sections hide their figures. With server history,
+  the sidebar retains those complete figures and optionally appends one muted
+  `Data might be stale` line at both thresholds. The full page keeps partial
+  current rows and current diagnostics. The compact sidebar no longer repeats an
   `updated`/`last attempt` timestamp; freshness stays on the full usage page.
-- The whole card is a click target that opens the existing `provider-usage`
-  page route. It triggers no new RPC read or refresh.
+- The whole card remains a click target for the existing `provider-usage` route.
+  Navigation may qualify as activity; all requests still share the same throttle.
 - Painted-line tests cover 24, 32, 40, and 60 columns. Rows honor the real
   parent width: compact bar rows align their label, bar, percent, and reset
   edges at normal widths, long labels and countdowns wrap instead of clipping,
@@ -317,8 +338,9 @@ The live path keeps the host safeguards that mattered:
 
 **Validation limitation:** these checks use OpenTUI's test renderer plus an
 isolated `--conditions=browser` client-runtime probe with a fake host. They
-prove repeated selection/snapshot updates, expiry, failure, mounted theme
-replacement/token updates, disposal, and actionable navigation in that
+prove repeated selection/snapshot updates, strict fallback expiry, retained idle
+history, dual-threshold display deadlines, ordered recovery/invalidation, input
+and completion wiring, mounted theme updates, disposal, and navigation in that
 harness. They are not an interactive OpenCode 2.1.4 session capture. Real-host
 behavior after live sidebar reconciliation, a real host theme switch, and page
 navigation must still be validated manually before claiming a live host

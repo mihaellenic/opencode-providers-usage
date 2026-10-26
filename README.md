@@ -149,20 +149,39 @@ No UI action triggers a model request or an inference call.
 
 ## Freshness and request behavior
 
-- Visible supported connections poll every `60_000` ms.
+- The sidebar loads once on activation. Keyboard input, terminal focus, route/session
+  changes, and model-selection changes refresh when the last full success is at
+  least `60_000` ms old (or missing). Model-step completion refreshes the provider
+  that actually served that step, regardless of age. Bursts coalesce, with a
+  trailing refresh for completions inside the request floor.
+- Successful reads do **not** schedule polling. While idle, the sidebar keeps the
+  last fully successful figures, even beyond normal expiry or a reported reset.
+  It never estimates a refill. History is server-runtime memory only.
+- Failed/partial refreshes retain that coherent history. `Data might be stale`
+  appears only when the oldest figure is **over 30 minutes old** and refreshes
+  have failed continuously for **at least 3 minutes**. Time passing alone can
+  reveal the indicator but never triggers a network request. Recovery replaces
+  the figures and clears failure timing and the indicator.
 - Requests for the same provider/account are spaced at least `15_000` ms apart.
 - Each request times out after `10_000` ms.
-- A snapshot is current for at most `90_000` ms, or less at a reset boundary or
-  companion-token expiry.
-- Repeated transient failures back off at `60_000`, `120_000`, `240_000`, then
-  `300_000` ms; a longer provider `Retry-After` wins.
+- The detailed page remains strict: snapshots are current for at most `90_000`
+  ms, or less at a reset boundary or companion-token expiry. It shows real
+  current-state diagnostics/timestamps, never historical figures as current.
+- The server alone retries transient failures, even after activity stops or all
+  presentation listeners leave: every `60_000` ms through the first three
+  minutes, then capped backoff (up to `300_000` ms). A longer provider
+  `Retry-After` wins. Non-retryable authentication/unsupported/matching errors
+  stop automatic retries. Identity changes, invalidation, and auth rejection
+  immediately clear retained history.
 - A provider starts its server-side watch on the first RPC read. A server-side
   idle sweep runs every `60_000` ms and releases the watch once the last RPC
-  read is older than `300_000` ms. Polling then stops, the last snapshot is no
-  longer pushed, and it ages out through the normal freshness checks; a later
-  RPC read re-watches the provider. The frozen RPC surface still has no unwatch
-  method. Providers never read are never resolved or polled, and
-  unsupported/authentication failures do not get a timer.
+  read is older than `300_000` ms, except during active recovery so recovery
+  pushes keep arriving. Retries/pushes do not renew that idle clock. Releasing
+  a watch does not erase history; a later read re-watches the provider.
+  Providers never read are never resolved or polled.
+- Quota RPC is now **version 2**. Reload server and TUI together; only matching
+  versions are supported. Optional presentation metadata may be absent from
+  v2 custom/test sources, in which case the sidebar uses the strict display.
 - Request deduplication is in-process only. Separate OpenCode server processes
   are **not** deduplicated.
 

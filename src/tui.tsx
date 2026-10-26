@@ -34,6 +34,7 @@ import {
 	formatSidebarText,
 	revalidateQuota,
 } from "./ui/format";
+import { sidebarQuotaPresentation } from "./ui/quota-presentation";
 import {
 	renderSidebar,
 	resolveSidebarTheme,
@@ -679,6 +680,7 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 		// render, so merely loading the plugin does not request quota. The slot
 		// render reads the plain model signal and nothing else.
 		const [sidebarActive, setSidebarActive] = createSignal(false);
+		const [displayTick, setDisplayTick] = createSignal(0);
 		let previousActivityKey: string | undefined;
 		createEffect(() => {
 			const model = context.ui.model.current();
@@ -710,6 +712,7 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 			if (!sidebarActive()) {
 				return;
 			}
+			displayTick();
 			const selected = sidebarSelection();
 			sidebarDriver.sync(selected.providerID);
 			if (selected.providerID === undefined) {
@@ -725,9 +728,9 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 				fetched.provider.providerID === selected.providerID
 					? fetched
 					: undefined;
-			const quota =
-				sidebarPushed.pushed()[selected.providerID]?.quota ?? matching?.quota;
-			if (matching === undefined || quota === undefined) {
+			const observation =
+				sidebarPushed.pushed()[selected.providerID] ?? matching;
+			if (matching === undefined || observation === undefined) {
 				setSidebarModel(
 					sidebarFallbackModel({
 						selection: selected,
@@ -737,16 +740,25 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 				return;
 			}
 			const now = Date.now();
+			const display = sidebarQuotaPresentation({ ...observation, now });
+			if (display.nextChangeAt !== undefined) {
+				const timer = setTimeout(
+					() => setDisplayTick((tick) => tick + 1),
+					display.nextChangeAt - now,
+				);
+				onCleanup(() => clearTimeout(timer));
+			}
 			// `selected.label` is the host provider-registry display name resolved by
 			// currentSelection(); the model falls back to the summary name when the
 			// registry has no entry and only the providerID is available.
 			setSidebarModel(
 				buildSidebarModel(
 					matching.provider,
-					revalidateQuota(quota, now),
+					display.quota,
 					sidebarLocale,
 					now,
 					selected.label,
+					{ mightBeStale: display.mightBeStale },
 				),
 			);
 		});

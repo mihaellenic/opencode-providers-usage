@@ -561,8 +561,8 @@ function retrySuffix(retryAfterMs: number | undefined): string {
  * reads host state: when the name is absent, empty, or just the providerID, the
  * summary's declared name is used. `locale`/`now` are formatting references.
  *
- * Caller precondition: apply `revalidateQuota()` to quota snapshots before
- * rendering. `now` is a formatting and age reference only; this function does
+ * Caller precondition: select with `sidebarQuotaPresentation()` (or apply
+ * `revalidateQuota()` for current-only consumers). `now` is a formatting reference; this function does
  * not compare `expiresAt` and therefore does not enforce freshness. Runtime
  * expiry remains in the existing TUI path rather than moving into this model.
  */
@@ -572,6 +572,7 @@ export function buildSidebarModel(
 	locale: LocaleContext,
 	now: number,
 	displayName?: string,
+	status?: { mightBeStale: boolean },
 ): SidebarModel {
 	const plainName = displayName?.trim();
 	const header =
@@ -634,5 +635,13 @@ export function buildSidebarModel(
 		});
 	}
 
+	if (status?.mightBeStale) {
+		lines.push({
+			id: "quota:stale",
+			kind: "status",
+			text: "Data might be stale",
+			tone: "muted",
+		});
+	}
 	return { provider: header, lines };
 }
