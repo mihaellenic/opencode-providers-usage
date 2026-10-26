@@ -1,33 +1,36 @@
 {
   "name": "opencode-providers-usage",
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "license": "MIT",
+  "author": "Mihael Lenic",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mihaellenic/opencode-providers-usage.git"
+  },
   "type": "module",
-  "main": "./src/index.ts",
+  "main": "./dist/index.js",
   "packageManager": "bun@1.4.4",
   "engines": {
     "bun": "1.4.4"
   },
   "files": [
-    "index.ts",
-    "tui.tsx",
-    "rpc.ts",
-    "src",
-    "dist",
-    "README.md",
-    "docs"
+    "dist/"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit --jsx preserve",
     "lint": "biome check src tests",
     "test": "bun test",
-    "build": "bun build src/index.ts src/tui.tsx src/rpc.ts --outdir dist --target node --format esm --external '@opencode/*' --external '@opentui/*' --external solid-js && bun run check:build",
-    "check:build": "bun -e 'import { existsSync, readFileSync } from \"node:fs\"; const pkg = JSON.parse(readFileSync(\"package.json\", \"utf8\")); for (const [name, target] of Object.entries(pkg.exports)) { if (typeof target !== \"string\" || !existsSync(target)) throw new Error(`missing export ${name}: ${String(target)}`); } for (const file of [\"dist/index.js\", \"dist/tui.js\", \"dist/rpc.js\"]) { if (!existsSync(file)) throw new Error(`missing build output ${file}`); } const tui = readFileSync(\"dist/tui.js\", \"utf8\"); if (!tui.includes(\"solid-js\")) throw new Error(\"solid-js is not external in dist/tui.js\"); if (tui.includes(\"function createSignal\")) throw new Error(\"a second Solid runtime is bundled\"); console.log(`build exports ok: ${Object.keys(pkg.exports).join(\", \")}`);'"
+    "build": "bun scripts/build.ts",
+    "prepack": "bun run build"
   },
   "exports": {
-    ".": "./index.ts",
-    "./server": "./index.ts",
-    "./tui": "./tui.tsx",
-    "./rpc": "./rpc.ts"
+    ".": "./dist/index.js",
+    "./server": "./dist/index.js",
+    "./tui": "./dist/tui.js",
+    "./rpc": "./dist/rpc.js"
   },
   "dependencies": {
     "@opencode/plugin": "2.1.4"
@@ -40,6 +43,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",
+    "@opentui/solid": "0.6.8",
     "@types/bun": "1.4.4",
     "typescript": "7.0.2"
   }
