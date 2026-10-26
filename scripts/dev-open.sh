@@ -4,7 +4,8 @@
 #
 #   scripts/dev-open.sh            companion ENABLED (OpenAI quota visible)
 #   scripts/dev-open.sh no         companion disabled (shows the opt-in explanation)
-#   COMPOSER=doctor scripts/dev-open.sh   run import/peer checks only, no UI
+#   scripts/dev-open.sh --doctor   run import/peer checks only, no UI
+#   COMPOSER=doctor scripts/dev-open.sh   same as --doctor (backward compatible)
 #
 # How isolation works (verified live against OpenCode 2.1.4):
 #   - XDG_CONFIG_HOME -> a temporary config directory containing exactly one
@@ -24,6 +25,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 BUN() { npx -y bun@1.4.4 "$@"; }
 
+# --- arguments ---------------------------------------------------------------
+# First non-flag argument is the companion switch (anything but "on" disables).
+# --doctor may appear anywhere and is equivalent to COMPOSER=doctor.
+DOCTOR=false
+COMPANION="on"
+positional_seen=false
+for arg in "$@"; do
+  case "${arg}" in
+    --doctor) DOCTOR=true ;;
+    *)
+      if [ "${positional_seen}" = false ]; then
+        COMPANION="${arg}"
+        positional_seen=true
+      fi
+      ;;
+  esac
+done
+
 # --- preflight ---------------------------------------------------------------
 if ! command -v opencode >/dev/null 2>&1; then
   echo "✗ opencode not on PATH"; exit 1
@@ -40,7 +59,7 @@ done
 # Import smoke: catches peer-resolution/module errors before the TUI does.
 echo "▶ import smoke..."
 BUN -e "await import('${PLUGIN_ROOT}/index.ts'); await import('${PLUGIN_ROOT}/rpc.ts'); console.log('  imports ok')"
-if [ "${COMPOSER:-}" = "doctor" ]; then echo "✓ doctor done"; exit 0; fi
+if [ "${DOCTOR}" = true ] || [ "${COMPOSER:-}" = "doctor" ]; then echo "✓ doctor done"; exit 0; fi
 
 # --- quiet, isolated environment --------------------------------------------
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/opencode-quota-standalone.XXXXXX")"
@@ -57,7 +76,6 @@ else
   cp -R "${PLUGIN_ROOT}" "${PLUGIN_DIR}"
 fi
 
-COMPANION="${1:-on}"   # "on" (default) → enabled; anything else → disabled
 if [ "${COMPANION}" = "on" ]; then
   ENABLED=true
   echo "▶ companion: ENABLED (reads ${CODEX_HOME:-~/.codex} read-only)"
