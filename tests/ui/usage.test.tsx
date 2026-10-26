@@ -23,7 +23,6 @@ import {
 	defaultLocaleContext,
 	formatPercent,
 	formatQuotaRows,
-	formatResetCompact,
 	NATIVE_ONLY_COPY,
 	REJECTED_AUTH_COPY,
 	revalidateQuota,
@@ -191,7 +190,7 @@ function futureQuota(): QuotaRead {
 }
 
 describe("quota presentation values", () => {
-	test("retained sidebar figures do not replace page failure state or freshness", () => {
+	test("retained sidebar figures do not replace page failure state", () => {
 		const lastKnown = available(
 			[
 				{
@@ -224,10 +223,7 @@ describe("quota presentation values", () => {
 		});
 		const serialized = JSON.stringify(model);
 		expect(serialized).toContain("provider could not be reached");
-		expect(model.cards[0]?.updated).toEqual({
-			text: "Last attempt 2s ago",
-			tone: "warning",
-		});
+		expect(model.cards[0]).not.toHaveProperty("updated");
 		expect(serialized).not.toContain("42%");
 		expect(serialized).not.toContain("remainingPercent");
 		expect(serialized).not.toContain("Data might be stale");
@@ -426,94 +422,6 @@ describe("quota presentation values", () => {
 		expect(noResetRow?.value).not.toContain("resets");
 		expect(noResetRow?.detail).toContain("no reset reported");
 	});
-
-	test("page_freshness_is_updated_or_last_attempt_without_fabricating_never", () => {
-		const read = available([
-			{ scope: "shared-plan", metrics: [windowMetric({ id: "week" })] },
-		]);
-		const model = buildUsagePageModel({
-			providers: [OPENAI_PROVIDER],
-			quotaByProvider: { openai: read },
-			locale: LOCALE,
-			now: NOW,
-		});
-		expect(model.cards[0]?.updated).toEqual({
-			text: "Updated 12s ago",
-			tone: "success",
-		});
-
-		const partial: QuotaRead = {
-			state: "partial",
-			authSource: "codex-companion",
-			sections: [
-				{
-					scope: "shared-plan",
-					result: {
-						state: "available",
-						metrics: [windowMetric({ id: "fresh" })],
-						fetchedAt: NOW - 12_000,
-						expiresAt: NOW + 48_000,
-					},
-				},
-				{
-					scope: "app",
-					result: {
-						state: "unavailable",
-						reason: "rate_limited",
-						attemptedAt: NOW - 2_000,
-					},
-				},
-			],
-		};
-		expect(
-			buildUsagePageModel({
-				providers: [OPENAI_PROVIDER],
-				quotaByProvider: { openai: partial },
-				locale: LOCALE,
-				now: NOW,
-			}).cards[0]?.updated,
-		).toEqual({ text: "Updated 12s ago", tone: "success" });
-
-		const attemptOnly = buildUsagePageModel({
-			providers: [OPENAI_PROVIDER],
-			quotaByProvider: {
-				openai: {
-					state: "partial",
-					authSource: "codex-companion",
-					sections: [
-						{
-							scope: "app",
-							result: {
-								state: "unavailable",
-								reason: "rate_limited",
-								attemptedAt: NOW - 2_000,
-							},
-						},
-					],
-				},
-			},
-			locale: LOCALE,
-			now: NOW,
-		});
-		expect(attemptOnly.cards[0]?.updated).toEqual({
-			text: "Last attempt 2s ago",
-			tone: "warning",
-		});
-
-		const unsupported = buildUsagePageModel({
-			providers: [FUTURE_PROVIDER],
-			quotaByProvider: {
-				"future-provider": {
-					state: "unsupported",
-					reason: "no_validated_quota_source",
-					attemptedAt: NOW - 2_000,
-				},
-			},
-			locale: LOCALE,
-			now: NOW,
-		});
-		expect(unsupported.cards[0]?.updated).toBeUndefined();
-	});
 });
 
 describe("unavailable state copy", () => {
@@ -595,73 +503,6 @@ describe("unavailable state copy", () => {
 });
 
 describe("page constraints and narrow terminals", () => {
-	test("page_model_never_drops_a_constraint_or_state", () => {
-		const metrics = Array.from({ length: 8 }, (_, index) =>
-			windowMetric({
-				id: `window-${index}`,
-				label: `Window ${index + 1}`,
-				remainingPercent: 90 - index,
-				usedPercent: 10 + index,
-				resetsAt: PLAN_RESET + index * 60_000,
-			}),
-		);
-		const read: QuotaRead = {
-			state: "partial",
-			authSource: "codex-companion",
-			sections: [
-				{
-					scope: "app",
-					result: {
-						state: "available",
-						metrics: [metrics[0] as QuotaMetric],
-						fetchedAt: NOW - 12_000,
-						expiresAt: NOW + 48_000,
-						configuredAppCapPercent: 100,
-					},
-				},
-				{
-					scope: "shared-plan",
-					result: {
-						state: "available",
-						metrics: metrics.slice(1),
-						fetchedAt: NOW - 12_000,
-						expiresAt: NOW + 48_000,
-					},
-				},
-				{
-					scope: "shared-plan",
-					result: {
-						state: "unavailable",
-						reason: "rate_limited",
-						attemptedAt: NOW - 5_000,
-						retryAfterMs: 60_000,
-					},
-				},
-			],
-		};
-		const model = buildUsagePageModel({
-			providers: [OPENAI_PROVIDER],
-			quotaByProvider: { openai: read },
-			locale: LOCALE,
-			now: NOW,
-		});
-		const lines = model.cards[0]?.lines ?? [];
-		expect(lines).toHaveLength(10);
-		expect(lines.filter((line) => line.kind === "window")).toHaveLength(8);
-		expect(model.cards[0]?.updated).toEqual({
-			text: "Updated 12s ago",
-			tone: "success",
-		});
-		const serialized = JSON.stringify(model);
-		for (let index = 1; index <= 8; index += 1) {
-			expect(serialized).toContain(`Window ${index}`);
-		}
-		expect(serialized).toContain("rate limit");
-		expect(serialized).toContain("100% allowed");
-		expect(serialized).toContain("Configured app cap");
-		expect(serialized).not.toContain("remainingPercent");
-	});
-
 	test("renders_unregistered_at_construction_provider_from_declarations", () => {
 		const quota = available([
 			{
@@ -688,18 +529,15 @@ describe("page constraints and narrow terminals", () => {
 		expect(model.cards).toHaveLength(1);
 		expect(model.cards[0]?.id).toBe("future-provider");
 		expect(model.cards[0]?.name).toBe("Future Provider");
-		expect(model.cards[0]?.updated).toEqual({
-			text: "Updated 12s ago",
-			tone: "success",
-		});
+		expect(model.cards[0]).not.toHaveProperty("updated");
 		expect(model.cards[0]?.lines).toEqual([
 			{
 				id: "0:provider-balance:month",
 				kind: "window",
-				label: "Provider balance · Monthly allowance",
+				label: "30d · Monthly allowance",
 				value: { text: "45%", tone: "normal" },
 				fill: 0.45,
-				reset: formatResetCompact(PLAN_RESET, LOCALE, NOW),
+				reset: "resets 6d 22h",
 			},
 		]);
 		const serialized = JSON.stringify(model);
@@ -875,11 +713,9 @@ describe("page constraints and narrow terminals", () => {
 		expect(serialized).not.toContain("90%");
 		expect(serialized).not.toContain("10%");
 		expect(serialized).toContain(UNAVAILABLE_NO_CURRENT_COPY);
-		expect(serialized).toContain("20%");
-		expect(model.cards[0]?.updated).toEqual({
-			text: "Updated 12s ago",
-			tone: "success",
-		});
+		// Shared-plan rows are sidebar-only omissions; they never reach the page.
+		expect(serialized).not.toContain("20%");
+		expect(model.cards[0]).not.toHaveProperty("updated");
 
 		const allExpired = revalidateQuota(
 			available(
@@ -902,7 +738,7 @@ describe("page constraints and narrow terminals", () => {
 		});
 		const staleSerialized = JSON.stringify(staleModel);
 		expect(staleSerialized).not.toContain("90%");
-		expect(staleSerialized).toContain(UNAVAILABLE_NO_CURRENT_COPY);
+		expect(staleModel.cards[0]?.lines).toEqual([]);
 	});
 });
 
@@ -929,11 +765,6 @@ describe("host-rendered wrappers", () => {
 			{ width: 80, height: 40 },
 		);
 		const pageLocale = defaultLocaleContext();
-		const pageReset = formatResetCompact(
-			PLAN_RESET,
-			pageLocale,
-			Date.now(),
-		).replace(/\s+/g, "");
 		const pagePercent45 = `${formatPercent(45, pageLocale)}%`;
 		try {
 			await setup.renderOnce();
@@ -941,10 +772,10 @@ describe("host-rendered wrappers", () => {
 			expect(frame).toContain("Providerusage");
 			expect(frame).toContain("Connectedaccounts·quota&balances");
 			expect(frame).toContain("FutureProvider");
-			expect(frame).toContain("Updated");
-			expect(frame).toContain("Providerbalance·Monthlyallowance");
+			expect(frame).not.toContain("Updated");
+			expect(frame).toContain("30d·Monthlyallowance");
 			expect(frame).toContain(pagePercent45);
-			expect(frame).toContain(pageReset);
+			expect(frame).toContain("resets");
 			expect(frame).toContain("[esc]back[ctrl+r]refresh");
 			expect(frame).not.toContain("supported·documented-only");
 			expect(frame).not.toContain("Authsource");
@@ -968,11 +799,11 @@ describe("host-rendered wrappers", () => {
 			const narrowFrame = setup.captureCharFrame();
 			const narrow = narrowFrame.replace(/\s+/g, "");
 			expect(narrow).toContain("FutureProvider");
-			expect(narrow).toContain("Providerbalance");
+			expect(narrow).toContain("30d");
 			expect(narrow).toContain("Monthly");
 			expect(narrow).toContain("allowance");
 			expect(narrow).toContain(pagePercent45);
-			expect(narrow).toContain(pageReset);
+			expect(narrow).toContain("resets");
 			expect(
 				narrowFrame
 					.split("\n")

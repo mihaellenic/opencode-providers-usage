@@ -7,7 +7,7 @@ import type {
 	ProviderSummary,
 	QuotaRead,
 } from "../core/contracts";
-import { renderSidebarLines, toneColor } from "./bar-row";
+import { renderSidebarLines } from "./bar-row";
 import { defaultLocaleContext } from "./format";
 import { resolveSidebarTheme } from "./theme";
 import { buildUsagePageModel } from "./usage-page-model";
@@ -17,16 +17,17 @@ const CARD_WIDTH = 56;
 export type UsagePageProps = {
 	providers: ProviderSummary[];
 	quotaByProvider: Record<string, QuotaRead>;
+	displayNames?: Record<string, string>;
 	refresh: (providerID: string) => void;
 	back: () => void;
 };
 
 /**
  * Full-page dashboard. Every connected provider becomes one card that repeats
- * the sidebar quota widget for its sanitized read; the page adds only the
- * update-age cell, absolute reset timestamps, and the reported total-credits
- * row. Escape returns and ctrl+r refreshes every connected provider through
- * the injected callback (RPC only; no inference request).
+ * its sidebar widget exactly: same name, rows, tones, compact durations, and
+ * reset countdowns. The page adds only card framing and layout. Escape returns
+ * and ctrl+r refreshes every connected provider through the injected callback
+ * (RPC only; no inference request).
  */
 export function UsagePage(props: UsagePageProps) {
 	const context = usePlugin();
@@ -59,6 +60,7 @@ export function UsagePage(props: UsagePageProps) {
 		const model = buildUsagePageModel({
 			providers: props.providers,
 			quotaByProvider: props.quotaByProvider,
+			displayNames: props.displayNames,
 			locale,
 			now: Date.now(),
 		});
@@ -122,50 +124,14 @@ export function UsagePage(props: UsagePageProps) {
 							borderColor: theme.muted,
 							padding: 1,
 							children: [
-								jsx("box", {
-									key: `${card.id}:header`,
-									flexDirection: "row",
-									flexWrap: "wrap",
-									justifyContent: "space-between",
-									columnGap: 1,
-									marginBottom: 1,
-									width: "100%",
-									children: [
-										jsx("text", {
-											key: `${card.id}:name`,
-											maxWidth: "100%",
-											wrapMode: "word",
-											fg: theme.base,
-											attributes: TextAttributes.BOLD,
-											children: card.name,
-										}),
-										...(card.updated === undefined
-											? []
-											: [
-													jsx("text", {
-														key: `${card.id}:updated`,
-														maxWidth: "100%",
-														flexShrink: 0,
-														wrapMode: "word",
-														fg: toneColor(theme, card.updated.tone),
-														children: card.updated.text,
-													}),
-												]),
-									],
+								jsx("text", {
+									key: `${card.id}:name`,
+									maxWidth: "100%",
+									wrapMode: "word",
+									fg: theme.base,
+									children: card.name,
 								}),
-								...card.lines.flatMap((line) => {
-									const rendered = renderSidebarLines([line], theme);
-									return line.kind === "credit"
-										? [
-												jsx("box", {
-													key: `${line.id}:summary`,
-													flexDirection: "column",
-													marginTop: 1,
-													children: rendered,
-												}),
-											]
-										: rendered;
-								}),
+								...renderSidebarLines(card.lines, theme),
 							],
 						}),
 					),

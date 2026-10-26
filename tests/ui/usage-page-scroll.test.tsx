@@ -63,7 +63,7 @@ const PROVIDERS: ProviderSummary[] = [
 ];
 
 const LAST_PROVIDER = PROVIDERS[PROVIDERS.length - 1] as ProviderSummary;
-const LAST_METRIC_LABEL = "App · Delta monthly";
+const LAST_METRIC_LABEL = "30d · Delta monthly";
 const FOOTER_HINT = "[esc] back";
 
 function quotaFor(provider: ProviderSummary): QuotaRead {

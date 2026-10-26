@@ -566,6 +566,18 @@ function retrySuffix(retryAfterMs: number | undefined): string {
  * not compare `expiresAt` and therefore does not enforce freshness. Runtime
  * expiry remains in the existing TUI path rather than moving into this model.
  */
+export function resolveProviderName(
+	provider: ProviderSummary,
+	displayName?: string,
+): string {
+	const plainName = displayName?.trim();
+	return plainName !== undefined &&
+		plainName !== "" &&
+		plainName !== provider.providerID
+		? plainName
+		: provider.name;
+}
+
 export function buildSidebarModel(
 	provider: ProviderSummary,
 	read: QuotaRead,
@@ -574,13 +586,7 @@ export function buildSidebarModel(
 	displayName?: string,
 	status?: { mightBeStale: boolean },
 ): SidebarModel {
-	const plainName = displayName?.trim();
-	const header =
-		plainName !== undefined &&
-		plainName !== "" &&
-		plainName !== provider.providerID
-			? plainName
-			: provider.name;
+	const header = resolveProviderName(provider, displayName);
 	const lines: SidebarLine[] = [];
 
 	if (!("sections" in read)) {

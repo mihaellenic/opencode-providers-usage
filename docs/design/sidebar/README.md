@@ -43,20 +43,16 @@ Approved changes from iteration 02:
   (`$33.47 / $60.00 used` / `+$4.27 credits`). Fixtures mirror the running host
   screenshots.
 - Page cards are strict copies of the sidebar widgets for every connected
-  provider: no badges, no card subtitles, no support·evidence or auth-method
-  meta rows, no auth-source row, no per-metric detail lines, and no
-  `Subscription allowance ≠ API credit balance` footnote. Headers show the
-  provider name plus the update-age cell; rows are the same thin text-colored
-  used / muted remaining bars with used-percent cells and the same host fixture
-  (100%/16% windows, 55.8% allowance, $33.47 / $60.00 used, $37.74 total).
-- Page-only approved additions: the update-age cell, absolute reset/refill
-  timestamps (`· resets Oct 26 14:14`, `· resets Nov 20 10:16`) instead of the
-  sidebar's countdowns, and an explicit `Total credits` row (the sidebar folds
-  it).
-- Page window labels are scope-qualified (`App · 5-hour window`); the redundant
-  `N% used` sub-text is dropped. The page section was corrected to this
-  approved label form on 2026-10-26 so the static artifact matches the plan
-  text (the plan's recorded SHA names the pre-correction artifact).
+  provider: same provider header (host registry display name used by the
+  sidebar, falling back to the declared name), same rows, same compact window
+  labels, same countdown resets, and same tones. No badges, card subtitles,
+  support·evidence or auth-method meta rows, auth-source rows, per-metric detail
+  lines, or `Subscription allowance ≠ API credit balance` footnote.
+- The later sidebar-parity correction (below) removed the previously approved
+  page-only update-age cell, absolute reset timestamps, explicit `Total credits`
+  row, scope-qualified window labels, shared-plan rows, and configured-cap row.
+  Those iteration-03 page cells remain visible in the frozen artifact but are no
+  longer the binding page content.
 - Footer keys: `esc back · ctrl+r refresh`; the browser-only top-right back
   link and prototype disclaimers are removed.
 - The unavailable card reduces to the sidebar's own copy: name plus
@@ -112,22 +108,40 @@ terminal implementation is expected to change.
 
 Implementation and validation status: the correction is implemented,
 live-verified, and review-approved with no blockers. In tmux via
-`scripts/dev-opencode.sh` (OpenCode 2.1.4), `/usage` at 180×50 paints the two
-framed available cards side-by-side with the full-width unsupported card below,
-a blank row separating `Total credits`, and the footer divider; at 80×50 the
-cards stack with timestamps and footer intact. `Ctrl+r` refreshed live readings
-and `Esc` returned home (both captured). Short-height finding: at 80×24 the
-unscrolled page clipped and overlapped content, so the page now uses a focused
-whole-page scrollbox with a bounded route height and unclipped content.
-Automated tests drive real `PageDown`/`End`/`Home` events at 80×24; live in tmux
-session `quota-scroll` at 80×24, the header shows initially, `PageDown` scrolls,
-`End` shows the last provider plus footer, and `Home` returns to the header. The earlier
-180×50 and 80×50 validation still holds. Card bottoms align equally, asserted by
-tests with no style change. Automated checks: 324 passing tests across 20 files
-(0 failures, 2705 assertions), with typecheck, lint, and build all clean;
-24-column tests preserve every token and the narrow total reading order. The
-frozen 02/03 HTML SHA-256 values above are unchanged. No live private values are
-recorded here.
+`scripts/dev-opencode.sh` (OpenCode 2.1.4), `/usage` at 120×50 paints two framed
+cards whose bodies match their sidebar widgets row for row: Ollama shows its
+name, used bar with countdown, and used/credits pair; OpenAI shows its name and
+`5h`/`7d` rows. At 80×50 the cards stack with the footer intact. Short-height
+finding: at 80×24 the unscrolled page clipped and overlapped content, so the
+page uses a focused whole-page scrollbox with a bounded route height and
+unclipped content. Automated tests drive real `PageDown`/`End`/`Home` events at
+80×24; live at 24×24, `End` reaches the last card and footer and `Home` returns
+to the header. Card bottoms align equally, asserted by tests with no style
+change. Automated checks: 313 passing tests across 20 files (0 failures, 2682
+assertions), with typecheck, lint, and build all clean. The frozen 02/03 HTML
+SHA-256 values above are unchanged. No live private values are recorded here.
+
+### Sidebar-parity correction (2026-10-26, later)
+
+After the live visual correction, the user rejected the remaining page-only
+content differences and required every card to match its sidebar widget
+exactly: no deviations. `buildUsagePageModel` now delegates each card to
+`buildSidebarModel`, so the page adds no rows of its own. Consequences:
+
+- the update-age cell, absolute reset timestamps, explicit `Total credits` row,
+  scope-qualified window labels (`App · 5-hour window`), shared-plan rows, and
+  the configured-cap row are removed;
+- window labels are compact durations (`5h`, `7d`) sorted by duration, and
+  resets are countdowns (`resets 3h 33m`), exactly as the sidebar renders them;
+- `QuotaUsagePage` resolves the host registry display name for every provider
+  and passes it to the page, so OpenAI renders as `OpenAI` like the sidebar,
+  falling back to the declared provider name when the host has no label;
+- unsupported providers still show only `Quota unavailable`; the total and
+  purchased pools remain folded into the credit pair.
+
+This supersedes the iteration-03 page-content additions listed above. Card
+frames, padding, the compact 56-column width, responsive grid, scrollbox, and
+footer are unchanged. The frozen artifacts and SHA-256 values are untouched.
 
 Interpretation rules:
 

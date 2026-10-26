@@ -8,7 +8,6 @@ import {
 	defaultLocaleContext,
 	formatCurrency,
 	formatPercent,
-	formatResetCompact,
 } from "../../src/ui/format";
 import { UsagePage } from "../../src/ui/UsagePage";
 
@@ -68,13 +67,11 @@ const FUTURE: ProviderSummary = {
 	evidence: "documented-only",
 };
 
-// A fixed past year keeps the absolute reset deterministic while still
-// exercising the formatter's non-current-year suffix.
-const RESET = Date.UTC(2020, 9, 26, 14, 14);
-
-function resetText(): string {
-	return `· ${formatResetCompact(RESET, LOCALE, FIXED_NOW)}`;
-}
+// Sidebar-style countdowns need future resets; each fixture uses a distinct
+// duration so the expected strings stay readable.
+const OPENAI_5H_RESET = FIXED_NOW + 8 * 3_600_000;
+const OPENAI_WEEK_RESET = FIXED_NOW + 2 * 86_400_000 + 4 * 3_600_000;
+const OLLAMA_RESET = FIXED_NOW + 25 * 86_400_000 + 15 * 3_600_000;
 
 function money(value: number): string {
 	return formatCurrency(value, LOCALE);
@@ -152,7 +149,7 @@ function pageFixtures(): {
 									label: "5-hour window",
 									windowSeconds: 18_000,
 									remainingPercent: 0,
-									resetsAt: RESET,
+									resetsAt: OPENAI_5H_RESET,
 								},
 								{
 									kind: "window",
@@ -161,7 +158,7 @@ function pageFixtures(): {
 									label: "Weekly window",
 									windowSeconds: 604_800,
 									remainingPercent: 84,
-									resetsAt: RESET,
+									resetsAt: OPENAI_WEEK_RESET,
 								},
 							],
 							fetchedAt,
@@ -187,7 +184,7 @@ function pageFixtures(): {
 									currency: "USD",
 									remaining: 50.1,
 									allowance: 60,
-									resetsAt: RESET,
+									resetsAt: OLLAMA_RESET,
 								},
 								{
 									kind: "money",
@@ -381,7 +378,7 @@ function frameContent(rows: string[], frame: FrameRect): string {
 }
 
 describe("usage page card layout", () => {
-	test("renders page chrome, per-provider cards, bars, resets, totals, and footer", async () => {
+	test("renders page chrome, per-provider cards, bars, resets, and footer", async () => {
 		const fixtures = pageFixtures();
 		const setup = await renderPage({ width: 60, ...fixtures });
 		try {
@@ -393,25 +390,26 @@ describe("usage page card layout", () => {
 			expect(lines).toContain("Connected accounts · quota & balances");
 			const openaiHeader = lines.find((line) => line.includes("OpenAI"));
 			expect(openaiHeader).toBeDefined();
-			expect(openaiHeader).toContain("Updated 30s ago");
+			expect(openaiHeader).not.toContain("Updated");
 			const ollamaHeader = lines.find((line) => line.includes("Ollama Cloud"));
 			expect(ollamaHeader).toBeDefined();
-			expect(ollamaHeader).toContain("Updated 30s ago");
+			expect(ollamaHeader).not.toContain("Updated");
 
 			// Labels share their row with the bar track, so compare the painted
 			// content with the framing/track glyphs removed rather than raw rows.
-			expect(content).toContain(squash("App · 5-hour window"));
-			expect(content).toContain(squash("App · Weekly window"));
+			expect(content).toContain(squash("5h"));
+			expect(content).toContain(squash("7d"));
 			expect(content).toContain(squash(percent(100)));
 			expect(content).toContain(squash(percent(16)));
-			expect(content).toContain(squash(resetText()));
+			expect(content).toContain(squash("resets 8h"));
+			expect(content).toContain(squash("resets 2d 4h"));
 			expect(content).toContain(
 				squash(`${money(60 - 50.1)} / ${money(60)} used`),
 			);
 			expect(content).toContain(squash(`+${money(4.27)} credits`));
-			const totalLine = lines.find((line) => line.includes("Total credits"));
-			expect(totalLine).toBeDefined();
-			expect(totalLine).toContain(money(54.37));
+			expect(content).toContain(squash("resets 25d 15h"));
+			expect(content).not.toContain(squash("Total credits"));
+			expect(content).not.toContain(squash("Configured app cap"));
 			expect(content).toContain(squash("[esc] back   [ctrl+r] refresh"));
 
 			expect(frame).toContain("━");
@@ -432,9 +430,7 @@ describe("usage page card layout", () => {
 			expect(spanFor(spans, "Connected accounts").fg.equals(THEME.muted)).toBe(
 				true,
 			);
-			expect(spanFor(spans, "Updated 30s ago").fg.equals(THEME.success)).toBe(
-				true,
-			);
+			expect(spanFor(spans, "OpenAI").fg.equals(THEME.base)).toBe(true);
 			expect(spanFor(spans, percent(100)).fg.equals(THEME.error)).toBe(true);
 			expect(spanFor(spans, percent(16)).fg.equals(THEME.muted)).toBe(true);
 			expect(spanFor(spans, "━").fg.equals(THEME.base)).toBe(true);
@@ -461,18 +457,17 @@ describe("usage page card layout", () => {
 				"Provider usage",
 				"Connected accounts · quota & balances",
 				"OpenAI",
-				"Updated 30s ago",
-				"App · 5-hour window",
-				"App · Weekly window",
+				"5h",
+				"7d",
 				percent(100),
 				percent(16),
-				resetText(),
+				"resets 8h",
+				"resets 2d 4h",
 				"Ollama Cloud",
 				percent(16.5),
 				`${money(60 - 50.1)} / ${money(60)} used`,
 				`+${money(4.27)} credits`,
-				"Total credits",
-				money(54.37),
+				"resets 25d 15h",
 				"[esc] back",
 				"[ctrl+r] refresh",
 			]) {
@@ -573,14 +568,12 @@ describe("usage page card layout", () => {
 			expect(openaiName.row).toBe(ollamaName.row);
 			expect(openaiName.row - openai.top).toBe(ollamaName.row - ollama.top);
 
-			for (const [label, frame] of [
-				["OpenAI", openai],
-				["Ollama Cloud", ollama],
-			] as const) {
-				const name = textInFrame(rows, frame, label);
-				const updated = textInFrame(rows, frame, "Updated 30s ago");
-				expect(updated.row).toBe(name.row);
-			}
+			// No page-only update row: the first painted body row after padding
+			// is the widget's bar row for both cards.
+			expect(frameContent(rows, openai)).toContain(squash("5h"));
+			expect(frameContent(rows, ollama)).toContain(squash(percent(16.5)));
+			expect(frameContent(rows, openai)).not.toContain("Updated");
+			expect(frameContent(rows, ollama)).not.toContain("Total credits");
 
 			expect(zen.top).toBeGreaterThan(openai.bottom);
 			expect(zen.top).toBeGreaterThan(ollama.bottom);
@@ -672,27 +665,24 @@ describe("usage page card layout", () => {
 			expect(zen.right - zen.left).toBeGreaterThan(openaiWidth);
 			expect(zen.right - zen.left).toBeGreaterThan(ollamaWidth);
 
-			// Update age stays whole, on the name row, inside the narrower card.
+			// Provider names stay whole inside the narrower cards.
 			for (const [label, frame] of [
 				["OpenAI", openai],
 				["Ollama Cloud", ollama],
 			] as const) {
 				const name = textInFrame(rows, frame, label);
-				const updated = textInFrame(rows, frame, "Updated 30s ago");
-				expect(updated.row).toBe(name.row);
-				expect(updated.col + "Updated 30s ago".length).toBeLessThan(
-					frame.right,
-				);
+				expect(name.col + label.length).toBeLessThan(frame.right);
 			}
 
 			// Values may wrap in the narrower cards, but every semantic token
 			// remains painted inside its own card.
 			const openaiContent = frameContent(rows, openai);
-			expect(openaiContent).toContain(squash("App · 5-hour window"));
-			expect(openaiContent).toContain(squash("App · Weekly window"));
+			expect(openaiContent).toContain(squash("5h"));
+			expect(openaiContent).toContain(squash("7d"));
 			expect(openaiContent).toContain(squash(percent(100)));
 			expect(openaiContent).toContain(squash(percent(16)));
-			expect(openaiContent).toContain(squash(resetText()));
+			expect(openaiContent).toContain(squash("resets 8h"));
+			expect(openaiContent).toContain(squash("resets 2d 4h"));
 
 			const ollamaContent = frameContent(rows, ollama);
 			expect(ollamaContent).toContain(squash(percent(16.5)));
@@ -700,15 +690,14 @@ describe("usage page card layout", () => {
 				squash(`${money(60 - 50.1)} / ${money(60)} used`),
 			);
 			expect(ollamaContent).toContain(squash(`+${money(4.27)} credits`));
-			expect(ollamaContent).toContain(squash("Total credits"));
-			expect(ollamaContent).toContain(squash(money(54.37)));
-			expect(ollamaContent).toContain(squash(resetText()));
+			expect(ollamaContent).toContain(squash("resets 25d 15h"));
+			expect(ollamaContent).not.toContain(squash("Total credits"));
 		} finally {
 			await setup.dispose();
 		}
 	});
 
-	test("at 80 columns stacks framed cards, keeps update timestamps whole, then paints the footer", async () => {
+	test("at 80 columns stacks framed cards, keeps provider names whole, then paints the footer", async () => {
 		const fixtures = pageFixtures();
 		const setup = await renderPage({ width: 80, ...fixtures });
 		try {
@@ -733,12 +722,9 @@ describe("usage page card layout", () => {
 				["OpenAI", openai],
 				["Ollama Cloud", ollama],
 			] as const) {
-				const updated = textInFrame(rows, frame, "Updated 30s ago");
 				const name = textInFrame(rows, frame, label);
-				expect(updated.row).toBe(name.row);
-				expect(updated.col + "Updated 30s ago".length).toBeLessThan(
-					frame.right,
-				);
+				expect(name.col + label.length).toBeLessThan(frame.right);
+				expect(frameContent(rows, frame)).not.toContain("Updated");
 			}
 
 			// Card padding keeps painted content one cell clear of every border.

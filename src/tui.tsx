@@ -539,6 +539,18 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 		quotaInventory(snapshot(), snapshot.error),
 	);
 
+	// The page repeats each provider's sidebar widget, including the host
+	// provider-registry display name resolved by `currentSelection`.
+	const displayNames = createMemo((): Record<string, string> => {
+		const names: Record<string, string> = {};
+		for (const provider of context.data?.location?.provider?.list?.(
+			context.location,
+		) ?? []) {
+			names[provider.id] = provider.name;
+		}
+		return names;
+	});
+
 	const pageView = (
 		result: QuotaListResult,
 	): {
@@ -622,6 +634,7 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 		return jsx(UsagePageHost, {
 			providers: view.providers,
 			quotaByProvider: view.quotaByProvider,
+			displayNames: displayNames(),
 			refresh,
 			back,
 		});
