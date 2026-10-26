@@ -27,7 +27,34 @@ live in [`docs/support.md`](docs/support.md).
 
 ## Installation
 
-The package is not published to a registry. Install from source:
+### Install from npm
+
+```bash
+npm install opencode-providers-usage
+```
+
+The published package exports four entrypoints. Named installs resolve them
+through the `exports` map:
+
+| Export | Target | Purpose |
+| --- | --- | --- |
+| `.` | `./dist/index.js` | Server plugin: adapters, coordinator, RPC (`provider-usage`) |
+| `./server` | `./dist/index.js` | Explicit alias for the server plugin |
+| `./tui` | `./dist/tui.js` | Terminal plugin: sidebar slot, `/usage` page, palette commands |
+| `./rpc` | `./dist/rpc.js` | Versioned, validated RPC contract types |
+
+OpenCode loads the `./tui` export beside the main plugin automatically; do not
+add a second plugin entry for it. The package ships the built `dist/` files and
+the root `index.js`, `tui.js`, and `rpc.js` shims. It declares no install
+lifecycle scripts. Config entries that name the package directly are
+not yet validated on OpenCode `2.1.4` in this repository; the local-path forms in
+[Loading the plugin](#loading-the-plugin) are the verified ones.
+
+### Install from a source checkout (development)
+
+Use a checkout to develop or to test an unreleased revision. Build first: the
+`exports` targets and the root JS shims load `dist/`, which is generated and not
+committed.
 
 ```bash
 git clone <this repository> opencode-providers-usage
@@ -36,25 +63,14 @@ npx bun@1.4.4 install --frozen-lockfile --ignore-scripts
 npx bun@1.4.4 run build
 ```
 
-The package exports four entrypoints:
-
-| Export | Target | Purpose |
-| --- | --- | --- |
-| `.` | `./index.ts` | Server plugin: adapters, coordinator, RPC (`provider-usage`) |
-| `./server` | `./index.ts` | Explicit alias for the server plugin |
-| `./tui` | `./tui.tsx` | Terminal plugin: sidebar slot, `/usage` page, palette commands |
-| `./rpc` | `./rpc.ts` | Versioned, validated RPC contract types |
-
-Local plugin targets do not use this map: OpenCode resolves local plugins by
-root-file convention (`index.ts`, `tui.tsx`, `rpc.ts`), and this repository
-ships those root files re-exporting `src/*`. OpenCode loads the `./tui` export
-beside the main plugin automatically; do not add a second plugin entry for it.
-
 ## Loading the plugin
 
-OpenCode V2 resolves local plugins by root-file convention: the loader looks
-for `<package>/index.ts`, `<package>/tui.tsx`, and `<package>/rpc.ts`. Use one
-of the two forms below for a given plugin. Combining a directory symlink with
+OpenCode V2 resolves local plugin directories by root-file convention. In a
+source checkout the loader finds the TypeScript root files `index.ts`,
+`tui.tsx`, and `rpc.ts`, which re-export `src/*`. In the npm package it finds the
+root JS shims `index.js`, `tui.js`, and `rpc.js`, which re-export `dist/*`.
+Named installs use the `exports` map instead. Use one of the two forms below
+for a given plugin. Combining a directory symlink with
 a config entry causes `Duplicate plugin ID: provider-usage`.
 
 **Form A — symlink into the config plugins directory** (independent of config
