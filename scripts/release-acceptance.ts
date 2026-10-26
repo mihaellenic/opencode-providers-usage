@@ -910,13 +910,75 @@ export function validateRootShims(
 	}
 }
 
-/** The host peers as exact npm specs, so the consumer installs OpenCode/OpenTUI-provided runtimes. */
-export function peerInstallSpecs(manifest: {
-	peerDependencies?: Record<string, string>;
-}): string[] {
-	return Object.entries(manifest.peerDependencies ?? {}).map(
-		([name, range]) => `${name}@${range}`,
-	);
+/** Escape a package name for use inside a RegExp. */
+const escapeRegExp = (text: string): string =>
+	text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Read each named package's top-level resolved version from bun.lock. Bun keys
+ * top-level entries by bare name at four-space indent; nested copies are keyed
+ * as "parent/name" and never match. A missing or ambiguous entry fails closed.
+ */
+export function lockedVersions(
+	bunLockText: string,
+	names: readonly string[],
+): Map<string, string> {
+	const versions = new Map<string, string>();
+	for (const name of names) {
+		const escaped = escapeRegExp(name);
+		const pattern = new RegExp(
+			`^ {4}"${escaped}": \\["${escaped}@([^"]+)"`,
+			"gm",
+		);
+		const found = [...bunLockText.matchAll(pattern)].map((match) => match[1]);
+		if (found.length > 1)
+			throw new Error(
+				`multiple locked versions for ${name} in the source lockfile`,
+			);
+		const version = found[0];
+		if (!version)
+			throw new Error(`no locked version for ${name} in the source lockfile`);
+		versions.set(name, version);
+	}
+	return versions;
+}
+
+/**
+ * Pin each declared host peer to the version the source lockfile resolves. That
+ * set is the configuration the package is built and tested against. Each locked
+ * version must satisfy the declared peer range, checked with Bun's semver.
+ */
+export function pinnedPeerSpecs(
+	peerDependencies: Record<string, string>,
+	locked: ReadonlyMap<string, string>,
+): string[] {
+	return Object.entries(peerDependencies).map(([name, range]) => {
+		const version = locked.get(name);
+		if (!version)
+			throw new Error(
+				`host peer ${name} is not resolved in the source lockfile`,
+			);
+		if (!Bun.semver.satisfies(version, range)) {
+			throw new Error(
+				`locked host peer ${name}@${version} does not satisfy ${range}`,
+			);
+		}
+		return `${name}@${version}`;
+	});
+}
+
+/** The installed consumer must hold exactly the pinned peer versions. */
+export function validateInstalledVersions(
+	installed: ReadonlyMap<string, string | undefined>,
+	expected: ReadonlyMap<string, string>,
+): void {
+	for (const [name, version] of expected) {
+		const actual = installed.get(name);
+		if (actual !== version)
+			throw new Error(
+				`installed ${name}@${actual} does not match pinned ${version}`,
+			);
+	}
 }
 
 /** npm pack must produce exactly one tarball with the expected filename. */
@@ -1385,7 +1447,12 @@ function runAcceptance(
 			join(consumer, "package.json"),
 			`${JSON.stringify({ name: "release-acceptance-consumer", private: true, version: "0.0.0" }, null, 2)}\n`,
 		);
-		const peers = peerInstallSpecs(installedManifest);
+		const hostPeers = installedManifest.peerDependencies ?? {};
+		const lockedPeers = lockedVersions(
+			readFileSync(join(source, "bun.lock"), "utf8"),
+			Object.keys(hostPeers),
+		);
+		const peers = pinnedPeerSpecs(hostPeers, lockedPeers);
 		requireOk(
 			"consumer-install",
 			"npm install tarball with host peers",
@@ -1397,6 +1464,10 @@ function runAcceptance(
 					consumer,
 					"--omit=dev",
 					"--ignore-scripts",
+					// The locked host peers do not satisfy @opentui/solid's exact solid-js peer.
+					// The pinned set is the tested configuration, and the consumer tree is still
+					// fully audited below, so npm's strict peer check is relaxed for this install.
+					"--legacy-peer-deps",
 					"--no-audit",
 					"--no-fund",
 					tarball,
@@ -1417,10 +1488,23 @@ function runAcceptance(
 		);
 		require(consumerManifest.version ===
 			version, "consumer-install", `installed version ${consumerManifest.version} != ${version}`);
-		for (const peer of Object.keys(installedManifest.peerDependencies ?? {})) {
-			require(existsSync(
-				join(consumer, "node_modules", peer, "package.json"),
-			), "consumer-install", `host peer ${peer} was not installed in the consumer`);
+		const installedVersions = new Map<string, string | undefined>();
+		for (const peer of lockedPeers.keys()) {
+			const peerManifest = join(consumer, "node_modules", peer, "package.json");
+			installedVersions.set(
+				peer,
+				existsSync(peerManifest)
+					? readJson<{ version?: string }>(peerManifest).version
+					: undefined,
+			);
+		}
+		try {
+			validateInstalledVersions(installedVersions, lockedPeers);
+		} catch (error) {
+			throw new AcceptanceFailure(
+				"consumer-install",
+				error instanceof Error ? error.message : String(error),
+			);
 		}
 		pass(
 			"consumer-install",

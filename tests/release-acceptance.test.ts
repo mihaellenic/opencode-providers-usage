@@ -16,8 +16,9 @@ import {
 	classifyPublishedLookup,
 	classifyRegistryLookup,
 	createArtifactMetadata,
+	lockedVersions,
 	parseAcceptanceArgs,
-	peerInstallSpecs,
+	pinnedPeerSpecs,
 	preserveArtifact,
 	publishedArtifactProblem,
 	registryGuardDecision,
@@ -31,6 +32,7 @@ import {
 	validateArtifactMetadata,
 	validateBundleImports,
 	validateConsumerExports,
+	validateInstalledVersions,
 	validateRootShims,
 	verifyPublishedArtifact,
 } from "../scripts/release-acceptance";
@@ -712,18 +714,103 @@ describe("validateRootShims", () => {
 	});
 });
 
-describe("peerInstallSpecs", () => {
-	test("returns the host peers as exact npm specs for the consumer install", () => {
-		expect(peerInstallSpecs({ peerDependencies: PEERS })).toEqual([
+const BUN_LOCK_FIXTURE = `{
+  "lockfileVersion": 1,
+  "packages": {
+    "@opencode/theme": ["@opencode/theme@2.1.4", "", { "dependencies": { "@opentui/core": "0.6.8" } }, "sha512-x"],
+    "@opentui/core": ["@opentui/core@0.6.8", "", {}, "sha512-y"],
+    "@opentui/solid": ["@opentui/solid@0.6.8", "", { "peerDependencies": { "solid-js": "1.9.12" } }, "sha512-z"],
+    "solid-js": ["solid-js@1.9.17", "", { "dependencies": { "seroval": "~1.6.8" } }, "sha512-w"],
+    "@opencode/theme/@opentui/core": ["@opentui/core@0.7.0", "", {}, "sha512-n"],
+  },
+}`;
+
+describe("lockedVersions", () => {
+	test("reads the top-level resolved version of each host peer from the source lockfile", () => {
+		expect(
+			lockedVersions(BUN_LOCK_FIXTURE, [
+				"@opencode/theme",
+				"@opentui/core",
+				"solid-js",
+			]),
+		).toEqual(
+			new Map([
+				["@opencode/theme", "2.1.4"],
+				["@opentui/core", "0.6.8"],
+				["solid-js", "1.9.17"],
+			]),
+		);
+	});
+
+	test("fails closed when a peer is only nested or absent", () => {
+		expect(() =>
+			lockedVersions(BUN_LOCK_FIXTURE, ["@opentui/core-missing"]),
+		).toThrow("no locked version for @opentui/core-missing");
+		const nestedOnly = `{"packages": {"@opencode/theme/@opentui/core": ["@opentui/core@0.7.0", "", {}, "sha512-n"]}}`;
+		expect(() => lockedVersions(nestedOnly, ["@opentui/core"])).toThrow(
+			"no locked version for @opentui/core",
+		);
+	});
+});
+
+describe("pinnedPeerSpecs", () => {
+	const locked = new Map([
+		["@opencode/theme", "2.1.4"],
+		["@opentui/core", "0.6.8"],
+		["@opentui/solid", "0.6.8"],
+		["solid-js", "1.9.17"],
+	]);
+
+	test("pins each host peer to the version the source lockfile resolves", () => {
+		expect(pinnedPeerSpecs(PEERS, locked)).toEqual([
 			"@opencode/theme@2.1.4",
-			"@opentui/core@>=0.6.8",
-			"@opentui/solid@>=0.6.8",
-			"solid-js@>=1.9.0",
+			"@opentui/core@0.6.8",
+			"@opentui/solid@0.6.8",
+			"solid-js@1.9.17",
 		]);
 	});
 
+	test("refuses a locked version that does not satisfy the declared peer range", () => {
+		const drift = new Map(locked);
+		drift.set("solid-js", "1.8.0");
+		expect(() => pinnedPeerSpecs(PEERS, drift)).toThrow(
+			"does not satisfy >=1.9.0",
+		);
+	});
+
+	test("fails closed when a declared peer is not in the lockfile", () => {
+		const missing = new Map(locked);
+		missing.delete("@opentui/solid");
+		expect(() => pinnedPeerSpecs(PEERS, missing)).toThrow(
+			"not resolved in the source lockfile",
+		);
+	});
+
 	test("returns no specs when no peers are declared", () => {
-		expect(peerInstallSpecs({})).toEqual([]);
+		expect(pinnedPeerSpecs({}, new Map())).toEqual([]);
+	});
+});
+
+describe("validateInstalledVersions", () => {
+	test("accepts an install whose versions equal the pinned set", () => {
+		expect(() =>
+			validateInstalledVersions(
+				new Map([["solid-js", "1.9.17"]]),
+				new Map([["solid-js", "1.9.17"]]),
+			),
+		).not.toThrow();
+	});
+
+	test("fails when a host peer installed a different version or is missing", () => {
+		expect(() =>
+			validateInstalledVersions(
+				new Map([["solid-js", "1.9.12"]]),
+				new Map([["solid-js", "1.9.17"]]),
+			),
+		).toThrow("installed solid-js@1.9.12 does not match pinned 1.9.17");
+		expect(() =>
+			validateInstalledVersions(new Map(), new Map([["solid-js", "1.9.17"]])),
+		).toThrow("installed solid-js@undefined does not match pinned 1.9.17");
 	});
 });
 
