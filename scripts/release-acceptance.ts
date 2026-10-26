@@ -27,6 +27,7 @@ import { createHash } from "node:crypto";
 import {
 	copyFileSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -37,7 +38,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 
 /** The package this gate accepts. Acceptance refuses any other manifest name. */
 export const EXPECTED_PACKAGE_NAME = "opencode-providers-usage";
@@ -389,6 +390,104 @@ export function preserveArtifact(input: {
 		`${JSON.stringify(metadata, null, 2)}\n`,
 	);
 	return metadata;
+}
+
+const EXACT_BUN_VERSION = /^\d+\.\d+\.\d+$/;
+
+/**
+ * The Bun version acceptance requires, derived from the committed manifest.
+ * `packageManager` and `engines.bun` must both be present, exact, and equal.
+ */
+export function expectedBunVersion(manifest: unknown): string {
+	if (!isRecord(manifest)) throw new Error("package.json is not an object");
+	const packageManager = manifest.packageManager;
+	if (typeof packageManager !== "string" || !packageManager.startsWith("bun@")) {
+		throw new Error("package.json packageManager must be pinned as bun@<exact version>");
+	}
+	const pinned = packageManager.slice("bun@".length);
+	const engines = manifest.engines;
+	const engine = isRecord(engines) ? engines.bun : undefined;
+	if (typeof engine !== "string") {
+		throw new Error("package.json engines.bun must be pinned to an exact version");
+	}
+	if (!EXACT_BUN_VERSION.test(pinned) || !EXACT_BUN_VERSION.test(engine)) {
+		throw new Error(
+			`Bun pins must be exact versions: packageManager=${packageManager}, engines.bun=${engine}`,
+		);
+	}
+	if (pinned !== engine) {
+		throw new Error(
+			`Bun pins disagree: packageManager=${pinned}, engines.bun=${engine}`,
+		);
+	}
+	return pinned;
+}
+
+/** Throw unless the running Bun is exactly the version the manifest pins. */
+export function requireBunRuntime(
+	manifest: unknown,
+	actual: string | undefined,
+): void {
+	const expected = expectedBunVersion(manifest);
+	if (actual !== expected) {
+		throw new Error(
+			`Bun ${expected} is required but the runtime is ${actual ?? "not Bun"}; refusing to continue`,
+		);
+	}
+}
+
+/**
+ * Validate the evidence directory without creating anything. It must be an
+ * absolute path to a new or existing-empty real directory that is neither the
+ * source repository nor inside it (compared by real path, so aliases count).
+ */
+export function validateOutputDir(outputDir: string, sourceRoot: string): void {
+	if (!isAbsolute(outputDir)) {
+		throw new Error(`--output-dir must be an absolute directory: ${outputDir}`);
+	}
+	const target = resolve(outputDir);
+	let stat: ReturnType<typeof lstatSync> | undefined;
+	try {
+		stat = lstatSync(target);
+	} catch {
+		stat = undefined;
+	}
+	if (stat?.isSymbolicLink()) {
+		throw new Error(`output directory must not be a symlink: ${target}`);
+	}
+	// Real location: the deepest existing ancestor's real path plus the rest.
+	let existing = target;
+	const rest: string[] = [];
+	for (;;) {
+		try {
+			lstatSync(existing);
+			break;
+		} catch {
+			const parent = dirname(existing);
+			if (parent === existing) break;
+			rest.unshift(existing.slice(parent.length + 1));
+			existing = parent;
+		}
+	}
+	const realTarget = join(realpathSync(existing), ...rest);
+	const realSource = realpathSync(sourceRoot);
+	if (realTarget === realSource || realTarget.startsWith(`${realSource}${sep}`)) {
+		throw new Error(
+			`output directory must not be the source repository or inside it: ${target}`,
+		);
+	}
+	if (stat) {
+		if (!stat.isDirectory()) {
+			throw new Error(`output path is not a directory: ${target}`);
+		}
+		if (readdirSync(target).length > 0) {
+			throw new Error(
+				`output directory is not empty: ${target}; use a new or existing-empty directory`,
+			);
+		}
+	} else if (!statSync(existing).isDirectory()) {
+		throw new Error(`output path has a non-directory ancestor: ${existing}`);
+	}
 }
 
 function jsonError(text: string): { code?: string; detail: string } {
@@ -1167,6 +1266,10 @@ function readArtifactMetadataFile(path: string): ArtifactMetadata {
 
 async function runVerification(metadataPath: string): Promise<number> {
 	try {
+		requireBunRuntime(
+			readJson<unknown>(join(import.meta.dir, "..", "package.json")),
+			process.versions.bun,
+		);
 		const metadata = readArtifactMetadataFile(metadataPath);
 		const outcome = await verifyPublishedArtifact(metadata, () =>
 			classifyPublishedLookup(
@@ -1253,8 +1356,13 @@ function runAcceptance(
 	};
 
 	try {
-		mkdirSync(outputDir, { recursive: true });
 		const root = repoRoot();
+		requireBunRuntime(
+			readJson<unknown>(join(root, "package.json")),
+			process.versions.bun,
+		);
+		validateOutputDir(outputDir, root);
+		mkdirSync(outputDir, { recursive: true });
 
 		// 1. Preflight: this exact package, in-scope final version, clean tracked tree.
 		const manifest = readJson<{ name?: string; version?: string }>(
