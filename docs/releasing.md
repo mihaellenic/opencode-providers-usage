@@ -87,8 +87,22 @@ scratch consumer with the host peers, imports all four export paths, and audits
 the consumer production tree. It never publishes and never modifies the
 repository.
 
-`<absolute-dir>` must be an absolute path that is not inside the acceptance
-scratch directory. Acceptance writes these files there:
+Acceptance runs two guards before it makes any network request, install, build,
+or pack, and before it creates or writes anything:
+
+- **Runtime.** The running Bun must be exactly Bun 1.4.4. The expected version
+  is read from the committed `packageManager` and `engines.bun` pins; both must
+  be present, exact, and equal, otherwise acceptance stops. The same guard
+  applies to `--verify-published`.
+- **Output directory.** `<absolute-dir>` must be a new or existing-empty
+  directory. Acceptance refuses, and leaves untouched, a directory that holds
+  any file (prior artifacts, metadata, audit evidence, or dotfiles), a regular
+  file, a symlink, and any path that is the source repository or inside it
+  (including through a symlinked alias of the repository). Use a fresh
+  directory for every acceptance run.
+
+`<absolute-dir>` must also not be inside the acceptance scratch directory.
+Acceptance writes these files there:
 
 - the tarball `opencode-providers-usage-0.1.0.tgz`;
 - `artifact.json`, whose fields are `name`, `version`, `filename`, `path`,
@@ -213,16 +227,32 @@ the publication.
 
 ## Failure and recovery
 
+- **A publish error is ambiguous.** A failed or interrupted `npm publish` may
+  or may not have reached the registry. Before any retry, run
+  `bun scripts/release-acceptance.ts --verify-published <artifact.json>` with
+  the preserved `artifact.json` from the acceptance evidence directory, then
+  act on the result:
+  - **Match** (version and `dist.integrity` equal the accepted values): the
+    publish succeeded; do not republish. Continue with the verification and tag
+    steps.
+  - **E404** (version not found): this is only a signal. You must independently confirm
+    that `0.1.0` remains unpublished (for example from the npm package page or
+    a second `npm view` the owner runs), allowing for propagation delay.
+  - **Auth, network, malformed output, or mismatch:** none of these is proof
+    that the version is unpublished. Stop and investigate with the owner; do
+    not retry.
 - **A failed publish remains visible:** do not bump the version and do not move
-  the tag. Retry only the same accepted artifact and the same tag. If the retry
-  fails, stop and report.
+  the tag. Retry only when absence is confirmed as above, and then only the
+  same accepted tarball and the same tag, nothing else. If the retry fails,
+  stop and report. Never bump the version, never move the tag, and never
+  automatically unpublish. Never record credential values in the release report.
 - **npm versions are immutable.** Once `0.1.0` is published, that version
   number cannot be reused for different content.
 - **Rollback is fix-forward or owner-driven.** Ship a new version (fix-forward),
   or let the owner deprecate the version or move a dist-tag; never automated unpublish.
 - **Acceptance failure stops the release.** Fix the source, commit, and rerun
-  acceptance from the local acceptance section on the new commit. Earlier
-  evidence is not reused for a new commit.
+  acceptance from the local acceptance section on the new commit, into a new
+  output directory. Earlier evidence is not reused for a new commit.
 - **Verification mismatch** (registry version or `dist.integrity` differs from
   `artifact.json`) blocks tagging. Investigate the registry state with the owner
   before any further action.

@@ -95,16 +95,20 @@ Coverage added for this update:
 
 Before release, run every gate below and perform the consented manual host smoke.
 
-### Original automated baseline (2026-10-24)
+### Original automated baseline (2026-10-24, historical)
 
-All commands use the pinned runtime via `npx bun@1.4.4`.
+These are historical observations from 2026-10-24, kept as a record only. They
+are not fresh results, and the counts, file lists, and build output below do
+not describe the current tree. The current gates are in the release checklist.
+
+All commands used the pinned runtime via `npx bun@1.4.4`.
 
 | Check | Result |
 | --- | --- |
 | `bun test` | `193 pass`, `0 fail`, `1575 expect()` calls, 10 files. |
 | `bun run typecheck` | Exit 0 (`tsc --noEmit --jsx preserve`). |
 | `bun run lint` | Exit 0; 23 files checked, no fixes applied. |
-| `bun run build` | Exit 0; `dist/index.js`, `dist/tui.js`, `dist/rpc.js`; `build exports ok: ., ./tui, ./rpc`. |
+| `bun run build` | Exit 0; produced `dist/index.js`, `dist/tui.js`, `dist/rpc.js` and ran the since-removed export check (superseded by the deterministic build and package contract tests in the release checklist). |
 | Frozen, script-disabled install | Scratch directory with only `package.json` + `bun.lock`: `bun install --frozen-lockfile --ignore-scripts` installed 359 packages and exited 0. |
 | Package-manager audit | `bun audit --json` returned `{}`: no reachable advisories reported. No forced remediation, ignores, or suppressions were applied. |
 | Package file list | `bun pm pack --dry-run` reports 21 files / 0.32 MB unpacked, including only `package.json`, `README.md`, `docs/*`, `dist/*`, and `src/*`; no tests, `.superpowers/`, `.env*`, auth caches, logs, previews, or home paths. |
@@ -152,11 +156,15 @@ provider behavior.
 - [ ] `npx bun@1.4.4 test` exits 0.
 - [ ] `npx bun@1.4.4 run typecheck` exits 0.
 - [ ] `npx bun@1.4.4 run lint` exits 0.
-- [ ] `npx bun@1.4.4 run build` exits 0 and `check:build` reports all exports.
-- [ ] `npx bun@1.4.4 audit` shows no reachable advisories, or each advisory is
-      triaged in writing with severity and reachability. Do not add suppressions
-      or force upgrades to get green.
-- [ ] `npx bun@1.4.4 pm pack --dry-run` lists only intended files.
+- [ ] `npx bun@1.4.4 run build` exits 0 and writes the deterministic bundles
+      `dist/index.js`, `dist/tui.js`, and `dist/rpc.js`; a second build produces
+      identical bytes.
+- [ ] The package contract tests (`tests/package.test.ts`) pass: they pin the
+      export map, the root shims, and the published file list.
+- [ ] `bun scripts/bun-audit-gate.ts` (the strict `bun audit` gate, run under
+      Bun 1.4.4) exits 0. Do not add suppressions, waivers, or forced upgrades to get green.
+- [ ] `npm pack --dry-run` lists only the intended files (`package.json`,
+      `README.md`, `LICENSE`, `dist/*`, and the root shims).
 - [ ] The security suite passes without weakening assertions.
 - [ ] The support-matrix test passes for every registered adapter capability.
 - [ ] The built artifact loads headlessly with the companion disabled and
