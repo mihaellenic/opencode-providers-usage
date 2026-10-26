@@ -1049,6 +1049,108 @@ function auditGate(
 	if (blocking) throw new Error(blocking);
 }
 
+/** Host packages whose resolution the consumer pins with an npm override (see consumerManifest). */
+export const CONSUMER_OVERRIDE_PACKAGES: readonly string[] = ["solid-js"];
+
+/** A package as installed in the consumer, read from its node_modules package.json. */
+export interface InstalledPackage {
+	version?: string;
+	peerDependencies?: Record<string, string>;
+	peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+}
+
+/**
+ * Resolve each override name to its locked version. Every occurrence of the
+ * package in the consumer tree, including the exact solid-js peer declared by
+ * @opentui/solid, is then forced to that version. This is an explicit, reviewed
+ * resolution of the tested configuration, not a relaxed install.
+ */
+export function consumerOverrides(
+	lockedHost: ReadonlyMap<string, string>,
+	names: readonly string[] = CONSUMER_OVERRIDE_PACKAGES,
+): Record<string, string> {
+	const overrides: Record<string, string> = {};
+	for (const name of names) {
+		const version = lockedHost.get(name);
+		if (!version)
+			throw new Error(
+				`override ${name} has no locked version in the source lockfile`,
+			);
+		overrides[name] = version;
+	}
+	return overrides;
+}
+
+/** The consumer package.json: a private scratch project that carries the npm overrides. */
+export function consumerManifest(
+	overrides: Readonly<Record<string, string>>,
+): Record<string, unknown> {
+	return {
+		name: "release-acceptance-consumer",
+		private: true,
+		version: "0.0.0",
+		overrides: { ...overrides },
+	};
+}
+
+/** npm install arguments for the consumer. The strict peer check stays on; no legacy flag. */
+export function consumerInstallArgs(input: {
+	consumer: string;
+	tarball: string;
+	peers: readonly string[];
+}): string[] {
+	return [
+		"npm",
+		"install",
+		"--prefix",
+		input.consumer,
+		"--omit=dev",
+		"--ignore-scripts",
+		"--no-audit",
+		"--no-fund",
+		input.tarball,
+		...input.peers,
+	];
+}
+
+/**
+ * Verify the installed peer closure. Every declared, non-optional peer of each
+ * root host package must be installed. A peer with an override or a locked
+ * version must match that pin exactly. Otherwise it must satisfy its declared range.
+ */
+export function validatePeerClosure(input: {
+	installed: ReadonlyMap<string, InstalledPackage>;
+	roots: readonly string[];
+	locked: ReadonlyMap<string, string>;
+	overrides: ReadonlyMap<string, string>;
+}): void {
+	for (const root of input.roots) {
+		const rootPackage = input.installed.get(root);
+		if (!rootPackage?.version)
+			throw new Error(`host peer ${root} is not installed`);
+		for (const [peer, range] of Object.entries(
+			rootPackage.peerDependencies ?? {},
+		)) {
+			if (rootPackage.peerDependenciesMeta?.[peer]?.optional) continue;
+			const dependency = input.installed.get(peer);
+			if (!dependency?.version)
+				throw new Error(`${root} requires peer ${peer} which is not installed`);
+			const pin = input.overrides.get(peer) ?? input.locked.get(peer);
+			if (pin !== undefined) {
+				if (dependency.version !== pin) {
+					throw new Error(
+						`peer ${peer}@${dependency.version} does not match pinned ${pin} required by ${root}`,
+					);
+				}
+			} else if (!Bun.semver.satisfies(dependency.version, range)) {
+				throw new Error(
+					`peer ${peer}@${dependency.version} does not satisfy ${range} required by ${root}`,
+				);
+			}
+		}
+	}
+}
+
 function repoRoot(): string {
 	const result = exec(["git", "rev-parse", "--show-toplevel"], process.cwd());
 	requireOk("repo", "git rev-parse --show-toplevel", result);
@@ -1440,41 +1542,24 @@ function runAcceptance(
 			"no internal report, private key, or absolute checkout path",
 		);
 
-		// 11. Consumer install: the tarball, the host peers, and nothing else.
+		// 11. Consumer install: the tarball, the locked host peers, and an npm override
+		// that pins solid-js to the locked version. Strict peer resolution stays on.
+		// Nothing else is installed, and the consumer tree is audited in step 13.
 		const consumer = join(scratch, "consumer");
 		mkdirSync(consumer, { recursive: true });
+		const bunLockText = readFileSync(join(source, "bun.lock"), "utf8");
+		const hostPeers = installedManifest.peerDependencies ?? {};
+		const lockedPeers = lockedVersions(bunLockText, Object.keys(hostPeers));
+		const peers = pinnedPeerSpecs(hostPeers, lockedPeers);
+		const overrides = consumerOverrides(lockedPeers);
 		writeFileSync(
 			join(consumer, "package.json"),
-			`${JSON.stringify({ name: "release-acceptance-consumer", private: true, version: "0.0.0" }, null, 2)}\n`,
+			`${JSON.stringify(consumerManifest(overrides), null, 2)}\n`,
 		);
-		const hostPeers = installedManifest.peerDependencies ?? {};
-		const lockedPeers = lockedVersions(
-			readFileSync(join(source, "bun.lock"), "utf8"),
-			Object.keys(hostPeers),
-		);
-		const peers = pinnedPeerSpecs(hostPeers, lockedPeers);
 		requireOk(
 			"consumer-install",
-			"npm install tarball with host peers",
-			exec(
-				[
-					"npm",
-					"install",
-					"--prefix",
-					consumer,
-					"--omit=dev",
-					"--ignore-scripts",
-					// The locked host peers do not satisfy @opentui/solid's exact solid-js peer.
-					// The pinned set is the tested configuration, and the consumer tree is still
-					// fully audited below, so npm's strict peer check is relaxed for this install.
-					"--legacy-peer-deps",
-					"--no-audit",
-					"--no-fund",
-					tarball,
-					...peers,
-				],
-				consumer,
-			),
+			"npm install tarball with locked host peers and the solid-js override",
+			exec(consumerInstallArgs({ consumer, tarball, peers }), consumer),
 		);
 		require(existsSync(
 			join(consumer, "package-lock.json"),
@@ -1483,23 +1568,47 @@ function runAcceptance(
 		require(existsSync(
 			join(installedDir, "dist", "tui.js"),
 		), "consumer-install", `installed package is missing dist/tui.js at ${installedDir}`);
-		const consumerManifest = readJson<{ version?: string }>(
+		const consumerManifestRead = readJson<{ version?: string }>(
 			join(installedDir, "package.json"),
 		);
-		require(consumerManifest.version ===
-			version, "consumer-install", `installed version ${consumerManifest.version} != ${version}`);
-		const installedVersions = new Map<string, string | undefined>();
-		for (const peer of lockedPeers.keys()) {
-			const peerManifest = join(consumer, "node_modules", peer, "package.json");
-			installedVersions.set(
-				peer,
-				existsSync(peerManifest)
-					? readJson<{ version?: string }>(peerManifest).version
-					: undefined,
-			);
+		require(consumerManifestRead.version ===
+			version, "consumer-install", `installed version ${consumerManifestRead.version} != ${version}`);
+
+		const readInstalled = (pkg: string): InstalledPackage | undefined => {
+			const manifestPath = join(consumer, "node_modules", pkg, "package.json");
+			return existsSync(manifestPath)
+				? readJson<InstalledPackage>(manifestPath)
+				: undefined;
+		};
+		const installed = new Map<string, InstalledPackage>();
+		for (const peer of Object.keys(lockedPeers)) {
+			const peerPackage = readInstalled(peer);
+			if (!peerPackage) continue;
+			installed.set(peer, peerPackage);
+			// A required peer that is absent stays out of the map, so validatePeerClosure reports it.
+			for (const child of Object.keys(peerPackage.peerDependencies ?? {})) {
+				if (peerPackage.peerDependenciesMeta?.[child]?.optional) continue;
+				const childPackage = readInstalled(child);
+				if (childPackage) installed.set(child, childPackage);
+			}
 		}
+		const closureLock = lockedVersions(bunLockText, [...installed.keys()]);
 		try {
-			validateInstalledVersions(installedVersions, lockedPeers);
+			validateInstalledVersions(
+				new Map(
+					[...lockedPeers.keys()].map((peer) => [
+						peer,
+						installed.get(peer)?.version,
+					]),
+				),
+				lockedPeers,
+			);
+			validatePeerClosure({
+				installed,
+				roots: Object.keys(hostPeers),
+				locked: closureLock,
+				overrides: new Map(Object.entries(overrides)),
+			});
 		} catch (error) {
 			throw new AcceptanceFailure(
 				"consumer-install",
@@ -1508,7 +1617,7 @@ function runAcceptance(
 		}
 		pass(
 			"consumer-install",
-			`${name}@${version} and host peers (${peers.join(", ")}) installed with --omit=dev --ignore-scripts`,
+			`${name}@${version} with locked host peers (${peers.join(", ")}), solid-js override ${JSON.stringify(overrides)}, peer closure verified, installed with --omit=dev --ignore-scripts`,
 		);
 
 		// 12. Import all four export paths from the consumer, not the checkout.

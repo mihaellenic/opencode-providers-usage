@@ -15,7 +15,11 @@ import {
 	type CommandResult,
 	classifyPublishedLookup,
 	classifyRegistryLookup,
+	consumerInstallArgs,
+	consumerManifest,
+	consumerOverrides,
 	createArtifactMetadata,
+	type InstalledPackage,
 	lockedVersions,
 	parseAcceptanceArgs,
 	pinnedPeerSpecs,
@@ -33,6 +37,7 @@ import {
 	validateBundleImports,
 	validateConsumerExports,
 	validateInstalledVersions,
+	validatePeerClosure,
 	validateRootShims,
 	verifyPublishedArtifact,
 } from "../scripts/release-acceptance";
@@ -1365,5 +1370,148 @@ describe("registry duplicate and published verification", () => {
 		);
 		expect(outcome.ok).toBe(false);
 		expect(calls).toBe(1);
+	});
+});
+
+describe("consumer override and install arguments", () => {
+	const locked = new Map([
+		["@opencode/theme", "2.1.4"],
+		["@opentui/core", "0.6.8"],
+		["@opentui/solid", "0.6.8"],
+		["solid-js", "1.9.17"],
+	]);
+
+	test("generated consumer manifest pins solid-js to the locked version through an npm override", () => {
+		const overrides = consumerOverrides(locked);
+		expect(overrides).toEqual({ "solid-js": "1.9.17" });
+		const manifest = consumerManifest(overrides);
+		expect(manifest.overrides).toEqual({ "solid-js": "1.9.17" });
+		expect(manifest.private).toBe(true);
+	});
+
+	test("the override fails closed when solid-js has no locked version", () => {
+		const withoutSolid = new Map(locked);
+		withoutSolid.delete("solid-js");
+		expect(() => consumerOverrides(withoutSolid)).toThrow(
+			"override solid-js has no locked version",
+		);
+	});
+
+	test("consumer install args never contain --legacy-peer-deps and keep the strict peer check", () => {
+		const args = consumerInstallArgs({
+			consumer: "/scratch/consumer",
+			tarball: "/scratch/opencode-providers-usage-0.1.0.tgz",
+			peers: ["@opentui/solid@0.6.8", "solid-js@1.9.17"],
+		});
+		expect(args).not.toContain("--legacy-peer-deps");
+		expect(args).toContain("--ignore-scripts");
+		expect(args).toContain("--omit=dev");
+		expect(args).toContain("/scratch/opencode-providers-usage-0.1.0.tgz");
+		expect(args).toContain("solid-js@1.9.17");
+	});
+});
+
+describe("validatePeerClosure", () => {
+	const locked = new Map([
+		["@opentui/core", "0.6.8"],
+		["@opentui/solid", "0.6.8"],
+		["solid-js", "1.9.17"],
+		["web-tree-sitter", "0.25.10"],
+	]);
+	const overrides = new Map([["solid-js", "1.9.17"]]);
+	const roots = ["@opentui/core", "@opentui/solid"];
+	const closure = (): Map<string, InstalledPackage> =>
+		new Map<string, InstalledPackage>([
+			[
+				"@opentui/core",
+				{
+					version: "0.6.8",
+					peerDependencies: { "web-tree-sitter": "0.25.10" },
+				},
+			],
+			[
+				"@opentui/solid",
+				{ version: "0.6.8", peerDependencies: { "solid-js": "1.9.12" } },
+			],
+			["solid-js", { version: "1.9.17" }],
+			["web-tree-sitter", { version: "0.25.10" }],
+		]);
+
+	test("accepts a closure where every required peer is installed at its locked or overridden version", () => {
+		expect(() =>
+			validatePeerClosure({ installed: closure(), roots, locked, overrides }),
+		).not.toThrow();
+	});
+
+	test("fails when a required transitive peer such as web-tree-sitter is not installed", () => {
+		const installed = closure();
+		installed.delete("web-tree-sitter");
+		expect(() =>
+			validatePeerClosure({ installed, roots, locked, overrides }),
+		).toThrow(
+			"@opentui/core requires peer web-tree-sitter which is not installed",
+		);
+	});
+
+	test("fails when a required transitive peer is installed at a version other than the locked one", () => {
+		const installed = closure();
+		installed.set("web-tree-sitter", { version: "0.24.0" });
+		expect(() =>
+			validatePeerClosure({ installed, roots, locked, overrides }),
+		).toThrow("peer web-tree-sitter@0.24.0 does not match pinned 0.25.10");
+	});
+
+	test("fails when the overridden solid-js is not the pinned version", () => {
+		const installed = closure();
+		installed.set("solid-js", { version: "1.9.12" });
+		expect(() =>
+			validatePeerClosure({ installed, roots, locked, overrides }),
+		).toThrow("peer solid-js@1.9.12 does not match pinned 1.9.17");
+	});
+
+	test("optional peers may be absent", () => {
+		const installed = closure();
+		installed.set("@opentui/core", {
+			version: "0.6.8",
+			peerDependencies: {
+				"web-tree-sitter": "0.25.10",
+				"@types/emscripten": "^1.40.0",
+			},
+			peerDependenciesMeta: { "@types/emscripten": { optional: true } },
+		});
+		expect(() =>
+			validatePeerClosure({ installed, roots, locked, overrides }),
+		).not.toThrow();
+	});
+
+	test("fails when a host root is not installed at all", () => {
+		const installed = closure();
+		installed.delete("@opentui/core");
+		expect(() =>
+			validatePeerClosure({ installed, roots, locked, overrides }),
+		).toThrow("host peer @opentui/core is not installed");
+	});
+
+	test("an unpinned, non-overridden peer must still satisfy its declared range", () => {
+		const installed = closure();
+		installed.set("web-tree-sitter", { version: "0.26.0" });
+		expect(() =>
+			validatePeerClosure({
+				installed,
+				roots,
+				locked: new Map(),
+				overrides: new Map(),
+			}),
+		).toThrow(
+			"peer web-tree-sitter@0.26.0 does not satisfy 0.25.10 required by @opentui/core",
+		);
+	});
+});
+
+describe("consumer audit stays fail-closed with the solid-js override", () => {
+	test("a critical advisory in the consumer tree still blocks the release, with no waiver input", () => {
+		const blocking = blockingAuditDetail(summarizeNpmAudit(criticalNpmAudit));
+		expect(blocking).not.toBeNull();
+		expect(blocking).toContain("0 high and 1 critical");
 	});
 });
