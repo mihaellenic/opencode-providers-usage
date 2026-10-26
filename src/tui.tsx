@@ -11,6 +11,7 @@ import {
 import type {
 	LocaleContext,
 	ProviderSummary,
+	QuotaPresentation,
 	QuotaRead,
 } from "./core/contracts";
 import {
@@ -23,6 +24,10 @@ import {
 	QuotaRpc,
 	type QuotaUpdatedEvent,
 } from "./rpc";
+import {
+	type ActivityRefreshDriver,
+	createActivityRefreshDriver,
+} from "./ui/activity-refresh";
 import {
 	defaultLocaleContext,
 	formatQuotaRows,
@@ -39,7 +44,7 @@ import { UsagePage } from "./ui/UsagePage";
 
 export type QuotaTuiContext = Pick<
 	Plugin.Context,
-	"client" | "data" | "keymap" | "location" | "theme" | "ui"
+	"client" | "data" | "keymap" | "location" | "theme" | "ui" | "renderer"
 >;
 
 export type QuotaKeymapLayer = ReturnType<
@@ -62,6 +67,101 @@ const FALLBACK_SLASH = "provider-usage";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Observe host input, never consume keys or retain message content. */
+export function subscribeQuotaActivity(
+	context: QuotaTuiContext,
+	driver: ActivityRefreshDriver,
+): () => void {
+	const releases: (() => void)[] = [];
+	const steps = new Map<string, string>();
+	const finished = new Set<string>();
+	let disposed = false;
+	const activity = () => {
+		const id = context.ui.model.current()?.providerID;
+		if (!disposed && id !== undefined) driver.activity(id);
+	};
+	const renderer = context.renderer;
+	if (renderer?.keyInput) {
+		renderer.keyInput.on("keypress", activity);
+		releases.push(() => renderer.keyInput.off("keypress", activity));
+	}
+	if (renderer?.on) {
+		renderer.on("focus", activity);
+		releases.push(() => renderer.off("focus", activity));
+	}
+	if (context.data.on) {
+		releases.push(
+			context.data.on("session.step.started", (event) => {
+				const key = JSON.stringify([
+					event.data.sessionID,
+					event.data.assistantMessageID,
+				]);
+				if (!finished.has(key)) steps.set(key, event.data.model.providerID);
+			}),
+		);
+		const complete = (event: {
+			data: { sessionID: string; assistantMessageID: string };
+		}) => {
+			if (disposed) return;
+			const { sessionID, assistantMessageID } = event.data;
+			const key = JSON.stringify([sessionID, assistantMessageID]);
+			if (finished.has(key)) return;
+			finished.add(key);
+			// Bound the replay cache; it stores identifiers only.
+			if (finished.size > 512) {
+				const oldest = finished.values().next().value;
+				if (oldest !== undefined) finished.delete(oldest);
+			}
+			let providerID = steps.get(key);
+			steps.delete(key);
+			if (providerID === undefined) {
+				const message = context.data.session?.message?.get(
+					sessionID,
+					assistantMessageID,
+				);
+				if (message?.type === "assistant")
+					providerID = message.model.providerID;
+			}
+			if (providerID !== undefined) driver.completed(providerID);
+		};
+		releases.push(context.data.on("session.step.ended", complete));
+		releases.push(context.data.on("session.step.failed", complete));
+	}
+	return () => {
+		if (disposed) return;
+		disposed = true;
+		for (const release of releases) release();
+		steps.clear();
+		finished.clear();
+	};
+}
+
+type QuotaObservation = { quota: QuotaRead; presentation?: QuotaPresentation };
+
+/** Server revisions order RPC responses and pushes together, including invalidations. */
+export function newestQuotaObservation(
+	current: QuotaObservation | undefined,
+	incoming: QuotaObservation,
+): QuotaObservation {
+	const previous = current?.presentation?.revision;
+	const next = incoming.presentation?.revision;
+	return current !== undefined &&
+		previous !== undefined &&
+		(next === undefined || next < previous)
+		? current
+		: incoming;
+}
+
+function successfulFetchedAt(view: QuotaObservation): number | undefined {
+	const read = view.presentation?.lastKnown ?? view.quota;
+	if (read.state !== "available" || read.sections.length === 0)
+		return undefined;
+	const times = read.sections.flatMap((section) =>
+		section.result.state === "available" ? [section.result.fetchedAt] : [],
+	);
+	return times.length === read.sections.length ? Math.min(...times) : undefined;
 }
 
 type QuotaEventSubscription = {
@@ -179,21 +279,31 @@ async function fetchProviders(
  * Latest pushed snapshot per provider. Keyed by provider ID, so an update for
  * one provider can never be rendered under another provider's label.
  */
-function createPushedQuota(context: QuotaTuiContext) {
-	const [pushed, setPushed] = createSignal<Record<string, QuotaRead>>({});
+function createPushedQuota(
+	context: QuotaTuiContext,
+	observe?: (id: string, view: QuotaObservation) => void,
+) {
+	const [pushed, setPushed] = createSignal<Record<string, QuotaObservation>>(
+		{},
+	);
+	const accept = (providerID: string, view: QuotaObservation) => {
+		setPushed((current) => {
+			const selected = newestQuotaObservation(current[providerID], view);
+			if (selected === current[providerID]) return current;
+			observe?.(providerID, selected);
+			return { ...current, [providerID]: selected };
+		});
+	};
 	const dispose = subscribeQuotaUpdates(context, (event) => {
-		setPushed((current) => ({
-			...current,
-			[event.providerID]: event.quota,
-		}));
+		accept(event.providerID, event);
 	});
-	return { pushed, dispose };
+	return { pushed, accept, dispose };
 }
 
 function usePushedQuota(context: QuotaTuiContext) {
 	const created = createPushedQuota(context);
 	onCleanup(created.dispose);
-	return created.pushed;
+	return created;
 }
 
 type SidebarSnapshotState = {
@@ -207,7 +317,10 @@ type SidebarSnapshotState = {
  * the slot render computation only when the selected provider changes, and the
  * async result is stored in a signal read by a memo.
  */
-function createSidebarDriver(context: QuotaTuiContext) {
+function createSidebarDriver(
+	context: QuotaTuiContext,
+	accept: (id: string, view: QuotaObservation) => void,
+) {
 	const [snapshot, setSnapshot] = createSignal<SidebarSnapshotState>({
 		loading: false,
 		value: undefined,
@@ -215,6 +328,7 @@ function createSidebarDriver(context: QuotaTuiContext) {
 	let inFlight: AbortController | undefined;
 	let started = false;
 	let currentProvider: string | undefined;
+	let disposed = false;
 
 	const sync = (providerID: string | undefined) => {
 		if (started && providerID === currentProvider) {
@@ -233,6 +347,7 @@ function createSidebarDriver(context: QuotaTuiContext) {
 		void fetchProvider(context, providerID, controller.signal).then(
 			(result) => {
 				if (!controller.signal.aborted) {
+					if (result !== undefined) accept(providerID, result);
 					setSnapshot({ loading: false, value: result });
 				}
 			},
@@ -242,7 +357,18 @@ function createSidebarDriver(context: QuotaTuiContext) {
 	return {
 		snapshot,
 		sync,
-		dispose: () => inFlight?.abort(),
+		refresh: async (providerID: string) => {
+			const result = await refreshProvider(context, providerID);
+			if (disposed || result === undefined) return;
+			accept(providerID, result);
+			if (providerID === currentProvider) {
+				setSnapshot({ loading: false, value: result });
+			}
+		},
+		dispose: () => {
+			disposed = true;
+			inFlight?.abort();
+		},
 	};
 }
 
@@ -394,7 +520,12 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 			inFlight?.abort();
 			const controller = new AbortController();
 			inFlight = controller;
-			return (await fetchProviders(context, controller.signal)) ?? null;
+			const result = await fetchProviders(context, controller.signal);
+			if (!controller.signal.aborted) {
+				for (const view of result?.providers ?? [])
+					pushed.accept(view.provider.providerID, view);
+			}
+			return result ?? null;
 		},
 	);
 	onCleanup(() => inFlight?.abort());
@@ -415,7 +546,7 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 		for (const view of result.providers) {
 			const providerID = view.provider.providerID;
 			providers.push(view.provider);
-			const quota = pushed()[providerID] ?? view.quota;
+			const quota = pushed.pushed()[providerID]?.quota ?? view.quota;
 			quotaByProvider[providerID] = revalidateQuota(quota, now);
 		}
 		return { providers, quotaByProvider };
@@ -513,8 +644,23 @@ async function refreshSelected(context: QuotaTuiContext): Promise<void> {
 export function setupQuotaTui(context: QuotaTuiContext): () => void {
 	const sidebar = createRoot((disposeRoot) => {
 		const sidebarSelection = createMemo(() => currentSelection(context));
-		const sidebarPushed = createPushedQuota(context);
-		const sidebarDriver = createSidebarDriver(context);
+		let activityDriver: ActivityRefreshDriver | undefined;
+		const sidebarPushed = createPushedQuota(context, (id, view) =>
+			activityDriver?.observe(
+				id,
+				successfulFetchedAt(view),
+				view.presentation?.revision,
+			),
+		);
+		const sidebarDriver = createSidebarDriver(context, sidebarPushed.accept);
+		activityDriver = createActivityRefreshDriver({
+			now: Date.now,
+			refresh: sidebarDriver.refresh,
+			setTimer: (callback, delay) => setTimeout(callback, delay),
+			clearTimer: (handle) =>
+				clearTimeout(handle as ReturnType<typeof setTimeout>),
+		});
+		const releaseActivity = subscribeQuotaActivity(context, activityDriver);
 		const sidebarLocale = defaultLocaleContext();
 		// Snapshot only the semantic tokens the block paints into plugin-owned
 		// plain state. The effect reads the host theme outside the slot render, so
@@ -533,6 +679,30 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 		// render, so merely loading the plugin does not request quota. The slot
 		// render reads the plain model signal and nothing else.
 		const [sidebarActive, setSidebarActive] = createSignal(false);
+		let previousActivityKey: string | undefined;
+		createEffect(() => {
+			const model = context.ui.model.current();
+			const route = context.ui.router.current();
+			const key = JSON.stringify([
+				model?.providerID,
+				model?.modelID,
+				model?.variant,
+				route.type,
+				"sessionID" in route
+					? route.sessionID
+					: "id" in route
+						? route.id
+						: undefined,
+			]);
+			if (
+				previousActivityKey !== undefined &&
+				key !== previousActivityKey &&
+				model !== undefined
+			) {
+				activityDriver?.activity(model.providerID);
+			}
+			previousActivityKey = key;
+		});
 		const [sidebarModel, setSidebarModel] = createSignal<SidebarModel | null>(
 			null,
 		);
@@ -556,7 +726,7 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 					? fetched
 					: undefined;
 			const quota =
-				sidebarPushed.pushed()[selected.providerID] ?? matching?.quota;
+				sidebarPushed.pushed()[selected.providerID]?.quota ?? matching?.quota;
 			if (matching === undefined || quota === undefined) {
 				setSidebarModel(
 					sidebarFallbackModel({
@@ -595,6 +765,8 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 				// Dispose the reactive owner first so a late host reconciliation
 				// cannot restart the fetch driver, then release the RPC and slots.
 				disposeRoot();
+				activityDriver?.dispose();
+				releaseActivity();
 				sidebarDriver.dispose();
 				sidebarPushed.dispose();
 				disposeSidebar();
@@ -642,7 +814,10 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 		],
 	}));
 
+	let disposed = false;
 	return () => {
+		if (disposed) return;
+		disposed = true;
 		sidebar.dispose();
 		disposePage();
 	};

@@ -18,13 +18,106 @@ import {
 } from "../../src/rpc";
 import {
 	currentSelection,
+	newestQuotaObservation,
 	type QuotaKeymapCommand,
 	type QuotaKeymapLayer,
 	type QuotaTuiContext,
 	setupQuotaTui,
+	subscribeQuotaActivity,
 } from "../../src/tui";
 
 const NOW = 1_800_000_000_000;
+
+test("newer RPC metadata supersedes old pushes and identity reset cannot be rolled back", () => {
+	const view = (revision: number) => ({
+		quota: unsupportedRead(),
+		presentation: { revision },
+	});
+	const oldPush = view(5);
+	const recovery = view(6);
+	const reset = view(7);
+	expect(newestQuotaObservation(oldPush, recovery)).toBe(recovery);
+	expect(newestQuotaObservation(recovery, oldPush)).toBe(recovery);
+	expect(newestQuotaObservation(reset, recovery)).toBe(reset);
+	expect(newestQuotaObservation(recovery, { quota: unsupportedRead() })).toBe(
+		recovery,
+	);
+});
+
+test("activity observes keys/focus without contents and attributes/deduplicates completions", () => {
+	const handlers = new Map<string, (event: unknown) => void>();
+	const keys = new Map<string, () => void>();
+	const focus = new Map<string, () => void>();
+	const completed: string[] = [];
+	const activity: string[] = [];
+	const lookedUp: string[] = [];
+	let disposals = 0;
+	const context = {
+		renderer: {
+			keyInput: {
+				on: (name: string, handler: () => void) => keys.set(name, handler),
+				off: (name: string) => keys.delete(name),
+			},
+			on: (name: string, handler: () => void) => focus.set(name, handler),
+			off: (name: string) => focus.delete(name),
+		},
+		ui: {
+			model: { current: () => ({ providerID: "selected", modelID: "m" }) },
+		},
+		data: {
+			on(name: string, handler: (event: unknown) => void) {
+				handlers.set(name, handler);
+				return () => {
+					handlers.delete(name);
+					disposals++;
+				};
+			},
+			session: {
+				message: {
+					get: (_session: string, id: string) => {
+						lookedUp.push(id);
+						return id === "missed"
+							? { type: "assistant", model: { providerID: "fallback" } }
+							: undefined;
+					},
+				},
+			},
+		},
+	} as unknown as QuotaTuiContext;
+	const dispose = subscribeQuotaActivity(context, {
+		activity: (id) => activity.push(id),
+		completed: (id) => completed.push(id),
+		observe: () => {},
+		dispose: () => {},
+	});
+	keys.get("keypress")?.();
+	focus.get("focus")?.();
+	expect(activity).toEqual(["selected", "selected"]);
+	const emit = (name: string, id: string, providerID = "actual") =>
+		handlers.get(name)?.({
+			data: { sessionID: "s", assistantMessageID: id, model: { providerID } },
+		});
+	emit("session.step.started", "one");
+	emit("session.step.ended", "one");
+	emit("session.step.failed", "one");
+	emit("session.step.failed", "missed");
+	emit("session.step.ended", "unknown");
+	expect(completed).toEqual(["actual", "fallback"]);
+	expect(lookedUp).toEqual(["missed", "unknown"]);
+	dispose();
+	dispose();
+	expect(disposals).toBe(3);
+	expect(handlers.size + keys.size + focus.size).toBe(0);
+	emit("session.step.ended", "late");
+	expect(completed).toHaveLength(2);
+	// Old/custom hosts without input/event surfaces remain usable.
+	subscribeQuotaActivity({ data: {}, ui: context.ui } as QuotaTuiContext, {
+		activity: () => {},
+		completed: () => {},
+		observe: () => {},
+		dispose: () => {},
+	})();
+});
 
 function unsupportedRead(): QuotaRead {
 	return {

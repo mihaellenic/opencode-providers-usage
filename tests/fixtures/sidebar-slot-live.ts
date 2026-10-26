@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { EventEmitter } from "node:events";
 import { RGBA } from "@opentui/core";
 import { testRender } from "@opentui/solid";
 import { jsx } from "@opentui/solid/jsx-runtime";
@@ -187,6 +188,16 @@ async function main(): Promise<void> {
 	assert.equal(doubled(), 6);
 
 	const now = Date.now();
+	let clock = now;
+	const originalNow = Date.now;
+	Date.now = () => clock;
+	const keyInput = new EventEmitter();
+	const renderer = new EventEmitter();
+	const stepEvents = new Map<string, (event: unknown) => void>();
+	let eventDisposals = 0;
+	const [route, setRoute] = createSignal<
+		{ type: "home" } | { type: "session"; sessionID: string }
+	>({ type: "home" });
 	const reads: Record<string, QuotaRead> = {
 		alpha: windowQuota({
 			remainingPercent: 90,
@@ -232,6 +243,7 @@ async function main(): Promise<void> {
 		);
 	};
 	const context = {
+		renderer: Object.assign(renderer, { keyInput }),
 		location: { directory: "/tmp/provider-usage-live-slot" },
 		client: {
 			rpc: () => ({
@@ -247,6 +259,21 @@ async function main(): Promise<void> {
 			}),
 		},
 		data: {
+			on: (name: string, handler: (event: unknown) => void) => {
+				stepEvents.set(name, handler);
+				return () => {
+					stepEvents.delete(name);
+					eventDisposals++;
+				};
+			},
+			session: {
+				message: {
+					get: (_session: string, id: string) =>
+						id === "missed"
+							? { type: "assistant", model: { providerID: "delta" } }
+							: undefined,
+				},
+			},
 			location: {
 				provider: {
 					list: () => [
@@ -273,7 +300,7 @@ async function main(): Promise<void> {
 				navigate: (destination: unknown) => {
 					navigations.push(destination);
 				},
-				current: () => ({ type: "home" }),
+				current: route,
 			},
 			slot(input: CapturedSlot) {
 				slots.push(input);
@@ -439,6 +466,42 @@ async function main(): Promise<void> {
 			{ method: "get", providerID: "alpha" },
 		]);
 
+		// Activity uses the same provider even when only its selected model or
+		// route changes. RPC errors preserve the existing card on same-provider refresh.
+		clock += 61_000;
+		setSelected({ providerID: "alpha", modelID: "model-b" });
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.deepEqual(calls.at(-1), { method: "refresh", providerID: "alpha" });
+		clock += 61_000;
+		setRoute({ type: "session", sessionID: "synthetic-session" });
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.deepEqual(calls.at(-1), { method: "refresh", providerID: "alpha" });
+		clock += 61_000;
+		keyInput.emit("keypress");
+		renderer.emit("focus");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.equal(
+			calls.filter(
+				(call) => call.method === "refresh" && call.providerID === "alpha",
+			).length,
+			3,
+		);
+		const emitStep = (name: string, id: string) =>
+			stepEvents.get(name)?.({
+				data: {
+					sessionID: "s",
+					assistantMessageID: id,
+					model: { providerID: "gamma" },
+				},
+			});
+		emitStep("session.step.started", "started");
+		emitStep("session.step.ended", "started");
+		emitStep("session.step.failed", "started");
+		emitStep("session.step.ended", "missed");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.equal(calls.filter((call) => call.providerID === "gamma").length, 1);
+		assert.equal(calls.filter((call) => call.providerID === "delta").length, 1);
+
 		// Repeated host reconciliation builds fresh renderables; no disposed node
 		// is ever reused.
 		assert.ok(nodes.length >= 3);
@@ -448,6 +511,9 @@ async function main(): Promise<void> {
 		setup = undefined;
 		dispose();
 		assert.equal(slotDisposals, 1);
+		assert.equal(eventDisposals, 3);
+		assert.equal(keyInput.listenerCount("keypress"), 0);
+		assert.equal(renderer.listenerCount("focus"), 0);
 		const callsAfterDispose = calls.length;
 		setSelected({ providerID: "beta", modelID: "model-a" });
 		await new Promise((resolve) => setTimeout(resolve, 20));
@@ -455,6 +521,7 @@ async function main(): Promise<void> {
 	} finally {
 		await setup?.dispose();
 		dispose();
+		Date.now = originalNow;
 	}
 	console.log(SUCCESS_MARKER);
 	console.log("sidebar-slot-live: navigation+disposal");
