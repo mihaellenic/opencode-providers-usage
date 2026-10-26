@@ -67,6 +67,63 @@ const REFRESH_COMMAND_ID = "provider-quota.refresh";
 const PREFERRED_SLASH = "usage";
 const FALLBACK_SLASH = "provider-usage";
 
+export type QuotaRoute = ReturnType<QuotaTuiContext["ui"]["router"]["current"]>;
+
+type QuotaHomeRoute = Extract<QuotaRoute, { type: "home" }> & {
+	location?: unknown;
+};
+
+/**
+ * Route fields that are safe to restore. Startup prompt seeds are deliberately
+ * dropped: re-entering a session route would otherwise replay the prompt into
+ * the composer.
+ */
+function restorableRoute(route: QuotaRoute): QuotaRoute {
+	if (route.type === "session") {
+		return { type: "session", sessionID: route.sessionID };
+	}
+	if (route.type === "plugin") {
+		return route.data === undefined
+			? { type: "plugin", id: route.id, name: route.name }
+			: { type: "plugin", id: route.id, name: route.name, data: route.data };
+	}
+	const home = route as QuotaHomeRoute;
+	return home.location === undefined
+		? { type: "home" }
+		: ({ type: "home", location: home.location } as QuotaRoute);
+}
+
+export type UsageNavigator = {
+	open(): void;
+	back(): void;
+};
+
+/**
+ * Opens the usage page and remembers where it came from. The host router has
+ * no history stack; leaving without an explicit return route lands on `home`,
+ * which OpenCode renders as a new-session tab. Reopening while the page is
+ * already active must not overwrite the original return route.
+ */
+export function createUsageNavigator(
+	context: Pick<QuotaTuiContext, "ui">,
+): UsageNavigator {
+	let returnRoute: QuotaRoute | undefined;
+	const isUsagePage = (route: QuotaRoute) =>
+		route.type === "plugin" && route.name === USAGE_PAGE_NAME;
+	return {
+		open() {
+			const current = context.ui.router.current();
+			if (isUsagePage(current)) return;
+			returnRoute = restorableRoute(current);
+			context.ui.router.navigate({ type: "plugin", name: USAGE_PAGE_NAME });
+		},
+		back() {
+			context.ui.router.navigate(returnRoute ?? { type: "home" });
+			returnRoute = undefined;
+		},
+	};
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -580,7 +637,11 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 		})();
 	};
 
-	const back = () => context.ui.router.navigate({ type: "home" });
+	// The registered route supplies the navigator's return-aware back handler;
+	// direct mounts (tests, live probes) keep a home fallback.
+	const back =
+		(props.back as (() => void) | undefined) ??
+		(() => context.ui.router.navigate({ type: "home" }));
 	const retry = () => void refetch();
 
 	// While the inventory is loading or failed the full page component is not
@@ -675,6 +736,7 @@ async function refreshSelected(context: QuotaTuiContext): Promise<void> {
  * widget owns a timer, so mounting sidebar and page shares one request rate.
  */
 export function setupQuotaTui(context: QuotaTuiContext): () => void {
+	const usage = createUsageNavigator(context);
 	const sidebar = createRoot((disposeRoot) => {
 		const sidebarSelection = createMemo(() => currentSelection(context));
 		let activityDriver: ActivityRefreshDriver | undefined;
@@ -709,7 +771,7 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 			setSidebarTheme(resolveSidebarTheme(context.theme));
 		});
 		const openUsage = () => {
-			context.ui.router.navigate({ type: "plugin", name: USAGE_PAGE_NAME });
+			usage.open();
 		};
 		// The effect owns all host reactive reads, the driver hand-off, and the
 		// model build. It starts only after the host first asks the slot to
@@ -823,7 +885,8 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 	});
 	const disposePage = context.ui.router.register({
 		name: USAGE_PAGE_NAME,
-		render: (input) => jsx(QuotaUsagePage, { context, data: input.data }),
+		render: (input) =>
+			jsx(QuotaUsagePage, { context, data: input.data, back: usage.back }),
 	});
 	// The slash-yield choice is evaluated ONCE, at setup, outside the layer
 	// factory. The factory must stay pure (host docs): reading
@@ -846,10 +909,7 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 				palette: true,
 				slash: { name: usageSlash },
 				run: () => {
-					context.ui.router.navigate({
-						type: "plugin",
-						name: USAGE_PAGE_NAME,
-					});
+					usage.open();
 				},
 			},
 			{

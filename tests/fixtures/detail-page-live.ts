@@ -63,6 +63,10 @@ const read = (expiresAt: number): QuotaRead => ({
 let calls = 0;
 let disposals = 0;
 let update: ((payload: unknown) => void) | undefined;
+let backs = 0;
+const layers: {
+	commands?: readonly { id?: string; run?: () => void | Promise<void> }[];
+}[] = [];
 const color = RGBA.fromHex("#ffffff");
 const context = {
 	theme: {
@@ -78,7 +82,15 @@ const context = {
 			},
 		},
 	},
-	keymap: { layer: () => {} },
+	keymap: {
+		layer(
+			factory: () => {
+				commands?: readonly { id?: string; run?: () => void | Promise<void> }[];
+			},
+		) {
+			layers.push(factory());
+		},
+	},
 	ui: { router: { navigate: () => {} } },
 	client: {
 		rpc: () => ({
@@ -109,7 +121,12 @@ try {
 			jsx(PluginContextProvider as never, {
 				value: context,
 				get children() {
-					return jsx(QuotaUsagePage, { context });
+					return jsx(QuotaUsagePage, {
+						context,
+						back: () => {
+							backs += 1;
+						},
+					});
 				},
 			}),
 		{ width: 120, height: 40 },
@@ -120,6 +137,13 @@ try {
 		return setup?.captureCharFrame() ?? "";
 	};
 	assert.ok((await frame()).includes("$42.00 remaining"));
+	// The page must invoke the injected return handler, not a hardcoded home.
+	const back = layers
+		.flatMap((layer) => layer.commands ?? [])
+		.find((command) => command.id === "provider-quota.page.back");
+	assert.ok(back, "usage page registers its escape command");
+	await back.run?.();
+	assert.equal(backs, 1, "escape calls the injected back handler");
 	now += 90_000;
 	for (const [handle, timer] of [...timers])
 		if (timer.at <= now && timers.delete(handle)) timer.callback();
