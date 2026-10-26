@@ -45,24 +45,17 @@ The package exports four entrypoints:
 | `./tui` | `./tui.tsx` | Terminal plugin: sidebar slot, `/usage` page, palette commands |
 | `./rpc` | `./rpc.ts` | Versioned, validated RPC contract types |
 
-Local plugin targets do not use this map: OpenCode resolves them by root-file
-convention (`index.ts`, `tui.tsx`, `rpc.ts`), and this repository ships those
-root files re-exporting `src/*`. Named package installs use the exports map
-above.
-
-OpenCode loads the `./tui` export beside the main plugin automatically. Do not
-add a second plugin entry for it.
+Local plugin targets do not use this map: OpenCode resolves local plugins by
+root-file convention (`index.ts`, `tui.tsx`, `rpc.ts`), and this repository
+ships those root files re-exporting `src/*`. OpenCode loads the `./tui` export
+beside the main plugin automatically; do not add a second plugin entry for it.
 
 ## Loading the plugin
 
-OpenCode V2 resolves local plugins by ROOT-FILE CONVENTION: the loader looks
-for `<package>/index.ts`, `<package>/tui.tsx`, and `<package>/rpc.ts` (this
-repository ships those root entrypoints, re-exporting `src/*`). Use one of the
-two verified forms:
-
-Use only one form for a given plugin. Combining a directory symlink with a
-config entry causes `Duplicate plugin ID: provider-usage`. `scripts/dev-open.sh`
-uses Form B in both companion modes to keep the plugin options attached.
+OpenCode V2 resolves local plugins by root-file convention: the loader looks
+for `<package>/index.ts`, `<package>/tui.tsx`, and `<package>/rpc.ts`. Use one
+of the two forms below for a given plugin. Combining a directory symlink with
+a config entry causes `Duplicate plugin ID: provider-usage`.
 
 **Form A — symlink into the config plugins directory** (independent of config
 arrays):
@@ -72,8 +65,7 @@ ln -sfn /absolute/path/to/opencode-providers-usage \
   ~/.config/opencode/plugins/opencode-providers-usage
 ```
 
-**Form B — config `plugins` array with an object entry** (verified in the
-isolated serve run via `/api/config` and RPC):
+**Form B — config `plugins` array with an object entry**:
 
 ```jsonc
 {
@@ -85,8 +77,8 @@ isolated serve run via `/api/config` and RPC):
 ```
 
 The bare-string form (`"plugins": ["file:///absolute/path"]`) is accepted by
-the config schema; it was observed to be silently ignored for local paths on
-`2.1.4` — prefer the forms above.
+the config schema but silently ignored for local paths on `2.1.4`; prefer the
+forms above.
 
 ### Codex companion (on by default, explicit opt-out)
 
@@ -133,18 +125,16 @@ has already been imported.
 - The sidebar follows the **prompt's currently selected provider**, not the
   server's default model. With no selection it says “No provider selected”.
   The structured sidebar card shows the provider name, compact used-quota bars
-  with reset countdowns, and dimmed detail rows. Shared-plan windows stay on the
-  full page. Clicking anywhere in the card opens the full page.
+  with reset countdowns, and dimmed detail rows. Clicking anywhere in the card
+  opens the full page.
 - `Show provider usage` (`provider-quota.usage`) opens the full page. The slash
-  command is `/usage`; the occupation check runs once at setup — a plugin that
-  registers `/usage` later may collide, and OpenCode resolves duplicate slash
-  names itself. If occupied at our setup the plugin registers `/provider-usage`.
-  The page renders one card per connected provider with the same compact quota
-  rows as the sidebar, plus an update-age cell (`Updated 30s ago`, or
-  `Last attempt 5m ago` when only an attempt exists), absolute reset timestamps,
-  and an explicit `Total credits` row when reported. Shared-plan rows and a
-  configured app cap appear only on this page. Unsupported providers show only
-  their name and `Quota unavailable`.
+  command is `/usage`; if that name is occupied at setup the plugin registers
+  `/provider-usage` instead. The page renders one framed card per connected
+  provider, and each card body is exactly the sidebar widget for that
+  provider: same compact rows, duration labels, countdown resets, and tones,
+  with no extra rows added by the page. Cards share a row when the terminal is
+  wide enough and stack when narrow. Unsupported providers show only their
+  name and `Quota unavailable`.
 - `Refresh provider usage` (`provider-quota.refresh`) refreshes the selected
   provider and shows a short status toast.
 - On the full page, `ctrl+r` refreshes every listed provider and `escape` goes
@@ -210,8 +200,8 @@ No UI action triggers a model request or an inference call.
 - V1 makes no remote-server compatibility promise; a remote TUI must never
   upload its own Codex cache or select arbitrary paths. Keychain/encrypted
   stores are not supported.
-- The absent-config Codex file-storage default is currently **unverified until
-  live-smoked**; see [`docs/validation.md`](docs/validation.md).
+- The absent-config Codex file-storage default is not yet live-validated; see
+  [`docs/validation.md`](docs/validation.md).
 
 ## Development
 

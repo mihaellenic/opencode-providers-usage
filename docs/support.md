@@ -16,10 +16,8 @@ fails CI.
 | Remote server | Not promised for v1; see [No remote or keychain promise](#no-remote-or-keychain-promise) |
 | Quota source | Provider responses only; no local-token estimates, guessed allowances, inferred refills, or API-spending substitution |
 
-Evidence dates in this document refer to the live validations on
-**2026-10-24**: the source plan's checks plus the integrated, consented,
-read-only Checkpoint B smoke recorded in `docs/validation.md`. Nothing in this
-document claims a live validation performed after that date.
+Live evidence in this document was gathered on **2026-10-24** and is recorded
+in [`docs/validation.md`](docs/validation.md).
 
 ## Authentication and compatibility matrix
 
@@ -230,9 +228,9 @@ is display-only, and full recovery clears it. Account/credential identity change
 explicit invalidation, rejected successful-response currentness, and auth rejection
 clear history immediately; historical data never becomes a current `available`
 observation. History is runtime-only, not persisted across restart, and reset times
-never imply replenishment. The detailed page retains strict current-state
-validation and real diagnostic timestamps. V2 sources without optional presentation
-metadata retain strict sidebar behavior too.
+never imply replenishment. The usage page retains strict current-state
+validation and never renders historical figures as current. V2 sources without
+optional presentation metadata retain strict sidebar behavior too.
 The detailed page owns a display-only currentness deadline, so its figures expire
 even without another RPC or push. Coordinator-backed custom RPC sources must
 provide the atomic `snapshot` hook: attaching a later revision to an earlier
@@ -280,40 +278,22 @@ must remain independent capabilities, never guessed quota inputs.
 
 ## Sidebar presentation
 
-The earlier conservative workaround rendered the sidebar contribution as one
-static text node with a plain string child. That avoided the host re-entrancy
-crash seen with nested reactive component trees on OpenCode 2.1.4, but it could
-not express the approved hierarchy: no accent rule, aligned cells, semantic
-tones, paired credits, or clickable navigation. That workaround is retained
-only as the `buildSidebarText` compatibility helper. Successful live quota now
-appends a static nested OpenTUI Box/Text tree to the `sidebar.footer` slot,
-built from the plain `SidebarModel` in `src/ui/sidebar-model.ts`.
+The sidebar appends one compact quota card to the `sidebar.footer` slot for the
+prompt's currently selected provider.
 
-The live path keeps the host safeguards that mattered:
-
-- The selected provider, revision-ordered snapshots, fetch result, and presentation selection are
-  resolved before the slot render. Required theme tokens are separately
-  snapshotted into plugin-owned plain state by an effect outside the render, so
-  both a replaced theme object and a reactive token update repaint the existing
-  contribution. The slot render reads only that plain model/theme state and
-  returns fresh renderable nodes. It passes no function-valued children and
-  never reuses a disposed renderable.
-- The model is a compact projection of reported quota data, not a second quota
-  source. The card title is the plain host provider display name resolved by
-  providerID from the host registry (for example `OpenAI` or `Ollama Cloud`) in
-  the base color. If the registry has no entry and only the raw providerID is
-  available, the card falls back to the declared summary name. Row labels,
-  values, and detail text below the title are muted; the used bar fill is the
-  one bright element.
+- The card title is the host provider display name resolved by providerID from
+  the host registry (for example `OpenAI` or `Ollama Cloud`) in the base color.
+  If the registry has no entry and only the raw providerID is available, the
+  card falls back to the declared summary name. Row labels, values, and detail
+  text below the title are muted; the used bar fill is the one bright element.
 - Window rows use duration-only labels (`5h`, `7d`) and the same compact bar:
   used (`━`, base color) versus remaining (`─`, muted), the used percentage,
   then an inline `· resets 8h` countdown. Rows sort by duration ascending
   (`5h` before `7d`); equal durations keep source order and de-dup suffixes.
-  `shared-plan` sections are omitted from the sidebar card and remain available
-  on the full usage page. Reported `remainingPercent` is inverted to used
-  percent and keeps the percentage thresholds; `usedPercent`-only input stays
-  neutral; no reported percentage keeps the muted `Unknown (not reported)`
-  fallback without a bar.
+  `shared-plan` sections are omitted from the sidebar card. Reported
+  `remainingPercent` is inverted to used percent and keeps the percentage
+  thresholds; `usedPercent`-only input stays neutral; no reported percentage
+  keeps the muted `Unknown (not reported)` fallback without a bar.
 - Included credits with a positive reported allowance render one compact bar
   row followed by one stat row. The bar row shows used (`━`, base color) versus
   remaining (`─`, muted), then the used percentage and an inline
@@ -328,53 +308,25 @@ The live path keeps the host safeguards that mattered:
   the actual money remaining is shown and no bar or used figure is invented;
   the existing purchased/total pair rendering stays in that fallback.
 - Without coherent history every unavailable section keeps its exact recovery
-  copy/retry delay and expired sections hide their figures. With server history,
-  the sidebar retains those complete figures and optionally appends one muted
-  `Data might be stale` line at both thresholds. The full page keeps partial
-  current rows and current diagnostics. The compact sidebar no longer repeats an
-  `updated`/`last attempt` timestamp; freshness stays on the full usage page.
-- The whole card remains a click target for the existing `provider-usage` route.
-  Navigation may qualify as activity; all requests still share the same throttle.
-- Painted-line tests cover 24, 32, 40, and 60 columns. Rows honor the real
-  parent width: compact bar rows align their label, bar, percent, and reset
-  edges at normal widths, long labels and countdowns wrap instead of clipping,
-  and the quota bar grows to the frame width while clipping its used/remaining
-  glyph runs proportionally. Narrow panes wrap the reset countdown, labels, and
-  title content instead of hiding a constraint. Semantic colors, including live
-  theme repaints, are asserted from captured spans.
+  copy/retry delay and expired sections hide their figures. With server
+  history, the sidebar retains those complete figures and optionally appends
+  one muted `Data might be stale` line at both thresholds.
+- The whole card is a click target for the existing `provider-usage` route.
 
 ## Usage page presentation
 
-The `/usage` page renders one card per connected provider in declaration order
-and paints the same `SidebarLine` widget rows as the sidebar, including any
-credit-line detail text that widget already renders. The page adds only:
+The `/usage` page renders one framed, padded card per connected provider, and
+each card body is exactly the sidebar widget for that provider: same header
+name, rows, tones, duration labels, and countdown resets. The page adds no
+rows of its own; shared-plan windows, configured caps, and the derived total
+pool stay hidden, exactly as the compact sidebar hides them.
 
-- an update-age cell in the card header: `Updated <age>` in the success tone
-  when a fetched timestamp exists, or `Last attempt <age>` in the warning tone
-  when only an attempt exists for a provider expected to report quota. It is
-  omitted for unsupported/not-applicable providers and when no read exists;
-  `Updated never` is never fabricated.
-- absolute reset/refill timestamps (`· resets Oct 26 14:14`, with the year
-  appended outside the current local year) instead of the sidebar's countdowns.
-- an explicit `Total credits` row when a positive allowance uses the folded
-  bar/pair form; the sidebar intentionally hides that derived total.
-- shared-plan windows and a configured app cap, both of which the compact
-  sidebar omits.
-
-Cards contain no badges, support/evidence, auth-method, auth-source,
-per-metric-detail, or footnote rows. An unsupported card is only the provider
-name plus `Quota unavailable`. A missing read shows
-`Not loaded yet. Refresh to load.` without an update cell. Expired sections are
-revalidated before rendering, so they become per-scope unavailable
-explanations rather than yesterday's figures. Footer hints are `esc` back and
-`ctrl+r` refresh.
-
-**Validation limitation:** these checks use OpenTUI's test renderer plus an
-isolated `--conditions=browser` client-runtime probe with a fake host. They
-prove repeated selection/snapshot updates, strict fallback expiry, retained idle
-history, dual-threshold display deadlines, ordered recovery/invalidation, input
-and completion wiring, mounted theme updates, disposal, and navigation in that
-harness. They are not an interactive OpenCode 2.1.4 session capture. Real-host
-behavior after live sidebar reconciliation, a real host theme switch, and page
-navigation must still be validated manually before claiming a live host
-guarantee.
+Two quota cards share a row when the terminal is wide enough and stack when
+narrow; a card that cannot share a row spans the full width. Page content is
+bounded on very wide terminals, and short terminals scroll the whole page
+instead of clipping cards. Cards contain no badges, support/evidence,
+auth-method, auth-source, per-metric-detail, update-age, or footnote rows. An
+unsupported card is only the provider name plus `Quota unavailable`. A missing
+read shows `Not loaded yet. Refresh to load.` Expired sections are revalidated
+before rendering, so they become per-scope unavailable explanations rather
+than yesterday's figures. Footer hints are `esc` back and `ctrl+r` refresh.
