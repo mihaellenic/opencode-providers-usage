@@ -367,6 +367,19 @@ function textInFrame(rows: string[], frame: FrameRect, text: string): Position {
 	);
 }
 
+/**
+ * Interior text of one card, squashed so a value wrapped across rows still
+ * reads as one token while borders and padding are excluded.
+ */
+function frameContent(rows: string[], frame: FrameRect): string {
+	return squash(
+		rows
+			.slice(frame.top + 1, frame.bottom)
+			.map((line) => line.slice(frame.left + 1, frame.right))
+			.join("\n"),
+	);
+}
+
 describe("usage page card layout", () => {
 	test("renders page chrome, per-provider cards, bars, resets, totals, and footer", async () => {
 		const fixtures = pageFixtures();
@@ -585,7 +598,11 @@ describe("usage page card layout", () => {
 
 	test("at 240 columns bounds the page at 180 columns and keeps at most two card columns", async () => {
 		const fixtures = pageFixtures();
-		const setup = await renderPage({ width: 240, ...fixtures });
+		const setup = await renderPage({
+			width: 240,
+			...fixtures,
+			providers: [OPENAI, OLLAMA, FUTURE, ZEN],
+		});
 		try {
 			const rows = charRows(setup.captureCharFrame());
 			expect(rows.every((line) => line.length <= 240)).toBe(true);
@@ -603,15 +620,89 @@ describe("usage page card layout", () => {
 			).toBeLessThanOrEqual(179);
 
 			// Two columns at most: OpenAI and Ollama share a row, then the
-			// full-width Zen card wraps below instead of forming a third column.
+			// third quota card wraps instead of forming a third column.
+			const future = cardFrame(rows, "Future Provider");
 			expect(openai.top).toBe(ollama.top);
+			expect(openai.right - openai.left + 1).toBe(56);
+			expect(ollama.right - ollama.left + 1).toBe(56);
 			expect(openai.right).toBeLessThan(ollama.left);
+			expect(future.top).toBeGreaterThan(openai.bottom);
+			expect(future.top).toBeGreaterThan(ollama.bottom);
+			expect(future.left).toBe(openai.left);
+			expect(future.right).toBe(openai.right);
+			expect(zen.top).toBeGreaterThan(future.bottom);
 			expect(zen.top).toBeGreaterThan(openai.bottom);
 			expect(zen.top).toBeGreaterThan(ollama.bottom);
 			expect(zen.left).toBe(openai.left);
 			expect(zen.right).toBe(ollama.right);
 			expect(zen.right - zen.left).toBeGreaterThan(openai.right - openai.left);
 			expect(zen.right - zen.left).toBeGreaterThan(ollama.right - ollama.left);
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("at 120 columns keeps OPENAI and OLLAMA side by side above a full-width ZEN card", async () => {
+		const fixtures = pageFixtures();
+		const setup = await renderPage({ width: 120, ...fixtures });
+		try {
+			const rows = charRows(setup.captureCharFrame());
+			expect(rows.every((line) => line.length <= 120)).toBe(true);
+
+			const openai = cardFrame(rows, "OpenAI");
+			const ollama = cardFrame(rows, "Ollama Cloud");
+			const zen = cardFrame(rows, "OpenCode / Zen");
+
+			// Medium width must still fit a two-column grid: side-by-side cards
+			// share both their top and bottom edge.
+			expect(openai.top).toBe(ollama.top);
+			expect(openai.bottom).toBe(ollama.bottom);
+			expect(openai.right).toBeLessThan(ollama.left);
+			expect(ollama.left).toBeGreaterThan(openai.left);
+
+			const openaiWidth = openai.right - openai.left;
+			const ollamaWidth = ollama.right - ollama.left;
+			expect(Math.abs(openaiWidth - ollamaWidth)).toBeLessThanOrEqual(1);
+
+			// The source-less card spans the full grid below both columns.
+			expect(zen.top).toBeGreaterThan(openai.bottom);
+			expect(zen.top).toBeGreaterThan(ollama.bottom);
+			expect(zen.left).toBe(openai.left);
+			expect(zen.right).toBe(ollama.right);
+			expect(zen.right - zen.left).toBeGreaterThan(openaiWidth);
+			expect(zen.right - zen.left).toBeGreaterThan(ollamaWidth);
+
+			// Update age stays whole, on the name row, inside the narrower card.
+			for (const [label, frame] of [
+				["OpenAI", openai],
+				["Ollama Cloud", ollama],
+			] as const) {
+				const name = textInFrame(rows, frame, label);
+				const updated = textInFrame(rows, frame, "Updated 30s ago");
+				expect(updated.row).toBe(name.row);
+				expect(updated.col + "Updated 30s ago".length).toBeLessThan(
+					frame.right,
+				);
+			}
+
+			// Values may wrap in the narrower cards, but every semantic token
+			// remains painted inside its own card.
+			const openaiContent = frameContent(rows, openai);
+			expect(openaiContent).toContain(squash("App · 5-hour window"));
+			expect(openaiContent).toContain(squash("App · Weekly window"));
+			expect(openaiContent).toContain(squash(percent(100)));
+			expect(openaiContent).toContain(squash(percent(16)));
+			expect(openaiContent).toContain(squash(resetText()));
+
+			const ollamaContent = frameContent(rows, ollama);
+			expect(ollamaContent).toContain(squash(percent(16.5)));
+			expect(ollamaContent).toContain(
+				squash(`${money(60 - 50.1)} / ${money(60)} used`),
+			);
+			expect(ollamaContent).toContain(squash(`+${money(4.27)} credits`));
+			expect(ollamaContent).toContain(squash("Total credits"));
+			expect(ollamaContent).toContain(squash(money(54.37)));
+			expect(ollamaContent).toContain(squash(resetText()));
 		} finally {
 			await setup.dispose();
 		}
@@ -630,10 +721,13 @@ describe("usage page card layout", () => {
 
 			expect(openai.bottom).toBeLessThan(ollama.top);
 			expect(ollama.bottom).toBeLessThan(zen.top);
-			for (const frame of [openai, ollama, zen]) {
+			for (const frame of [openai, ollama]) {
 				expect(frame.left).toBe(openai.left);
 				expect(frame.right).toBe(openai.right);
+				expect(frame.right - frame.left + 1).toBe(56);
 			}
+			expect(zen.left).toBe(openai.left);
+			expect(zen.right).toBeGreaterThanOrEqual(openai.right);
 
 			for (const [label, frame] of [
 				["OpenAI", openai],

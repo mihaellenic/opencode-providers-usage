@@ -12,6 +12,8 @@ import { defaultLocaleContext } from "./format";
 import { resolveSidebarTheme } from "./theme";
 import { buildUsagePageModel } from "./usage-page-model";
 
+const CARD_WIDTH = 56;
+
 export type UsagePageProps = {
 	providers: ProviderSummary[];
 	quotaByProvider: Record<string, QuotaRead>;
@@ -102,6 +104,7 @@ export function UsagePage(props: UsagePageProps) {
 				jsx("box", {
 					key: "cards",
 					width: "100%",
+					maxWidth: CARD_WIDTH * 2 + 2,
 					flexDirection: "row",
 					flexWrap: "wrap",
 					columnGap: 2,
@@ -111,9 +114,7 @@ export function UsagePage(props: UsagePageProps) {
 						jsx("box", {
 							key: `${card.id}:card`,
 							flexDirection: "column",
-							...(unavailable(card.id)
-								? { width: "100%" }
-								: { flexBasis: 76, flexGrow: 1 }),
+							width: unavailable(card.id) ? "100%" : CARD_WIDTH,
 							flexShrink: 0,
 							maxWidth: "100%",
 							border: true,

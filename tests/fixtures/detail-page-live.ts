@@ -128,7 +128,7 @@ try {
 		!expired.includes("$42.00 remaining"),
 		"expired detail figures must disappear without a push",
 	);
-	assert.ok(expired.includes("no current validated quota"));
+	assert.ok(expired.replace(/[│\s]/gu, "").includes("nocurrentvalidatedquota"));
 	assert.equal(calls, 1, "display currentness deadline must not fetch");
 	// New observations replace/cancel the prior deadline; max age still applies
 	// even if a custom v2 source claims a much longer expiresAt.
