@@ -307,7 +307,7 @@ export async function setupQuotaServer(
 		}
 	}
 
-	// One coordinator per server plugin runtime: it is the only owner of poll
+	// One coordinator per server plugin runtime: it is the only owner of recovery
 	// timers, in-flight requests, caching, and cancellation. Deduplication is
 	// not promised across separate OpenCode server processes.
 	const coordinator = createQuotaCoordinator({
@@ -333,9 +333,9 @@ export async function setupQuotaServer(
 	}
 
 	/**
-	 * A provider enters the poll lifecycle when an RPC consumer first reads it.
-	 * Providers that are never read are never resolved or polled, and the
-	 * coordinator itself refuses to schedule polling for unsupported or
+	 * A provider is watched when an RPC consumer first reads it.
+	 * Providers that are never read are never resolved, and the
+	 * coordinator itself refuses to schedule retries for unsupported or
 	 * non-retryable results.
 	 */
 	function ensureWatched(providerID: string): void {
@@ -351,8 +351,8 @@ export async function setupQuotaServer(
 	/**
 	 * Releases server-side watches whose RPC consumers stopped reading. The
 	 * frozen RPC surface has no unwatch method, so the server owns an idle
-	 * sweep: after the last read ages out, the coordinator stops polling, the
-	 * last snapshot stops being pushed, and the UI ages it out truthfully. A
+	 * sweep: after the last read ages out, nonrecovering snapshots stop being
+	 * pushed. History remains available to later reads. A
 	 * later read re-watches the provider. An in-flight read keeps the watch.
 	 */
 	function unwatchIdleProviders(): void {
@@ -365,8 +365,8 @@ export async function setupQuotaServer(
 				continue;
 			}
 			// Recovery is server-owned work, not RPC activity. Releasing the
-			// watch would interrupt the retry episode, so keep it until the
-			// episode ends. The idle clock itself is not renewed by retries or
+			// watch would stop recovery pushes (not the retries themselves), so
+			// keep it until the episode ends. The idle clock is not renewed by retries or
 			// pushes; only an explicit RPC read moves lastRpcReadAt.
 			if (coordinator.isRecovering(providerID)) {
 				continue;

@@ -2028,13 +2028,15 @@ describe("host wiring smoke", () => {
 
 			// The idle threshold passes while the recovery episode is active. A
 			// non-recovering watch would be released at the next sweep; the
-			// server-owned retry at the backoff boundary must still fire.
+			// watch must still publish the server-owned retry's result.
 			await advance(QUOTA_RPC_IDLE_UNWATCH_MS);
 			const atFiveMinutes = requests;
+			const pushesAtFiveMinutes = host.emitted.length;
 			expect(atFiveMinutes).toBeGreaterThanOrEqual(4);
 
 			await advance(QUOTA_RPC_IDLE_UNWATCH_MS + QUOTA_RPC_IDLE_SWEEP_MS * 3);
 			expect(requests).toBeGreaterThan(atFiveMinutes);
+			expect(host.emitted.length).toBeGreaterThan(pushesAtFiveMinutes);
 
 			await cleanup();
 		} finally {
