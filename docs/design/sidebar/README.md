@@ -72,9 +72,62 @@ Renders: `approved-iteration03-render.png` (all-provider page),
 `approved-iteration03-sidebar-ollama.png` (sidebar, Ollama).
 
 Implementation status (2026-10-26): `src/ui/usage-page-model.ts` and
-`src/ui/UsagePage.tsx` render this card layout, and the sidebar and page share
+`src/ui/UsagePage.tsx` render this card content, and the sidebar and page share
 the `src/ui/bar-row.tsx` line painter. The renders above remain design
 references, not live-host captures.
+
+### Live-host visual correction (2026-10-26)
+
+The first live `/usage` render did **not** visually match
+`approved-iteration03-render.png`. The card *contents* matched, but the page
+chrome did not: the live page drew unframed card sections at full width, while
+the approved mock shows framed, padded provider cards laid out responsively.
+The user explicitly corrected this and asked for the page to align with the
+mock, overriding the earlier implementation interpretation. The binding
+requirements are now:
+
+- each provider card is a framed, padded box (border plus inner padding), not a
+  bare column of rows;
+- cards use a responsive grid: two columns when horizontal room allows,
+  collapsing to one column when narrow;
+- the page content is bounded by a maximum width rather than stretching edge to
+  edge on wide terminals;
+- a footer divider separates the key hints from the card area;
+- a card that cannot share a row (for example a lone remaining card, as the
+  unavailable provider in the mock) spans the full row rather than leaving a
+  half-width gap.
+
+Why the discrepancy happened: the plan's Task 4 layout notes said "cards
+separated by one blank line … no invented card borders" (see
+`docs/superpowers/plans/2026-10-26-details-page-mock-alignment.md`). That was an
+implementation-time interpretation, not an approved visual decision, and it is
+now overridden by this correction. The iteration-03 artifacts remain the
+authority for the visual target.
+
+The frozen `approved-iteration02.html`, `approved-iteration03.html`, their PNG
+renders, and all recorded SHA-256 values are unchanged by this correction. No
+mock artifact was regenerated: the mock already showed the intended frames,
+padding, responsive columns, bounded width, and footer divider. Only the
+terminal implementation is expected to change.
+
+Implementation and validation status: the correction is implemented,
+live-verified, and review-approved with no blockers. In tmux via
+`scripts/dev-opencode.sh` (OpenCode 2.1.4), `/usage` at 180×50 paints the two
+framed available cards side-by-side with the full-width unsupported card below,
+a blank row separating `Total credits`, and the footer divider; at 80×50 the
+cards stack with timestamps and footer intact. `Ctrl+r` refreshed live readings
+and `Esc` returned home (both captured). Short-height finding: at 80×24 the
+unscrolled page clipped and overlapped content, so the page now uses a focused
+whole-page scrollbox with a bounded route height and unclipped content.
+Automated tests drive real `PageDown`/`End`/`Home` events at 80×24; live in tmux
+session `quota-scroll` at 80×24, the header shows initially, `PageDown` scrolls,
+`End` shows the last provider plus footer, and `Home` returns to the header. The earlier
+180×50 and 80×50 validation still holds. Card bottoms align equally, asserted by
+tests with no style change. Automated checks: 324 passing tests across 20 files
+(0 failures, 2705 assertions), with typecheck, lint, and build all clean;
+24-column tests preserve every token and the narrow total reading order. The
+frozen 02/03 HTML SHA-256 values above are unchanged. No live private values are
+recorded here.
 
 Interpretation rules:
 

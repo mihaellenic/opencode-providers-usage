@@ -192,12 +192,14 @@ export function renderSidebarLines(lines: SidebarLine[], theme: SidebarTheme) {
 					jsx("box", {
 						key: `${line.id}:row`,
 						flexDirection: "row",
+						flexWrap: "wrap",
 						justifyContent: "space-between",
 						columnGap: 1,
 						children: [
 							jsx("text", {
 								key: `${line.id}:label`,
 								maxWidth: "100%",
+								flexShrink: 0,
 								wrapMode: "word",
 								fg: theme.muted,
 								children: line.label,

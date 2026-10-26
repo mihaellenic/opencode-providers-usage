@@ -1,4 +1,5 @@
 import { usePlugin } from "@opencode/plugin/tui";
+import { TextAttributes } from "@opentui/core";
 import { jsx } from "@opentui/solid/jsx-runtime";
 import { createMemo } from "solid-js";
 import type {
@@ -65,6 +66,7 @@ export function UsagePage(props: UsagePageProps) {
 				maxWidth: "100%",
 				wrapMode: "word",
 				fg: theme.base,
+				attributes: TextAttributes.BOLD,
 				children: model.title,
 			}),
 			jsx("text", {
@@ -86,73 +88,124 @@ export function UsagePage(props: UsagePageProps) {
 				}),
 			);
 		} else {
-			model.cards.forEach((card, index) => {
-				if (index > 0) {
-					children.push(
-						jsx("text", {
-							key: `${card.id}:separator`,
-							children: "",
-						}),
-					);
-				}
-				children.push(
-					jsx("box", {
-						key: `${card.id}:card`,
-						flexDirection: "column",
-						maxWidth: "100%",
-						children: [
-							jsx("box", {
-								key: `${card.id}:header`,
-								flexDirection: "row",
-								flexWrap: "wrap",
-								justifyContent: "space-between",
-								columnGap: 1,
-								width: "100%",
-								children: [
-									jsx("text", {
-										key: `${card.id}:name`,
-										maxWidth: "100%",
-										wrapMode: "word",
-										fg: theme.base,
-										children: card.name,
-									}),
-									...(card.updated === undefined
-										? []
-										: [
-												jsx("text", {
-													key: `${card.id}:updated`,
-													maxWidth: "100%",
-													flexShrink: 0,
-													wrapMode: "word",
-													fg: toneColor(theme, card.updated.tone),
-													children: card.updated.text,
+			const unavailable = (id: string) => {
+				const state = props.quotaByProvider[id]?.state;
+				return state === "unsupported" || state === "not-applicable";
+			};
+			// Quota widgets share the first rows; source-less accounts follow as
+			// full-width cards, matching the approved mock without provider rules.
+			const cards = [
+				...model.cards.filter((card) => !unavailable(card.id)),
+				...model.cards.filter((card) => unavailable(card.id)),
+			];
+			children.push(
+				jsx("box", {
+					key: "cards",
+					width: "100%",
+					flexDirection: "row",
+					flexWrap: "wrap",
+					columnGap: 2,
+					rowGap: 1,
+					marginY: 1,
+					children: cards.map((card) =>
+						jsx("box", {
+							key: `${card.id}:card`,
+							flexDirection: "column",
+							...(unavailable(card.id)
+								? { width: "100%" }
+								: { flexBasis: 76, flexGrow: 1 }),
+							flexShrink: 0,
+							maxWidth: "100%",
+							border: true,
+							borderStyle: "single",
+							borderColor: theme.muted,
+							padding: 1,
+							children: [
+								jsx("box", {
+									key: `${card.id}:header`,
+									flexDirection: "row",
+									flexWrap: "wrap",
+									justifyContent: "space-between",
+									columnGap: 1,
+									marginBottom: 1,
+									width: "100%",
+									children: [
+										jsx("text", {
+											key: `${card.id}:name`,
+											maxWidth: "100%",
+											wrapMode: "word",
+											fg: theme.base,
+											attributes: TextAttributes.BOLD,
+											children: card.name,
+										}),
+										...(card.updated === undefined
+											? []
+											: [
+													jsx("text", {
+														key: `${card.id}:updated`,
+														maxWidth: "100%",
+														flexShrink: 0,
+														wrapMode: "word",
+														fg: toneColor(theme, card.updated.tone),
+														children: card.updated.text,
+													}),
+												]),
+									],
+								}),
+								...card.lines.flatMap((line) => {
+									const rendered = renderSidebarLines([line], theme);
+									return line.kind === "credit"
+										? [
+												jsx("box", {
+													key: `${line.id}:summary`,
+													flexDirection: "column",
+													marginTop: 1,
+													children: rendered,
 												}),
-											]),
-								],
-							}),
-							...renderSidebarLines(card.lines, theme),
-						],
-					}),
-				);
-			});
+											]
+										: rendered;
+								}),
+							],
+						}),
+					),
+				}),
+			);
 		}
 		children.push(
-			jsx("text", {
+			jsx("box", {
 				key: "footer",
-				maxWidth: "100%",
-				wrapMode: "word",
-				fg: theme.muted,
-				children: "[esc] back   [ctrl+r] refresh",
+				width: "100%",
+				border: ["top"],
+				borderColor: theme.muted,
+				paddingTop: 1,
+				children: jsx("text", {
+					maxWidth: "100%",
+					wrapMode: "word",
+					fg: theme.muted,
+					children: "[esc] back   [ctrl+r] refresh",
+				}),
 			}),
 		);
 		return children;
 	});
 
-	return jsx("box", {
-		flexDirection: "column",
-		get children() {
-			return content();
-		},
+	return jsx("scrollbox", {
+		focused: true,
+		width: "100%",
+		height: "100%",
+		maxWidth: 180,
+		scrollX: false,
+		scrollY: true,
+		children: jsx("box", {
+			flexDirection: "column",
+			flexShrink: 0,
+			width: "100%",
+			paddingX: 1,
+			paddingY: 1,
+			get children() {
+				return content();
+			},
+		}),
 	});
 }
 

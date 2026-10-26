@@ -134,7 +134,7 @@ function pageFixtures(): {
 } {
 	const fetchedAt = Date.now() - 30_000;
 	return {
-		providers: [OPENAI, OLLAMA],
+		providers: [OPENAI, OLLAMA, ZEN],
 		quotaByProvider: {
 			openai: {
 				state: "available",
@@ -212,6 +212,11 @@ function pageFixtures(): {
 					},
 				],
 			},
+			zen: {
+				state: "unsupported",
+				reason: "no_validated_quota_source",
+				attemptedAt: fetchedAt,
+			},
 		},
 	};
 }
@@ -244,12 +249,18 @@ async function renderPage(options: {
 function paintedLines(frame: string): string[] {
 	return frame
 		.split("\n")
-		.map((line) => line.trimEnd())
+		.map((line) => line.trim())
 		.filter((line) => line.length > 0);
 }
 
+/**
+ * Frame borders (│) and bar tracks (━ / ─) are painted into the same character
+ * grid as the content, so a wrapped label can be separated from its own text by
+ * decoration. Drop only those two kinds of chrome before comparing content;
+ * every meaningful character survives.
+ */
 function squash(value: string): string {
-	return value.replace(/\s+/g, "");
+	return value.replace(/[│━─]/g, "").replace(/\s+/g, "");
 }
 
 function spanFor(
@@ -266,6 +277,96 @@ function spanFor(
 	throw new Error(`no painted span contains ${JSON.stringify(text)}`);
 }
 
+type FrameRect = { top: number; bottom: number; left: number; right: number };
+type Position = { row: number; col: number };
+
+function charRows(frame: string): string[] {
+	return frame.split("\n").map((line) => line.replace(/\s+$/u, ""));
+}
+
+function textAt(rows: string[], text: string): Position {
+	for (let row = 0; row < rows.length; row += 1) {
+		const col = (rows[row] ?? "").indexOf(text);
+		if (col !== -1) {
+			return { row, col };
+		}
+	}
+	throw new Error(`painted frame is missing ${JSON.stringify(text)}`);
+}
+
+/**
+ * Locate the single-line box that surrounds a painted label by walking the
+ * actual frame character grid. This deliberately ignores component props and
+ * styles: a border only counts when corner, horizontal, and vertical glyphs
+ * are painted at the captured coordinates.
+ */
+function cardFrame(rows: string[], label: string): FrameRect {
+	const anchor = textAt(rows, label);
+	const anchorLine = rows[anchor.row] ?? "";
+	const left = anchorLine.lastIndexOf("│", anchor.col - 1);
+	const right = anchorLine.indexOf("│", anchor.col + label.length);
+	if (left === -1 || right === -1) {
+		throw new Error(
+			`no single-line card border surrounds ${JSON.stringify(label)} on row ${anchor.row}`,
+		);
+	}
+
+	let top = -1;
+	for (let row = anchor.row; row >= 0; row -= 1) {
+		if (rows[row]?.[left] === "┌" && rows[row]?.[right] === "┐") {
+			top = row;
+			break;
+		}
+	}
+	if (top === -1) {
+		throw new Error(
+			`card ${JSON.stringify(label)} has no top border above row ${anchor.row}`,
+		);
+	}
+
+	let bottom = -1;
+	for (let row = anchor.row; row < rows.length; row += 1) {
+		if (rows[row]?.[left] === "└" && rows[row]?.[right] === "┘") {
+			bottom = row;
+			break;
+		}
+	}
+	if (bottom === -1) {
+		throw new Error(
+			`card ${JSON.stringify(label)} has no bottom border below row ${anchor.row}`,
+		);
+	}
+
+	const topBorder = (rows[top] ?? "").slice(left, right + 1);
+	const bottomBorder = (rows[bottom] ?? "").slice(left, right + 1);
+	if (!/^┌─+┐$/.test(topBorder) || !/^└─+┘$/.test(bottomBorder)) {
+		throw new Error(
+			`card ${JSON.stringify(label)} is not framed by single-line box drawing`,
+		);
+	}
+	for (let row = top + 1; row < bottom; row += 1) {
+		if (rows[row]?.[left] !== "│" || rows[row]?.[right] !== "│") {
+			throw new Error(
+				`card ${JSON.stringify(label)} frame has a gap on row ${row}`,
+			);
+		}
+	}
+
+	return { top, bottom, left, right };
+}
+
+function textInFrame(rows: string[], frame: FrameRect, text: string): Position {
+	for (let row = frame.top + 1; row < frame.bottom; row += 1) {
+		const col = (rows[row] ?? "").indexOf(text, frame.left + 1);
+		if (col !== -1 && col + text.length <= frame.right) {
+			return { row, col };
+		}
+	}
+	throw new Error(
+		`card frame ${JSON.stringify(frame)} does not fully paint ${JSON.stringify(text)}`,
+	);
+}
+
 describe("usage page card layout", () => {
 	test("renders page chrome, per-provider cards, bars, resets, totals, and footer", async () => {
 		const fixtures = pageFixtures();
@@ -273,6 +374,7 @@ describe("usage page card layout", () => {
 		try {
 			const frame = setup.captureCharFrame();
 			const lines = paintedLines(frame);
+			const content = squash(frame);
 
 			expect(lines).toContain("Provider usage");
 			expect(lines).toContain("Connected accounts · quota & balances");
@@ -283,17 +385,21 @@ describe("usage page card layout", () => {
 			expect(ollamaHeader).toBeDefined();
 			expect(ollamaHeader).toContain("Updated 30s ago");
 
-			expect(frame).toContain("App · 5-hour window");
-			expect(frame).toContain("App · Weekly window");
-			expect(frame).toContain(percent(100));
-			expect(frame).toContain(percent(16));
-			expect(frame).toContain(resetText());
-			expect(frame).toContain(`${money(60 - 50.1)} / ${money(60)} used`);
-			expect(frame).toContain(`+${money(4.27)} credits`);
+			// Labels share their row with the bar track, so compare the painted
+			// content with the framing/track glyphs removed rather than raw rows.
+			expect(content).toContain(squash("App · 5-hour window"));
+			expect(content).toContain(squash("App · Weekly window"));
+			expect(content).toContain(squash(percent(100)));
+			expect(content).toContain(squash(percent(16)));
+			expect(content).toContain(squash(resetText()));
+			expect(content).toContain(
+				squash(`${money(60 - 50.1)} / ${money(60)} used`),
+			);
+			expect(content).toContain(squash(`+${money(4.27)} credits`));
 			const totalLine = lines.find((line) => line.includes("Total credits"));
 			expect(totalLine).toBeDefined();
 			expect(totalLine).toContain(money(54.37));
-			expect(squash(frame)).toContain(squash("[esc] back   [ctrl+r] refresh"));
+			expect(content).toContain(squash("[esc] back   [ctrl+r] refresh"));
 
 			expect(frame).toContain("━");
 			expect(frame).toContain("─");
@@ -336,7 +442,8 @@ describe("usage page card layout", () => {
 				.map((line) => line.trimEnd());
 			expect(rawLines.every((line) => line.length <= 24)).toBe(true);
 
-			const frame = squash(rawLines.join("\n"));
+			const raw = rawLines.join("\n");
+			const content = squash(raw);
 			for (const token of [
 				"Provider usage",
 				"Connected accounts · quota & balances",
@@ -356,10 +463,10 @@ describe("usage page card layout", () => {
 				"[esc] back",
 				"[ctrl+r] refresh",
 			]) {
-				expect(frame).toContain(squash(token));
+				expect(content).toContain(squash(token));
 			}
-			expect(frame).toContain("━");
-			expect(frame).toContain("─");
+			expect(raw).toContain("━");
+			expect(raw).toContain("─");
 		} finally {
 			await setup.dispose();
 		}
@@ -415,6 +522,155 @@ describe("usage page card layout", () => {
 			const frame = setup.captureCharFrame();
 			expect(frame).toContain("Provider usage");
 			expect(frame).toContain("No connected providers.");
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("at 180 columns frames OPENAI and OLLAMA side by side above a full-width ZEN card when input interleaves ZEN", async () => {
+		const fixtures = pageFixtures();
+		// ZEN is source-less, so the page intentionally groups it last while
+		// preserving the input order within each group. Listing it between the
+		// available providers must not disturb OpenAI-then-Ollama side by side.
+		const setup = await renderPage({
+			width: 180,
+			...fixtures,
+			providers: [OPENAI, ZEN, OLLAMA],
+		});
+		try {
+			const rows = charRows(setup.captureCharFrame());
+			expect(rows.every((line) => line.length <= 180)).toBe(true);
+
+			const openai = cardFrame(rows, "OpenAI");
+			const ollama = cardFrame(rows, "Ollama Cloud");
+			const zen = cardFrame(rows, "OpenCode / Zen");
+
+			expect(openai.top).toBe(ollama.top);
+			expect(openai.bottom).toBe(ollama.bottom);
+			expect(openai.right).toBeLessThan(ollama.left);
+			expect(ollama.left).toBeGreaterThan(openai.left);
+
+			const openaiWidth = openai.right - openai.left;
+			const ollamaWidth = ollama.right - ollama.left;
+			expect(openaiWidth).toBeGreaterThan(20);
+			expect(Math.abs(openaiWidth - ollamaWidth)).toBeLessThanOrEqual(1);
+
+			const openaiName = textInFrame(rows, openai, "OpenAI");
+			const ollamaName = textInFrame(rows, ollama, "Ollama Cloud");
+			expect(openaiName.row).toBe(ollamaName.row);
+			expect(openaiName.row - openai.top).toBe(ollamaName.row - ollama.top);
+
+			for (const [label, frame] of [
+				["OpenAI", openai],
+				["Ollama Cloud", ollama],
+			] as const) {
+				const name = textInFrame(rows, frame, label);
+				const updated = textInFrame(rows, frame, "Updated 30s ago");
+				expect(updated.row).toBe(name.row);
+			}
+
+			expect(zen.top).toBeGreaterThan(openai.bottom);
+			expect(zen.top).toBeGreaterThan(ollama.bottom);
+			expect(zen.left).toBe(openai.left);
+			expect(zen.right).toBe(ollama.right);
+			expect(zen.right - zen.left).toBeGreaterThan(openaiWidth);
+			expect(zen.right - zen.left).toBeGreaterThan(ollamaWidth);
+
+			const unavailable = textInFrame(rows, zen, "Quota unavailable");
+			expect(unavailable.row).toBeGreaterThan(zen.top);
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("at 240 columns bounds the page at 180 columns and keeps at most two card columns", async () => {
+		const fixtures = pageFixtures();
+		const setup = await renderPage({ width: 240, ...fixtures });
+		try {
+			const rows = charRows(setup.captureCharFrame());
+			expect(rows.every((line) => line.length <= 240)).toBe(true);
+
+			// The page caps itself at 180 columns; no painted row (cards, chrome,
+			// or footer) may spill past that bound even on a wider terminal.
+			expect(rows.every((line) => line.length <= 180)).toBe(true);
+
+			const openai = cardFrame(rows, "OpenAI");
+			const ollama = cardFrame(rows, "Ollama Cloud");
+			const zen = cardFrame(rows, "OpenCode / Zen");
+
+			expect(
+				Math.max(openai.right, ollama.right, zen.right),
+			).toBeLessThanOrEqual(179);
+
+			// Two columns at most: OpenAI and Ollama share a row, then the
+			// full-width Zen card wraps below instead of forming a third column.
+			expect(openai.top).toBe(ollama.top);
+			expect(openai.right).toBeLessThan(ollama.left);
+			expect(zen.top).toBeGreaterThan(openai.bottom);
+			expect(zen.top).toBeGreaterThan(ollama.bottom);
+			expect(zen.left).toBe(openai.left);
+			expect(zen.right).toBe(ollama.right);
+			expect(zen.right - zen.left).toBeGreaterThan(openai.right - openai.left);
+			expect(zen.right - zen.left).toBeGreaterThan(ollama.right - ollama.left);
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("at 80 columns stacks framed cards, keeps update timestamps whole, then paints the footer", async () => {
+		const fixtures = pageFixtures();
+		const setup = await renderPage({ width: 80, ...fixtures });
+		try {
+			const rows = charRows(setup.captureCharFrame());
+			expect(rows.every((line) => line.length <= 80)).toBe(true);
+
+			const openai = cardFrame(rows, "OpenAI");
+			const ollama = cardFrame(rows, "Ollama Cloud");
+			const zen = cardFrame(rows, "OpenCode / Zen");
+
+			expect(openai.bottom).toBeLessThan(ollama.top);
+			expect(ollama.bottom).toBeLessThan(zen.top);
+			for (const frame of [openai, ollama, zen]) {
+				expect(frame.left).toBe(openai.left);
+				expect(frame.right).toBe(openai.right);
+			}
+
+			for (const [label, frame] of [
+				["OpenAI", openai],
+				["Ollama Cloud", ollama],
+			] as const) {
+				const updated = textInFrame(rows, frame, "Updated 30s ago");
+				const name = textInFrame(rows, frame, label);
+				expect(updated.row).toBe(name.row);
+				expect(updated.col + "Updated 30s ago".length).toBeLessThan(
+					frame.right,
+				);
+			}
+
+			// Card padding keeps painted content one cell clear of every border.
+			for (const frame of [openai, ollama, zen]) {
+				for (let row = frame.top + 1; row < frame.bottom; row += 1) {
+					const line = rows[row] ?? "";
+					expect(line[frame.left + 1]).toBe(" ");
+					expect(line[frame.right - 1]).toBe(" ");
+				}
+			}
+
+			const footer = textAt(rows, "[esc] back");
+			expect(footer.row).toBeGreaterThan(zen.bottom);
+
+			// The footer's top border is a full-width divider between the cards
+			// and the key hints, not a continuation of any card frame.
+			const dividerRow = rows.findIndex(
+				(line, row) => row > zen.bottom && /^─+$/.test(line.trim()),
+			);
+			expect(dividerRow).toBeGreaterThan(zen.bottom);
+			expect(dividerRow).toBeLessThan(footer.row);
+			expect(rows[dividerRow]?.trim().length).toBe(zen.right - zen.left + 1);
+
+			expect(rows.slice(footer.row).join("\n").replace(/\s+/g, "")).toContain(
+				"[ctrl+r]refresh",
+			);
 		} finally {
 			await setup.dispose();
 		}

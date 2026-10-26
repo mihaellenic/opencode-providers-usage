@@ -629,6 +629,8 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 
 	return jsx("box", {
 		flexDirection: "column",
+		height: "100%",
+		minHeight: 0,
 		get children() {
 			return content();
 		},
