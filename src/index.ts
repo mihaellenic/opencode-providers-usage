@@ -390,6 +390,10 @@ export async function setupQuotaServer(
 		now,
 		providers: () => refreshProviderRefs(),
 		presentation: (providerID) => coordinator.presentation(providerID),
+		snapshot: (providerID) => ({
+			quota: coordinator.read(providerID),
+			presentation: coordinator.presentation(providerID),
+		}),
 		async read(input) {
 			providerRefs.set(input.providerID, {
 				providerID: input.providerID,

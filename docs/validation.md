@@ -87,6 +87,11 @@ Coverage added for this update:
   presentation metadata, nested unknown keys, credential sentinels, invalid
   revisions/timing, and incomplete history cannot cross the RPC boundary.
 - Timers, renderer/data listeners, slots, and late work are released on teardown.
+- Final review added regressions for atomic quota/revision capture during an
+  identity switch, app-success/shared-plan-auth-rejection responses, trailing
+  completion refresh during an initial pending read, and idle full-page expiry
+  with no push or fetch. Non-auth non-retryable failures stop retries but retain
+  continuous failure timing; that is not treated as successful recovery.
 
 Before release, run every gate below and perform the consented manual host smoke.
 

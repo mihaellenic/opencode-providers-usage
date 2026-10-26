@@ -171,7 +171,8 @@ No UI action triggers a model request or an inference call.
   presentation listeners leave: every `60_000` ms through the first three
   minutes, then capped backoff (up to `300_000` ms). A longer provider
   `Retry-After` wins. Non-retryable authentication/unsupported/matching errors
-  stop automatic retries. Identity changes, invalidation, and auth rejection
+  stop automatic retries; stopping retries alone is not recovery and does not
+  clear continuous failure timing. Identity changes, invalidation, and auth rejection
   immediately clear retained history.
 - A provider starts its server-side watch on the first RPC read. A server-side
   idle sweep runs every `60_000` ms and releases the watch once the last RPC
@@ -182,6 +183,8 @@ No UI action triggers a model request or an inference call.
 - Quota RPC is now **version 2**. Reload server and TUI together; only matching
   versions are supported. Optional presentation metadata may be absent from
   v2 custom/test sources, in which case the sidebar uses the strict display.
+  Coordinator-backed custom sources must implement the atomic `snapshot`
+  source hook so quota and presentation always describe the same identity/revision.
 - Request deduplication is in-process only. Separate OpenCode server processes
   are **not** deduplicated.
 

@@ -219,6 +219,10 @@ neither retries nor pushes renew the RPC idle clock. Once recovery ends, ordinar
 five-minute watch cleanup applies. A later RPC read re-watches the provider.
 Providers never read are never resolved; non-retryable authentication, unsupported,
 matching, and companion failures do not automatically loop.
+Stopping non-auth retries does not reset continuous failure timing; retained old
+figures can still qualify for the stale indicator until success or invalidation.
+Auth rejection in any scope clears history and stops recovery, including when
+another scope succeeded in the same partial response.
 
 Only the sidebar may use the sanitized last **fully successful** snapshot.
 Failures and partial reads do not replace that coherent history or restart the
@@ -230,6 +234,10 @@ observation. History is runtime-only, not persisted across restart, and reset ti
 never imply replenishment. The detailed page retains strict current-state
 validation and real diagnostic timestamps. V2 sources without optional presentation
 metadata retain strict sidebar behavior too.
+The detailed page owns a display-only currentness deadline, so its figures expire
+even without another RPC or push. Coordinator-backed custom RPC sources must
+provide the atomic `snapshot` hook: attaching a later revision to an earlier
+read could otherwise resurrect another identity's quota during a switch.
 
 ## Security boundary
 

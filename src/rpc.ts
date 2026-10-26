@@ -321,6 +321,13 @@ export type QuotaRpcSource = {
 	read(input: QuotaReadRequest): Promise<QuotaRead>;
 	/** Complete, server-derived history; never a client claim of currentness. */
 	presentation(providerID: string): QuotaPresentation;
+	/** Atomically capture current quota and its revision after a shared read.
+	 * Coordinator-backed sources must provide this to avoid identity-switch races.
+	 * Simple v2 custom sources may omit it and use their immutable read result. */
+	snapshot?(providerID: string): {
+		quota: QuotaRead;
+		presentation: QuotaPresentation;
+	};
 	now(): number;
 };
 
@@ -508,10 +515,25 @@ async function providerView(
 	signal: AbortSignal,
 ): Promise<QuotaProviderView> {
 	const provider = source.registry.summarize(ref);
-	const quota = await safeRead(source, { ...ref, signal });
-	// Read metadata only after the shared refresh settles, so every view of
-	// this provider observes the same committed revision and history.
-	const presentation = safePresentation(source, ref.providerID);
+	let quota = await safeRead(source, { ...ref, signal });
+	let presentation: QuotaPresentation | undefined;
+	if (source.snapshot !== undefined) {
+		try {
+			// No await between current quota and metadata. The read that settled
+			// above may already belong to a discarded identity.
+			const captured = source.snapshot(ref.providerID);
+			quota = isQuotaRead(captured.quota)
+				? captured.quota
+				: invalidResponseRead(source.now());
+			presentation = isQuotaPresentation(captured.presentation)
+				? captured.presentation
+				: undefined;
+		} catch {
+			quota = invalidResponseRead(source.now());
+		}
+	} else {
+		presentation = safePresentation(source, ref.providerID);
+	}
 	return {
 		provider,
 		quota,

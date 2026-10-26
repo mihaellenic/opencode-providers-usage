@@ -32,6 +32,7 @@ import {
 	defaultLocaleContext,
 	formatQuotaRows,
 	formatSidebarText,
+	nextQuotaExpiry,
 	revalidateQuota,
 } from "./ui/format";
 import { sidebarQuotaPresentation } from "./ui/quota-presentation";
@@ -321,6 +322,7 @@ type SidebarSnapshotState = {
 function createSidebarDriver(
 	context: QuotaTuiContext,
 	accept: (id: string, view: QuotaObservation) => void,
+	begin: (id: string) => (() => void) | undefined,
 ) {
 	const [snapshot, setSnapshot] = createSignal<SidebarSnapshotState>({
 		loading: false,
@@ -345,14 +347,15 @@ function createSidebarDriver(
 		const controller = new AbortController();
 		inFlight = controller;
 		setSnapshot({ loading: true, value: undefined });
-		void fetchProvider(context, providerID, controller.signal).then(
-			(result) => {
+		const endInitial = begin(providerID);
+		void fetchProvider(context, providerID, controller.signal)
+			.then((result) => {
 				if (!controller.signal.aborted) {
 					if (result !== undefined) accept(providerID, result);
 					setSnapshot({ loading: false, value: result });
 				}
-			},
-		);
+			})
+			.finally(() => endInitial?.());
 	};
 
 	return {
@@ -512,6 +515,7 @@ export function sidebarFallbackModel(input: {
 export function QuotaUsagePage(props: Record<string, unknown>) {
 	const context = props.context as QuotaTuiContext;
 	const pushed = usePushedQuota(context);
+	const [currentnessTick, setCurrentnessTick] = createSignal(0);
 	let inFlight: AbortController | undefined;
 	// `null` is the failed-inventory sentinel; `undefined` means the resource
 	// has not produced a first value yet. They must never collapse into the
@@ -578,6 +582,7 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 	}));
 
 	const content = createMemo(() => {
+		currentnessTick();
 		const current = inventory();
 		if (current.state === "loading") {
 			return jsx("text", { children: "Loading provider usage..." });
@@ -602,6 +607,18 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 			});
 		}
 		const view = pageView(current.result);
+		const now = Date.now();
+		const deadlines = Object.values(view.quotaByProvider).flatMap((quota) => {
+			const at = nextQuotaExpiry(quota, now);
+			return at === undefined ? [] : [at];
+		});
+		if (deadlines.length > 0) {
+			const timer = setTimeout(
+				() => setCurrentnessTick((tick) => tick + 1),
+				Math.min(...deadlines) - now,
+			);
+			onCleanup(() => clearTimeout(timer));
+		}
 		return jsx(UsagePageHost, {
 			providers: view.providers,
 			quotaByProvider: view.quotaByProvider,
@@ -653,7 +670,11 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 				view.presentation?.revision,
 			),
 		);
-		const sidebarDriver = createSidebarDriver(context, sidebarPushed.accept);
+		const sidebarDriver = createSidebarDriver(
+			context,
+			sidebarPushed.accept,
+			(id) => activityDriver?.begin(id),
+		);
 		activityDriver = createActivityRefreshDriver({
 			now: Date.now,
 			refresh: sidebarDriver.refresh,

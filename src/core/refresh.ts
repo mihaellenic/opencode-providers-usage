@@ -61,7 +61,7 @@ type Entry = {
 	lastKnown?: QuotaSectionsRead;
 	/** Coordinator runtime-wide mutation revision last applied to this entry. */
 	revision: number;
-	/** Start of the active retryable failure episode, at completion time. */
+	/** Start of continuous refresh failures, independent of retry eligibility. */
 	failedSince?: number;
 	/** Consecutive retryable failures, for the capped backoff. */
 	failures: number;
@@ -83,7 +83,7 @@ function hasSections(read: QuotaRead): read is QuotaSectionsRead {
 	return "sections" in read;
 }
 
-function isCompleteRead(read: QuotaRead): read is QuotaSectionsRead {
+function isCompleteRead(read: QuotaRead): boolean {
 	return (
 		hasSections(read) &&
 		read.state === "available" &&
@@ -271,12 +271,15 @@ export function createQuotaCoordinator(
 	}
 
 	/**
-	 * Ends a retryable failure episode without touching the current observation
-	 * or history. Non-auth, non-retryable failures use this path: the last good
-	 * figures are retained while automatic recovery stops.
+	 * Full success or identity invalidation clears failure timing. Merely
+	 * stopping retries is not evidence of success; stopRetries preserves age.
 	 */
 	function endRecovery(entry: Entry): void {
 		entry.failedSince = undefined;
+		stopRetries(entry);
+	}
+
+	function stopRetries(entry: Entry): void {
 		entry.failures = 0;
 		entry.recovering = false;
 		entry.cooldownUntil = undefined;
@@ -370,17 +373,29 @@ export function createQuotaCoordinator(
 		entry.snapshot = value;
 		bumpRevision(entry);
 
-		if (hasSections(value)) {
+		if (
+			hasSections(value) &&
+			value.sections.some((section) => section.result.state === "auth-required")
+		) {
+			clearHistory(entry);
+		} else if (hasSections(value)) {
 			if (isCompleteRead(value)) {
-				// Full success is the only path that creates history or ends a
-				// recovery episode.
+				// Only full success replaces history and clears the same identity's
+				// continuous failure window.
 				entry.lastKnown = value;
 				endRecovery(entry);
 			} else {
 				// A partial result starts or continues failure timing; it never
 				// replaces the last complete history.
 				startFailure(entry, completedAt);
-				scheduleRecovery(entry, completedAt, sectionRetryAfter(value));
+				const retryable = value.sections.some(
+					(section) =>
+						section.result.state !== "available" &&
+						!NO_AUTO_RETRY.has(section.result.reason),
+				);
+				if (retryable)
+					scheduleRecovery(entry, completedAt, sectionRetryAfter(value));
+				else stopRetries(entry);
 			}
 		} else if (value.state === "auth-required") {
 			// Rejected credentials invalidate the old identity's figures.
@@ -388,7 +403,8 @@ export function createQuotaCoordinator(
 		} else if (NO_AUTO_RETRY.has(value.reason)) {
 			// A non-retryable failure stops recovery but is still a refresh
 			// failure: the last complete figures remain presentable as history.
-			endRecovery(entry);
+			startFailure(entry, completedAt);
+			stopRetries(entry);
 		} else {
 			startFailure(entry, completedAt);
 			scheduleRecovery(entry, completedAt, value.retryAfterMs);

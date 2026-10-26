@@ -776,7 +776,10 @@ export function revalidateQuota(read: QuotaRead, now: number): QuotaRead {
 	let changed = false;
 	const sections = read.sections.map((section) => {
 		const result = section.result;
-		if (result.state !== "available" || result.expiresAt > now) {
+		if (
+			result.state !== "available" ||
+			Math.min(result.expiresAt, result.fetchedAt + 90_000) > now
+		) {
 			return section;
 		}
 		changed = true;
@@ -797,6 +800,23 @@ export function revalidateQuota(read: QuotaRead, now: number): QuotaRead {
 		authSource: read.authSource,
 		sections,
 	};
+}
+
+/** First remaining currentness boundary; a display deadline, never a fetch. */
+export function nextQuotaExpiry(
+	read: QuotaRead,
+	now: number,
+): number | undefined {
+	if (!("sections" in read)) return undefined;
+	const deadlines = read.sections.flatMap((section) => {
+		if (section.result.state !== "available") return [];
+		const at = Math.min(
+			section.result.expiresAt,
+			section.result.fetchedAt + 90_000,
+		);
+		return at > now ? [at] : [];
+	});
+	return deadlines.length > 0 ? Math.min(...deadlines) : undefined;
 }
 
 function wrapLine(text: string, width: number): string[] {

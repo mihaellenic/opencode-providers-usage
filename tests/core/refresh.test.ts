@@ -13,6 +13,7 @@ import type {
 	ResolvedQuotaSource,
 } from "../../src/core/contracts";
 import { createQuotaCoordinator } from "../../src/core/refresh";
+import { createAdapterRegistry } from "../../src/core/registry";
 import {
 	QUOTA_RPC_IDLE_SWEEP_MS,
 	QUOTA_RPC_IDLE_UNWATCH_MS,
@@ -24,6 +25,7 @@ import type {
 	QuotaListResult,
 	QuotaUpdatedEvent,
 } from "../../src/rpc";
+import { createQuotaRpcHandlers } from "../../src/rpc";
 import { type QuotaTuiContext, subscribeQuotaUpdates } from "../../src/tui";
 
 const NOW = 1_800_000_000_000;
@@ -267,6 +269,114 @@ function pollDelays(scheduled: number[]): number[] {
 }
 
 describe("quota refresh lifecycle", () => {
+	test.each(["get", "list", "refresh"] as const)(
+		"%s cannot stamp old-account quota with a newer identity revision",
+		async (method) => {
+			let identity = "a";
+			const { coordinator } = harness(() =>
+				source({
+					identityKey: identity,
+					read: () =>
+						identity === "a"
+							? Promise.resolve(availableRead(NOW))
+							: new Promise<QuotaRead>(() => {}),
+				}),
+			);
+			const emitted: QuotaUpdatedEvent[] = [];
+			const handlers = createQuotaRpcHandlers({
+				source: {
+					registry: createAdapterRegistry([]),
+					now: () => NOW,
+					providers: async () => [{ providerID: "alpha", authMethod: "key" }],
+					presentation: (id) => coordinator.presentation(id),
+					snapshot: (id) => ({
+						quota: coordinator.read(id),
+						presentation: coordinator.presentation(id),
+					}),
+					read: async (input) => {
+						const oldQuota = await coordinator.refresh(input.providerID);
+						identity = "b";
+						void coordinator.refresh(input.providerID);
+						await settle();
+						return oldQuota;
+					},
+				},
+				publish: (event) => {
+					emitted.push(event);
+				},
+			});
+			try {
+				const response = await handlers[method](
+					method === "list" ? {} : { providerID: "alpha" },
+					emptyRpcContext() as never,
+				);
+				const view =
+					method === "list"
+						? (response as QuotaListResult).providers[0]
+						: (response as QuotaGetResult);
+				expect(view?.presentation?.revision).toBeGreaterThan(1);
+				expect(view?.presentation?.lastKnown).toBeUndefined();
+				expect(metrics(view?.quota ?? unavailableRead(NOW, "timeout"))).toEqual(
+					[],
+				);
+				for (const event of emitted) expect(metrics(event.quota)).toEqual([]);
+			} finally {
+				coordinator.dispose();
+			}
+		},
+	);
+
+	test("nested auth rejection drops history and stops recovery while keeping partial diagnostics", async () => {
+		let value = availableRead(NOW);
+		const { coordinator, clock } = harness(() =>
+			source({ identityKey: "a", read: async () => value }),
+		);
+		await coordinator.refresh("alpha");
+		await clock.advance(15_000);
+		value = {
+			state: "partial",
+			authSource: "opencode",
+			sections: [
+				availableSection(clock.now()),
+				{
+					scope: "shared-plan",
+					result: {
+						state: "auth-required",
+						reason: "invalid_response",
+						attemptedAt: clock.now(),
+					},
+				},
+			],
+		};
+		const current = await coordinator.refresh("alpha");
+		expect(current).toEqual(value);
+		expect(coordinator.presentation("alpha").lastKnown).toBeUndefined();
+		expect(coordinator.presentation("alpha").failedSince).toBeUndefined();
+		expect(coordinator.isRecovering("alpha")).toBe(false);
+		expect(clock.pending()).toBe(0);
+		coordinator.dispose();
+	});
+
+	test("nonretryable failures retain failure timing until success without scheduling retries", async () => {
+		let value = availableRead(NOW);
+		const { coordinator, clock } = harness(() =>
+			source({ identityKey: "a", read: async () => value }),
+		);
+		await coordinator.refresh("alpha");
+		const history = coordinator.presentation("alpha").lastKnown;
+		await clock.advance(15_000);
+		value = unavailableRead(clock.now(), "network_error");
+		await coordinator.refresh("alpha");
+		const failedSince = coordinator.presentation("alpha").failedSince;
+		await clock.advance(60_000);
+		value = unavailableRead(clock.now(), "unsupported_companion_storage");
+		await clock.advance(60_000);
+		expect(coordinator.presentation("alpha").lastKnown).toEqual(history);
+		expect(coordinator.presentation("alpha").failedSince).toBe(failedSince);
+		expect(coordinator.isRecovering("alpha")).toBe(false);
+		expect(clock.pending()).toBe(0);
+		coordinator.dispose();
+	});
 	test("two_views_share_one_request", async () => {
 		let requests = 0;
 		const { coordinator, clock } = harness(() =>
@@ -1455,7 +1565,7 @@ describe("quota presentation history", () => {
 			throw new Error("expected history to survive a non-retryable failure");
 		}
 		expect(remainingPercents(lastKnown)).toEqual([42]);
-		expect(presentation.failedSince).toBeUndefined();
+		expect(presentation.failedSince).toBe(NOW + FLOOR_MS);
 		expect(coordinator.isRecovering("alpha")).toBe(false);
 		expect(clock.pending()).toBe(0);
 

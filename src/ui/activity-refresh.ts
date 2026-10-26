@@ -1,4 +1,6 @@
 export type ActivityRefreshDriver = {
+	/** Include initial/read requests in the same in-flight lifecycle. */
+	begin(providerID: string): () => void;
 	activity(providerID: string): void;
 	completed(providerID: string): void;
 	observe(
@@ -15,6 +17,7 @@ type ProviderActivity = {
 	lastStart?: number;
 	timer?: unknown;
 	inFlight: boolean;
+	reads: number;
 	completion: boolean;
 };
 
@@ -30,7 +33,7 @@ export function createActivityRefreshDriver(deps: {
 	const stateFor = (id: string) => {
 		let state = providers.get(id);
 		if (!state) {
-			state = { inFlight: false, completion: false };
+			state = { inFlight: false, reads: 0, completion: false };
 			providers.set(id, state);
 		}
 		return state;
@@ -38,7 +41,13 @@ export function createActivityRefreshDriver(deps: {
 	const eligible = (state: ProviderActivity) =>
 		state.fetchedAt === undefined || deps.now() - state.fetchedAt >= 60_000;
 	const schedule = (id: string, state: ProviderActivity) => {
-		if (disposed || state.inFlight || state.timer !== undefined) return;
+		if (
+			disposed ||
+			state.inFlight ||
+			state.reads > 0 ||
+			state.timer !== undefined
+		)
+			return;
 		state.timer = deps.setTimer(
 			() => {
 				state.timer = undefined;
@@ -66,6 +75,23 @@ export function createActivityRefreshDriver(deps: {
 		);
 	};
 	return {
+		begin(id) {
+			if (disposed) return () => {};
+			const state = stateFor(id);
+			state.reads += 1;
+			state.lastStart = deps.now();
+			if (state.timer !== undefined) {
+				deps.clearTimer(state.timer);
+				state.timer = undefined;
+			}
+			let ended = false;
+			return () => {
+				if (ended) return;
+				ended = true;
+				state.reads -= 1;
+				if (state.completion) schedule(id, state);
+			};
+		},
 		activity(id) {
 			if (disposed) return;
 			const state = stateFor(id);

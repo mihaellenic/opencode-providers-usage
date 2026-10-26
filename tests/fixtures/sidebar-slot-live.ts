@@ -239,6 +239,11 @@ async function main(): Promise<void> {
 		}),
 	};
 	let failAlpha = false;
+	let firstGet = true;
+	let releaseInitial: () => void = () => {};
+	const initialRead = new Promise<void>((resolve) => {
+		releaseInitial = resolve;
+	});
 	const [selected, setSelected] = createSignal<Selected>({
 		providerID: "alpha",
 		modelID: "model-a",
@@ -293,6 +298,10 @@ async function main(): Promise<void> {
 				list: async () => ({ version: 2, providers: [] }),
 				get: async (input: { providerID: string }) => {
 					calls.push({ method: "get", providerID: input.providerID });
+					if (firstGet) {
+						firstGet = false;
+						await initialRead;
+					}
 					return quotaFor(input.providerID);
 				},
 				refresh: async (input: { providerID: string }) => {
@@ -405,6 +414,22 @@ async function main(): Promise<void> {
 			throw new Error(`span did not repaint to ${color.toString()}`);
 		};
 
+		// A completion during the pending initial get must not be absorbed by
+		// joining that older read. It gets one trailing refresh after settlement.
+		clock += 1_000;
+		const initialEvent = {
+			data: {
+				sessionID: "s",
+				assistantMessageID: "initial",
+				model: { providerID: "alpha" },
+			},
+		};
+		stepEvents.get("session.step.started")?.(initialEvent);
+		stepEvents.get("session.step.ended")?.(initialEvent);
+		await new Promise((resolve) => originalSetTimeout(resolve, 5));
+		assert.equal(calls.filter((call) => call.method === "refresh").length, 0);
+		clock += 4_000;
+		releaseInitial();
 		const fresh = await waitForFrame(
 			(frame) => frame.includes("10%") && frame.includes("Alpha host title"),
 		);
@@ -419,6 +444,10 @@ async function main(): Promise<void> {
 		assert.ok(!fresh.includes("requires companion"));
 		assert.ok(!fresh.includes("live-validated"));
 		assert.ok(!fresh.includes("2026-"));
+		await advanceClock(9_999);
+		assert.equal(calls.filter((call) => call.method === "refresh").length, 0);
+		await advanceClock(1);
+		assert.equal(calls.filter((call) => call.method === "refresh").length, 1);
 
 		// The live contribution is a static nested Box/Text tree, not one joined
 		// text blob and never a function-valued child.
@@ -505,6 +534,7 @@ async function main(): Promise<void> {
 		assert.ok(!failed.includes("resets"));
 		assert.deepEqual(calls, [
 			{ method: "get", providerID: "alpha" },
+			{ method: "refresh", providerID: "alpha" },
 			{ method: "get", providerID: "beta" },
 			{ method: "get", providerID: "alpha" },
 		]);
@@ -527,7 +557,7 @@ async function main(): Promise<void> {
 			calls.filter(
 				(call) => call.method === "refresh" && call.providerID === "alpha",
 			).length,
-			3,
+			4,
 		);
 		const emitStep = (name: string, id: string) =>
 			stepEvents.get(name)?.({

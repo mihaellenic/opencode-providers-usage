@@ -85,6 +85,7 @@ test("activity observes keys/focus without contents and attributes/deduplicates 
 		},
 	} as unknown as QuotaTuiContext;
 	const dispose = subscribeQuotaActivity(context, {
+		begin: () => () => {},
 		activity: (id) => activity.push(id),
 		completed: (id) => completed.push(id),
 		observe: () => {},
@@ -112,6 +113,7 @@ test("activity observes keys/focus without contents and attributes/deduplicates 
 	expect(completed).toHaveLength(2);
 	// Old/custom hosts without input/event surfaces remain usable.
 	subscribeQuotaActivity({ data: {}, ui: context.ui } as QuotaTuiContext, {
+		begin: () => () => {},
 		activity: () => {},
 		completed: () => {},
 		observe: () => {},
@@ -301,6 +303,25 @@ function fakeTuiContext(options: {
 }
 
 describe("TUI selection binding", () => {
+	test("idle_detail_page_expires_without_a_push_or_network_request", () => {
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--conditions=browser",
+				fileURLToPath(
+					new URL("../fixtures/detail-page-live.ts", import.meta.url),
+				),
+			],
+			{
+				cwd: fileURLToPath(new URL("../..", import.meta.url)),
+				encoding: "utf8",
+				timeout: 60_000,
+			},
+		);
+		if (result.status !== 0)
+			throw new Error(`${result.stdout}\n${result.stderr}`);
+		expect(result.stdout).toContain("detail-page-live: PASS");
+	});
 	test("selection_uses_prompt_provider_not_default", async () => {
 		const serverDefault = { providerID: "server-default", modelID: "model-a" };
 		const calls: TuiRpcCall[] = [];

@@ -14,6 +14,7 @@ import {
 	type ResolvedQuotaSource,
 	type SectionResult,
 } from "../../src/core/contracts";
+import { createQuotaCoordinator } from "../../src/core/refresh";
 import {
 	createOpenAICompanionAdapter,
 	fetchOpenAICompanionQuota,
@@ -880,6 +881,49 @@ describe("shared-plan windows", () => {
 });
 
 describe("partial and transport failures", () => {
+	test("app success followed by shared-plan 401 clears previously successful history", async () => {
+		let rejectPlan = false;
+		let now = NOW;
+		const fake = harness({
+			plan: () => {
+				if (rejectPlan)
+					throw new QuotaRequestError("invalid_response", { status: 401 });
+				return planPayload();
+			},
+		});
+		const coordinator = createQuotaCoordinator({
+			now: () => now,
+			resolve: async () => {
+				const resolved = await fake.adapter.resolve(fake.input);
+				if (resolved === null) throw new Error("expected claimed adapter");
+				return resolved;
+			},
+			setTimer: (callback, delay) => setTimeout(callback, delay),
+			clearTimer: (handle) =>
+				clearTimeout(handle as ReturnType<typeof setTimeout>),
+		});
+		try {
+			await coordinator.refresh("openai");
+			expect(coordinator.presentation("openai").lastKnown).toBeDefined();
+			now += 15_000;
+			rejectPlan = true;
+			const current = await coordinator.refresh("openai");
+			expect(current.state).toBe("partial");
+			if (!("sections" in current)) throw new Error("expected partial scopes");
+			expect(
+				current.sections.find((section) => section.scope === "app")?.result
+					.state,
+			).toBe("available");
+			expect(
+				current.sections.find((section) => section.scope === "shared-plan")
+					?.result.state,
+			).toBe("auth-required");
+			expect(coordinator.presentation("openai").lastKnown).toBeUndefined();
+			expect(coordinator.isRecovering("openai")).toBe(false);
+		} finally {
+			coordinator.dispose();
+		}
+	});
 	test("keeps_verified_app_section_when_plan_fails", async () => {
 		const h = harness({
 			plan: () => {

@@ -46,6 +46,24 @@ function harness() {
 }
 
 describe("activity refresh", () => {
+	test("a completion during an initial read waits for settlement then refreshes once", async () => {
+		const h = harness();
+		const endInitial = h.driver.begin("a");
+		await h.advance(1_000);
+		h.driver.completed("a");
+		await h.advance(4_000);
+		expect(h.calls).toEqual([]);
+		h.driver.observe("a", h.now() - 5_000, 1);
+		endInitial();
+		endInitial();
+		await h.advance(14_999);
+		expect(h.calls).toEqual([]);
+		await h.advance(1);
+		expect(h.calls).toEqual(["a"]);
+		await h.advance(3_600_000);
+		expect(h.calls).toEqual(["a"]);
+		h.driver.dispose();
+	});
 	test("a new server retry revision starts a floor but rereading that failure does not", async () => {
 		const h = harness();
 		const fetchedAt = h.now();
