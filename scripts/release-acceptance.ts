@@ -1035,7 +1035,7 @@ export function validateConsumerExports(
 }
 
 /** Fail closed on an audit: unusable output, an exit code that disagrees with the findings, or any high/critical advisory. */
-function auditGate(
+export function auditGate(
 	label: string,
 	exitCode: number,
 	summary: AuditSummary,

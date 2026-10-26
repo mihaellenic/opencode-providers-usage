@@ -23,7 +23,7 @@ jobs:
       - run: bun run typecheck
       - run: bun run build
       - name: Audit source lockfile for high and critical advisories
-        run: bun audit --audit-level=high
+        run: bun scripts/bun-audit-gate.ts
 
   subjects:
     runs-on: ubuntu-latest
@@ -41,6 +41,13 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          # Commit range rules:
+          #   - pull_request: validate base.sha..head.sha exactly.
+          #   - push with a real before SHA: validate before..head.
+          #   - new branch (empty or all-zero before): validate all reachable history
+          #     from head, so no commit can enter main unchecked.
+          #   - force push whose before commit no longer exists: the fetch below
+          #     fails closed rather than silently skipping the range.
           if [ "$EVENT_NAME" = "pull_request" ]; then
             base="$PR_BASE"
             head="$PR_HEAD"

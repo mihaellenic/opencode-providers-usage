@@ -116,7 +116,7 @@ describe("CI quality job", () => {
 			"bun run lint",
 			"bun run typecheck",
 			"bun run build",
-			"bun audit --audit-level=high",
+			"bun scripts/bun-audit-gate.ts",
 		];
 		const positions = commands.map((command) => quality.indexOf(command));
 		for (const [index, position] of positions.entries()) {
@@ -132,8 +132,33 @@ describe("CI quality job", () => {
 	});
 });
 
+describe("CI source audit gate", () => {
+	const quality = jobBlock(ci, "quality");
+
+	test("runs the JSON-parsing gate and not a bare exit-code audit", () => {
+		expect(quality).toContain("run: bun scripts/bun-audit-gate.ts");
+		expect(ci).not.toContain("--audit-level");
+		expect(ci).not.toContain("bun audit");
+	});
+
+	test("the gate step cannot be bypassed", () => {
+		const step = quality.slice(
+			quality.indexOf("bun scripts/bun-audit-gate.ts"),
+		);
+		expect(step.slice(0, 80)).not.toContain("continue-on-error");
+		expect(quality).not.toContain("|| true");
+	});
+});
+
 describe("CI commit subject job", () => {
 	const subjects = jobBlock(ci, "subjects");
+
+	test("documents new-branch and force-push range behavior", () => {
+		expect(subjects).toContain("new branch");
+		expect(subjects).toContain("force push");
+		expect(subjects).toContain("no longer exists");
+		expect(subjects).toContain("fails closed");
+	});
 
 	test("validates the exact pull request head against the exact base SHA", () => {
 		expect(subjects).toContain("uses: actions/checkout@v5");
