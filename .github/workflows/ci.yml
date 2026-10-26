@@ -1,0 +1,86 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun test
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run build
+      - name: Audit source lockfile for high and critical advisories
+        run: bun audit --audit-level=high
+
+  subjects:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+      - name: Validate commit subjects
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_HEAD: ${{ github.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE"
+            head="$PR_HEAD"
+            test -n "$base"
+            test -n "$head"
+          else
+            before="$PUSH_BEFORE"
+            head="$PUSH_HEAD"
+            test -n "$head"
+            case "$before" in
+              "")
+                # A new branch can arrive with an empty before SHA.
+                echo "new branch push: validating all reachable history"
+                base=""
+                ;;
+              *[!0]*)
+                base="$before"
+                ;;
+              *)
+                # All-zero before is a new branch or force push. Use the defined
+                # safe range: validate all reachable history from the pushed head.
+                echo "all-zero before SHA: validating all reachable history"
+                base=""
+                ;;
+            esac
+          fi
+          test "$(git rev-parse HEAD)" = "$head"
+          if [ -n "${base:-}" ]; then
+            if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$base"
+            fi
+            subjects=$(git log --format='%s' "$base..$head")
+          else
+            subjects=$(git log --format='%s' "$head")
+          fi
+          if [ -z "$subjects" ]; then
+            echo "no commits in range"
+            exit 0
+          fi
+          while IFS= read -r s; do
+            echo "checking: $s"
+            sh scripts/commit-subject-ok.sh "$s"
+          done <<< "$subjects"

@@ -27,6 +27,7 @@
     "lint": "biome check src tests",
     "test": "bun test",
     "build": "bun scripts/build.ts",
+    "setup": "git config core.hooksPath githooks",
     "prepack": "bun run build"
   },
   "exports": {
