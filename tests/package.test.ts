@@ -23,13 +23,21 @@ const EXPECTED_EXPORTS = {
 	"./tui": "./dist/tui.js",
 	"./rpc": "./dist/rpc.js",
 };
+const ROOT_SHIMS = {
+	"index.js": 'export { default } from "./dist/index.js"',
+	"tui.js": 'export { default } from "./dist/tui.js"',
+	"rpc.js": 'export * from "./dist/rpc.js"',
+};
 const EXPECTED_TARBALL = [
 	"LICENSE",
 	"README.md",
 	"dist/index.js",
 	"dist/rpc.js",
 	"dist/tui.js",
+	"index.js",
 	"package.json",
+	"rpc.js",
+	"tui.js",
 ];
 
 const runBuild = (): { status: number | null; output: string } => {
@@ -78,7 +86,13 @@ describe("package manifest", () => {
 	});
 
 	test("publishes only built output", () => {
-		expect(manifest.files).toEqual(["dist/"]);
+		expect(manifest.files).toEqual(["dist/", "index.js", "tui.js", "rpc.js"]);
+	});
+
+	test("ships root JS shims that re-export the dist modules", () => {
+		for (const [shim, source] of Object.entries(ROOT_SHIMS)) {
+			expect(read(shim).trim()).toBe(source);
+		}
 	});
 
 	test("publishes publicly with a prepack rebuild and no consumer install hooks", () => {
@@ -125,6 +139,37 @@ describe("built artifacts", () => {
 
 	test("dist contains exactly the three runtime entry files", () => {
 		expect(readdirSync(join(root, "dist")).sort()).toEqual(EXPECTED_DIST_FILES);
+	});
+
+	test("each root JS shim loads and re-exports its dist module", async () => {
+		const indexShim = await import(join(root, "index.js"));
+		const indexDist = await import(dist("index.js"));
+		expect(indexShim.default).toBe(indexDist.default);
+		expect(indexShim.default).toBeDefined();
+
+		const tuiShim = await import(join(root, "tui.js"));
+		const tuiDist = await import(dist("tui.js"));
+		expect(tuiShim.default).toBe(tuiDist.default);
+
+		const rpcShim = await import(join(root, "rpc.js"));
+		const rpcDist = await import(dist("rpc.js"));
+		expect(Object.keys(rpcShim).sort()).toEqual(Object.keys(rpcDist).sort());
+		for (const key of Object.keys(rpcDist)) {
+			expect(rpcShim[key]).toBe(rpcDist[key]);
+		}
+	});
+
+	test("checkout local discovery keeps TypeScript shims ahead of root JS shims", () => {
+		const resolve = (specifier: string): string =>
+			Bun.resolveSync(specifier, root);
+		expect(resolve("./index")).toBe(join(root, "index.ts"));
+		expect(resolve("./tui")).toBe(join(root, "tui.tsx"));
+		expect(resolve("./rpc")).toBe(join(root, "rpc.ts"));
+		expect(resolve("./index.js")).toBe(join(root, "index.js"));
+	});
+
+	test("package directory resolves to the built server entry", () => {
+		expect(Bun.resolveSync(".", root)).toBe(dist("index.js"));
 	});
 
 	test("every export target exists after build", () => {

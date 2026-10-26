@@ -14,7 +14,10 @@
     "bun": "1.4.4"
   },
   "files": [
-    "dist/"
+    "dist/",
+    "index.js",
+    "tui.js",
+    "rpc.js"
   ],
   "publishConfig": {
     "access": "public"
