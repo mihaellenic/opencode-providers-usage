@@ -1515,3 +1515,14 @@ describe("consumer audit stays fail-closed with the solid-js override", () => {
 		expect(blocking).toContain("0 high and 1 critical");
 	});
 });
+
+describe("consumer exact saves agree with the override", () => {
+	test("consumer install saves exact peer specs so the override and the direct dependency match (no EOVERRIDE)", () => {
+		const args = consumerInstallArgs({
+			consumer: "/scratch/consumer",
+			tarball: "/scratch/opencode-providers-usage-0.1.0.tgz",
+			peers: ["solid-js@1.9.17"],
+		});
+		expect(args).toContain("--save-exact");
+	});
+});

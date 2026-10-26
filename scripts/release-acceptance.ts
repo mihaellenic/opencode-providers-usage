@@ -1106,6 +1106,7 @@ export function consumerInstallArgs(input: {
 		input.consumer,
 		"--omit=dev",
 		"--ignore-scripts",
+		"--save-exact",
 		"--no-audit",
 		"--no-fund",
 		input.tarball,
