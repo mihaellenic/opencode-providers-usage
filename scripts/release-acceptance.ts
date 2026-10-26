@@ -1581,7 +1581,7 @@ function runAcceptance(
 				: undefined;
 		};
 		const installed = new Map<string, InstalledPackage>();
-		for (const peer of Object.keys(lockedPeers)) {
+		for (const peer of lockedPeers.keys()) {
 			const peerPackage = readInstalled(peer);
 			if (!peerPackage) continue;
 			installed.set(peer, peerPackage);
