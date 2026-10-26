@@ -153,6 +153,7 @@ no credentials and runs outside the repository:
 export CONSUMER_DIR="$SCRATCH_ROOT/post-publish-consumer"
 mkdir -p "$CONSUMER_DIR" && cd "$CONSUMER_DIR"
 npm init -y >/dev/null
+npm pkg set overrides.solid-js=1.9.17
 npm install --ignore-scripts opencode-providers-usage@0.1.0 \
   @opencode/theme@2.1.4 @opentui/core@0.6.8 @opentui/solid@0.6.8 solid-js@1.9.17
 cat > load-check.mjs <<'EOF'
@@ -170,12 +171,15 @@ EOF
 bun load-check.mjs
 ```
 
-The host peer pins match the consumer-install check in
-`scripts/release-acceptance.ts`. If npm resolves them differently, stop and
-report. This check proves the four export paths load under Bun. It does not
-replace the full OpenCode V2 terminal smoke: follow the headless artifact smoke
-and manual smoke procedure in [`docs/validation.md`](validation.md) before
-treating the release as user-verified.
+The peer pins and the `solid-js` override match the consumer-install check in
+`scripts/release-acceptance.ts`. `@opentui/solid@0.6.8` declares an exact
+`solid-js@1.9.12` peer, and the override forces the locked `1.9.17`. If npm
+resolves anything differently, stop and report.
+
+This check proves the four export paths load under Bun. It does not replace the
+full OpenCode V2 terminal smoke: follow the headless artifact smoke and manual
+smoke procedure in [`docs/validation.md`](validation.md) before treating the
+release as user-verified.
 
 This bootstrap publish uses owner authentication with 2FA. It does **not**
 produce OIDC provenance, and the release report must not claim that it does.
