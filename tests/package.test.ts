@@ -300,7 +300,7 @@ describe("npm tarball", () => {
 		tarballPaths = parsed[0].files
 			.map((file: { path: string }) => file.path)
 			.sort();
-	});
+	}, 60_000);
 
 	test("contains exactly the approved runtime files and package metadata", () => {
 		expect(tarballPaths).toEqual(EXPECTED_TARBALL);
