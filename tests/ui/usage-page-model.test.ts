@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { ClaudeUsage } from "../../src/claude-code/usage";
 import type {
 	ProviderSummary,
 	QuotaMetric,
@@ -64,15 +65,28 @@ function build(
 	providers: ProviderSummary[],
 	quotaByProvider: Record<string, QuotaRead>,
 	displayNames?: Record<string, string>,
+	claudeUsage?: ClaudeUsage | null,
 ) {
 	return buildUsagePageModel({
 		providers,
 		quotaByProvider,
 		displayNames,
+		claudeUsage,
 		locale: LOCALE,
 		now: NOW,
 	});
 }
+
+const CLAUDE_USAGE: ClaudeUsage = {
+	session: {
+		usedPercent: 37,
+		resetsAt: NOW + 11 * 3_600_000 + 7 * 60_000,
+	},
+	week: {
+		usedPercent: 64,
+		resetsAt: NOW + 4 * 86_400_000 + 2 * 3_600_000,
+	},
+};
 
 describe("buildUsagePageModel", () => {
 	test("reuses the sidebar widget rows and drops page-only data", () => {
@@ -279,5 +293,86 @@ describe("buildUsagePageModel", () => {
 				tone: "error",
 			},
 		]);
+	});
+});
+
+describe("buildUsagePageModel Claude Code card", () => {
+	test("omits the card when Claude usage is absent", () => {
+		expect(build([], {}, undefined, null).cards).toEqual([]);
+		expect(build([], {}, undefined, undefined).cards).toEqual([]);
+	});
+
+	test("renders only the session and week windows as an OpenAI-style card", () => {
+		const model = build([], {}, undefined, CLAUDE_USAGE);
+
+		expect(model.cards).toEqual([
+			{
+				id: "claude-code",
+				name: "Claude Code",
+				lines: [
+					{
+						id: "0:app:session",
+						kind: "window",
+						label: "5h · Session",
+						value: { text: "37%", tone: "normal" },
+						fill: 0.37,
+						reset: "resets 11h 7m",
+					},
+					{
+						id: "0:app:week",
+						kind: "window",
+						label: "7d · Week",
+						value: { text: "64%", tone: "normal" },
+						fill: 0.64,
+						reset: "resets 4d 2h",
+					},
+				],
+			},
+		]);
+		const serialized = JSON.stringify(model);
+		expect(serialized).not.toContain("Opus");
+		expect(serialized).not.toContain("Sonnet");
+		expect(serialized).not.toContain("model-specific");
+	});
+
+	test("keeps OpenAI-style threshold tones for high usage", () => {
+		const model = build([], {}, undefined, {
+			session: { usedPercent: 85, resetsAt: NOW + 3_600_000 },
+			week: { usedPercent: 100, resetsAt: NOW + 86_400_000 },
+		});
+
+		expect(model.cards[0]?.lines).toEqual([
+			{
+				id: "0:app:session",
+				kind: "window",
+				label: "5h · Session",
+				value: { text: "85%", tone: "warning" },
+				fill: 0.85,
+				reset: "resets 1h",
+			},
+			{
+				id: "0:app:week",
+				kind: "window",
+				label: "7d · Week",
+				value: { text: "100%", tone: "error" },
+				fill: 1,
+				reset: "resets 1d",
+			},
+		]);
+	});
+
+	test("appends the card without changing connected-provider cards", () => {
+		const read = available([{ scope: "app", metrics: [] }]);
+		const model = build([OPENAI], { openai: read }, undefined, CLAUDE_USAGE);
+		const widget = buildSidebarModel(OPENAI, read, LOCALE, NOW);
+
+		expect(model.cards).toHaveLength(2);
+		expect(model.cards[0]).toEqual({
+			id: "openai",
+			name: OPENAI.name,
+			lines: widget.lines,
+		});
+		expect(model.cards[1]?.id).toBe("claude-code");
+		expect(model.cards[1]?.name).toBe("Claude Code");
 	});
 });

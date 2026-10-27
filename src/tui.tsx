@@ -8,6 +8,7 @@ import {
 	createSignal,
 	onCleanup,
 } from "solid-js";
+import type { ClaudeUsage } from "./claude-code/usage";
 import type {
 	LocaleContext,
 	ProviderSummary,
@@ -15,6 +16,7 @@ import type {
 	QuotaRead,
 } from "./core/contracts";
 import {
+	isClaudeUsage,
 	isQuotaGetResult,
 	isQuotaListResult,
 	isQuotaUpdatedEvent,
@@ -66,6 +68,33 @@ const USAGE_COMMAND_ID = "provider-quota.usage";
 const REFRESH_COMMAND_ID = "provider-quota.refresh";
 const PREFERRED_SLASH = "usage";
 const FALLBACK_SLASH = "provider-usage";
+
+/**
+ * Display-only cadence for the Claude Code reset countdown. The card can be
+ * the only one on the page, so provider expiry deadlines may not schedule any
+ * repaint; this bounded timer keeps the text current without ever collecting
+ * usage again. Sub-minute countdowns tick every second so their seconds do not
+ * visibly freeze.
+ */
+export const CLAUDE_USAGE_COUNTDOWN_REFRESH_MS = 30_000;
+
+/**
+ * Delay until the soonest still-future Claude reset needs a repaint, or
+ * `undefined` when every window has already reset and the text can no longer
+ * change.
+ */
+export function claudeCountdownRefreshMs(
+	usage: ClaudeUsage,
+	now: number,
+): number | undefined {
+	const soonest = Math.min(
+		...[usage.session.resetsAt, usage.week.resetsAt].filter(
+			(resetsAt) => resetsAt > now,
+		),
+	);
+	if (!Number.isFinite(soonest)) return undefined;
+	return soonest - now < 60_000 ? 1_000 : CLAUDE_USAGE_COUNTDOWN_REFRESH_MS;
+}
 
 export type QuotaRoute = ReturnType<QuotaTuiContext["ui"]["router"]["current"]>;
 
@@ -335,6 +364,78 @@ async function fetchProviders(
 }
 
 /**
+ * Page-only Claude Code read. A server predating the additive RPC method
+ * rejects it; that is indistinguishable from any other collection failure here
+ * and must never surface an error or affect other providers.
+ */
+async function fetchClaudeUsage(
+	context: QuotaTuiContext,
+	signal: AbortSignal,
+): Promise<ClaudeUsage | null> {
+	try {
+		const result: unknown = await context.client
+			.rpc(QuotaRpc)
+			.claudeCodeUsage({}, { signal });
+		return isClaudeUsage(result) ? result : null;
+	} catch {
+		return null;
+	}
+}
+
+export type ClaudeUsageRequest = {
+	/** Starts a fresh collection, hiding the previous value and superseding any in-flight one. */
+	start(): void;
+	/** Aborts the in-flight collection and ignores every late result. */
+	cancel(): void;
+};
+
+/**
+ * Page-local Claude Code request lifecycle. The full page starts one request
+ * on mount and another on every refresh; overlapping requests are aborted and
+ * generation-checked so only the newest result can be applied. Cancellation
+ * (route unmount) also invalidates late results. Failure is applied as `null`,
+ * which renders no card, never an error or stale figure.
+ */
+export function createClaudeUsageRequest(options: {
+	collect(signal: AbortSignal): Promise<ClaudeUsage | null>;
+	apply(usage: ClaudeUsage | null): void;
+}): ClaudeUsageRequest {
+	let inFlight: AbortController | undefined;
+	let generation = 0;
+	let cancelled = false;
+	const start = (): void => {
+		if (cancelled) return;
+		inFlight?.abort();
+		const controller = new AbortController();
+		inFlight = controller;
+		const request = ++generation;
+		options.apply(null);
+		void options.collect(controller.signal).then(
+			(usage) => {
+				if (cancelled || controller.signal.aborted || request !== generation)
+					return;
+				options.apply(usage);
+			},
+			() => {
+				if (cancelled || controller.signal.aborted || request !== generation)
+					return;
+				options.apply(null);
+			},
+		);
+	};
+	return {
+		start,
+		cancel() {
+			if (cancelled) return;
+			cancelled = true;
+			generation += 1;
+			inFlight?.abort();
+			inFlight = undefined;
+		},
+	};
+}
+
+/**
  * Latest pushed snapshot per provider. Keyed by provider ID, so an update for
  * one provider can never be rendered under another provider's label.
  */
@@ -573,6 +674,41 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 	const context = props.context as QuotaTuiContext;
 	const pushed = usePushedQuota(context);
 	const [currentnessTick, setCurrentnessTick] = createSignal(0);
+	// Page-only Claude Code data. Collection starts on every page mount,
+	// independently of the connected-provider inventory; `null` covers
+	// collecting, failed, and old-server states, all of which render no card.
+	const [claudeUsage, setClaudeUsage] = createSignal<ClaudeUsage | null>(null);
+	const claudeRequest = createClaudeUsageRequest({
+		collect: (signal) => fetchClaudeUsage(context, signal),
+		apply: setClaudeUsage,
+	});
+	onCleanup(claudeRequest.cancel);
+	claudeRequest.start();
+	// The Claude card can be the only card on the page, so no provider expiry
+	// deadline may exist to repaint its reset countdown. Tick the display on a
+	// bounded cadence while the card is present; this never collects usage.
+	createEffect(() => {
+		const usage = claudeUsage();
+		if (usage == null) return;
+		const delay = claudeCountdownRefreshMs(usage, Date.now());
+		if (delay === undefined) return;
+		let active = true;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const schedule = (wait: number) => {
+			timer = setTimeout(tick, wait);
+		};
+		const tick = () => {
+			if (!active) return;
+			setCurrentnessTick((current) => current + 1);
+			const next = claudeCountdownRefreshMs(usage, Date.now());
+			if (next !== undefined) schedule(next);
+		};
+		schedule(delay);
+		onCleanup(() => {
+			active = false;
+			if (timer !== undefined) clearTimeout(timer);
+		});
+	});
 	let inFlight: AbortController | undefined;
 	// `null` is the failed-inventory sentinel; `undefined` means the resource
 	// has not produced a first value yet. They must never collapse into the
@@ -642,7 +778,10 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 	const back =
 		(props.back as (() => void) | undefined) ??
 		(() => context.ui.router.navigate({ type: "home" }));
-	const retry = () => void refetch();
+	const retry = () => {
+		void refetch();
+		claudeRequest.start();
+	};
 
 	// While the inventory is loading or failed the full page component is not
 	// mounted, so its keymap cannot help. This recovery layer guarantees a way
@@ -696,7 +835,9 @@ export function QuotaUsagePage(props: Record<string, unknown>) {
 			providers: view.providers,
 			quotaByProvider: view.quotaByProvider,
 			displayNames: displayNames(),
+			claudeUsage: claudeUsage(),
 			refresh,
+			refreshClaude: claudeRequest.start,
 			back,
 		});
 	});

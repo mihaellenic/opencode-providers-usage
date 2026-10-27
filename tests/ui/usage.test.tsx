@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { PluginContextProvider } from "@opencode/plugin/tui";
 import { testRender } from "@opentui/solid";
 import { jsx } from "@opentui/solid/jsx-runtime";
+import type { ClaudeUsage } from "../../src/claude-code/usage";
 import type {
 	ProviderSummary,
 	QuotaMetric,
@@ -11,6 +12,9 @@ import type {
 } from "../../src/core/contracts";
 import {
 	buildSidebarText,
+	CLAUDE_USAGE_COUNTDOWN_REFRESH_MS,
+	claudeCountdownRefreshMs,
+	createClaudeUsageRequest,
 	INVENTORY_FAILED_DETAIL,
 	INVENTORY_FAILED_TITLE,
 	INVENTORY_RETRY_HINT,
@@ -40,6 +44,22 @@ const LOCALE = { locale: "en-GB", timeZone: "UTC" };
 const APP_RESET = Date.UTC(2026, 9, 30, 14, 0, 0);
 const PLAN_RESET = Date.UTC(2026, 9, 31, 9, 30, 0);
 const SECONDARY_RESET = Date.UTC(2026, 9, 24, 18, 0, 0);
+
+const CLAUDE_NOW = Date.now();
+const CLAUDE_USAGE: ClaudeUsage = {
+	session: {
+		usedPercent: 37,
+		resetsAt: CLAUDE_NOW + 11 * 3_600_000 + 7 * 60_000,
+	},
+	week: {
+		usedPercent: 64,
+		resetsAt: CLAUDE_NOW + 4 * 86_400_000 + 2 * 3_600_000,
+	},
+};
+const CLAUDE_USAGE_LATER: ClaudeUsage = {
+	session: { usedPercent: 12, resetsAt: CLAUDE_NOW + 30 * 60_000 },
+	week: { usedPercent: 98, resetsAt: CLAUDE_NOW + 2 * 86_400_000 },
+};
 
 function windowMetric(
 	overrides: Partial<Extract<QuotaMetric, { kind: "window" }>> & {
@@ -1233,5 +1253,249 @@ describe("host-rendered wrappers", () => {
 		retry?.run();
 		back?.run();
 		expect(calls).toEqual(["retry", "back"]);
+	});
+});
+
+describe("Claude Code usage card", () => {
+	test("renders the separate card on success even with no connected providers", async () => {
+		const { context } = mockHostContext();
+		const setup = await testRender(
+			() =>
+				jsx(ProviderHost, {
+					value: context as never,
+					get children() {
+						return jsx(UsagePageHost, {
+							providers: [],
+							quotaByProvider: {},
+							claudeUsage: CLAUDE_USAGE,
+							refresh: () => {},
+							back: () => {},
+						});
+					},
+				}),
+			{ width: 80, height: 40 },
+		);
+		try {
+			await setup.renderOnce();
+			const frame = setup.captureCharFrame();
+			const content = frame.replace(/\s+/g, "");
+			expect(content).toContain("ClaudeCode");
+			expect(content).toContain("5h·Session");
+			expect(content).toContain("7d·Week");
+			expect(content).toContain("37%");
+			expect(content).toContain("64%");
+			expect(content).toContain("resets");
+			expect(frame).toContain("━");
+			expect(frame).toContain("─");
+			expect(content).not.toContain("Noconnectedproviders.");
+			expect(content).not.toContain("Opus");
+			expect(content).not.toContain("Sonnet");
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("omits the card while absent and keeps provider cards", async () => {
+		for (const claudeUsage of [null, undefined]) {
+			const { context } = mockHostContext();
+			const setup = await testRender(
+				() =>
+					jsx(ProviderHost, {
+						value: context as never,
+						get children() {
+							return jsx(UsagePageHost, {
+								providers: [FUTURE_PROVIDER],
+								quotaByProvider: {},
+								claudeUsage,
+								refresh: () => {},
+								back: () => {},
+							});
+						},
+					}),
+				{ width: 80, height: 40 },
+			);
+			try {
+				await setup.renderOnce();
+				const content = setup.captureCharFrame().replace(/\s+/g, "");
+				expect(content).toContain("FutureProvider");
+				expect(content).not.toContain("ClaudeCode");
+			} finally {
+				await setup.dispose();
+			}
+		}
+	});
+
+	test("ctrl+r starts Claude collection even while the card is hidden", async () => {
+		const { context, layers } = mockHostContext();
+		let claudeRefreshes = 0;
+		const setup = await testRender(
+			() =>
+				jsx(ProviderHost, {
+					value: context as never,
+					get children() {
+						return jsx(UsagePageHost, {
+							providers: [FUTURE_PROVIDER],
+							quotaByProvider: {},
+							claudeUsage: null,
+							refresh: () => {},
+							refreshClaude: () => {
+								claudeRefreshes += 1;
+							},
+							back: () => {},
+						});
+					},
+				}),
+			{ width: 80, height: 40 },
+		);
+		try {
+			await setup.renderOnce();
+			const refresh = layers
+				.flatMap((layer) => layer.commands ?? [])
+				.find((command) => command.id === "provider-quota.page.refresh");
+			expect(refresh?.bind).toBe("ctrl+r");
+			await refresh?.run?.();
+			expect(claudeRefreshes).toBe(1);
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	type ClaudeCall = {
+		signal: AbortSignal;
+		resolve: (value: ClaudeUsage | null) => void;
+		reject: (reason: unknown) => void;
+	};
+
+	function pendingClaude(calls: ClaudeCall[]) {
+		return (signal: AbortSignal) =>
+			new Promise<ClaudeUsage | null>((resolve, reject) => {
+				calls.push({ signal, resolve, reject });
+			});
+	}
+
+	function deferredPage() {
+		const calls: ClaudeCall[] = [];
+		const updates: (ClaudeUsage | null)[] = [];
+		const request = createClaudeUsageRequest({
+			collect: pendingClaude(calls),
+			apply: (usage) => updates.push(usage),
+		});
+		return { calls, updates, request };
+	}
+
+	test("starts a fresh request on every page mount and cancels on unmount", async () => {
+		const calls: ClaudeCall[] = [];
+
+		// Each construction represents one full-page mount.
+		const first = createClaudeUsageRequest({
+			collect: pendingClaude(calls),
+			apply: () => {},
+		});
+		first.start();
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.signal.aborted).toBe(false);
+
+		first.cancel();
+		expect(calls[0]?.signal.aborted).toBe(true);
+		first.start();
+		expect(calls).toHaveLength(1);
+
+		const second = createClaudeUsageRequest({
+			collect: pendingClaude(calls),
+			apply: () => {},
+		});
+		second.start();
+		expect(calls).toHaveLength(2);
+		second.cancel();
+	});
+
+	test("clears the previous value and ignores superseded results", async () => {
+		const { calls, updates, request } = deferredPage();
+		request.start();
+		calls[0]?.resolve(CLAUDE_USAGE);
+		await Promise.resolve();
+		expect(updates).toEqual([null, CLAUDE_USAGE]);
+
+		// A refresh hides the old value immediately and supersedes the prior
+		// request; its late result must not be applied.
+		request.start();
+		expect(updates.at(-1)).toBeNull();
+		expect(calls[0]?.signal.aborted).toBe(true);
+		calls[1]?.resolve(CLAUDE_USAGE_LATER);
+		await Promise.resolve();
+		expect(updates.at(-1)).toBe(CLAUDE_USAGE_LATER);
+		calls[0]?.resolve(CLAUDE_USAGE);
+		await Promise.resolve();
+		expect(updates.at(-1)).toBe(CLAUDE_USAGE_LATER);
+		request.cancel();
+	});
+
+	test("treats null, rejection, and missing-method rejection as no card", async () => {
+		for (const failure of [
+			(_signal: AbortSignal) => Promise.resolve<ClaudeUsage | null>(null),
+			() => Promise.reject(new Error("collector failed")),
+			() => Promise.reject(new Error("rpc.method_not_found")),
+		]) {
+			const updates: (ClaudeUsage | null)[] = [];
+			const request = createClaudeUsageRequest({
+				collect: failure,
+				apply: (usage) => updates.push(usage),
+			});
+			request.start();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(updates.every((usage) => usage === null)).toBe(true);
+			expect(updates.at(-1)).toBeNull();
+			request.cancel();
+		}
+	});
+
+	test("cancellation after a request settles discards every late result", async () => {
+		const { calls, updates, request } = deferredPage();
+		request.start();
+		request.cancel();
+		calls[0]?.resolve(CLAUDE_USAGE);
+		await Promise.resolve();
+		expect(updates).toEqual([null]);
+	});
+
+	test("countdown repaint cadence is bounded and adapts to seconds", () => {
+		expect(CLAUDE_USAGE_COUNTDOWN_REFRESH_MS).toBe(30_000);
+		expect(
+			claudeCountdownRefreshMs(
+				{
+					session: { usedPercent: 10, resetsAt: NOW + 61_000 },
+					week: { usedPercent: 20, resetsAt: NOW + 86_400_000 },
+				},
+				NOW,
+			),
+		).toBe(CLAUDE_USAGE_COUNTDOWN_REFRESH_MS);
+		expect(
+			claudeCountdownRefreshMs(
+				{
+					session: { usedPercent: 10, resetsAt: NOW + 31_000 },
+					week: { usedPercent: 20, resetsAt: NOW + 86_400_000 },
+				},
+				NOW,
+			),
+		).toBe(1_000);
+		expect(
+			claudeCountdownRefreshMs(
+				{
+					session: { usedPercent: 10, resetsAt: NOW - 1 },
+					week: { usedPercent: 20, resetsAt: NOW + 86_400_000 },
+				},
+				NOW,
+			),
+		).toBe(CLAUDE_USAGE_COUNTDOWN_REFRESH_MS);
+		expect(
+			claudeCountdownRefreshMs(
+				{
+					session: { usedPercent: 10, resetsAt: NOW - 1 },
+					week: { usedPercent: 20, resetsAt: NOW - 1 },
+				},
+				NOW,
+			),
+		).toBeUndefined();
 	});
 });

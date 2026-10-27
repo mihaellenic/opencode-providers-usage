@@ -2,6 +2,7 @@ import { open } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { ConnectionInfo } from "@opencode/client";
 import { Plugin } from "@opencode/plugin";
+import { type ClaudeUsage, collectClaudeUsage } from "./claude-code/usage";
 import type {
 	CompanionOptions,
 	CredentialReadDeps,
@@ -231,9 +232,23 @@ async function readBoundedUtf8(
 	}
 }
 
+/**
+ * Server-owned overrides. The optional collector exists so lifecycle tests can
+ * observe cancellation without launching the real CLI; production callers omit
+ * it and use `collectClaudeUsage`.
+ */
+export type QuotaServerOverrides = {
+	claudeUsage?(signal: AbortSignal): Promise<ClaudeUsage | null>;
+};
+
 export async function setupQuotaServer(
 	ctx: ServerContext,
+	overrides: QuotaServerOverrides = {},
 ): Promise<() => Promise<void>> {
+	// Aborted on disposal so an in-flight CLI collection is terminated even if
+	// the page's RPC transport is still connected.
+	const lifecycle = new AbortController();
+	const collectClaude = overrides.claudeUsage ?? collectClaudeUsage;
 	const now = () => Date.now();
 	const registry = createAdapterRegistry(QUOTA_ADAPTERS);
 	const companion = resolveCompanionOptions(ctx.options);
@@ -433,11 +448,24 @@ export async function setupQuotaServer(
 		publish: async (event) => {
 			await emitUpdated?.(event);
 		},
+		// Page-only and independent of the shared provider inventory: a failure
+		// here yields null and can never affect list/get/refresh.
+		claudeUsage: async (signal) => {
+			const usage = await collectClaude(
+				AbortSignal.any([signal, lifecycle.signal]),
+			);
+			// Delivery is also gated on the server lifecycle: shutdown must not
+			// surface a result that raced with disposal.
+			return lifecycle.signal.aborted ? null : usage;
+		},
 	});
 	const registration = await ctx.rpc.register(QuotaRpc, handlers);
 	emitUpdated = (event) => registration.events.emit("updated", event);
 
 	return async () => {
+		// Terminate an in-flight collector before awaiting registration
+		// disposal; the collector reaps the CLI process on abort.
+		lifecycle.abort();
 		clearInterval(idleSweep);
 		coordinator.dispose();
 		for (const unwatch of watchers.values()) {

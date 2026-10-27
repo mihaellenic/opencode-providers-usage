@@ -2,6 +2,7 @@ import { usePlugin } from "@opencode/plugin/tui";
 import { TextAttributes } from "@opentui/core";
 import { jsx } from "@opentui/solid/jsx-runtime";
 import { createMemo } from "solid-js";
+import type { ClaudeUsage } from "../claude-code/usage";
 import type {
 	LocaleContext,
 	ProviderSummary,
@@ -18,7 +19,11 @@ export type UsagePageProps = {
 	providers: ProviderSummary[];
 	quotaByProvider: Record<string, QuotaRead>;
 	displayNames?: Record<string, string>;
+	/** Page-only Claude Code data; absent while collecting, after failure, and on old servers. */
+	claudeUsage?: ClaudeUsage | null;
 	refresh: (providerID: string) => void;
+	/** Starts an independent Claude Code collection, even while its card is hidden. */
+	refreshClaude?: () => void;
 	back: () => void;
 };
 
@@ -47,6 +52,9 @@ export function UsagePage(props: UsagePageProps) {
 				title: "Refresh provider usage",
 				bind: "ctrl+r",
 				run: () => {
+					// Claude Code is independent of the connected-provider loop and
+					// refreshes even when its card is currently hidden.
+					props.refreshClaude?.();
 					for (const provider of props.providers) {
 						props.refresh(provider.providerID);
 					}
@@ -61,6 +69,7 @@ export function UsagePage(props: UsagePageProps) {
 			providers: props.providers,
 			quotaByProvider: props.quotaByProvider,
 			displayNames: props.displayNames,
+			claudeUsage: props.claudeUsage,
 			locale,
 			now: Date.now(),
 		});

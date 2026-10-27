@@ -6,8 +6,10 @@ There are no local-token estimates, guessed allowances, inferred refills, or
 API-spending substitutions.
 
 Baseline: OpenCode `2.1.4` (V2 plugin, RPC, and terminal APIs), Bun `1.4.4`,
-macOS local shared server. V1, desktop/web extensions, and OpenCode forks are not
-supported.
+macOS local shared server. The page-only Claude Code collector is verified only
+on macOS arm64 with Claude Code CLI `2.1.308`; the live print-mode `/usage`
+command was independently verified, but the full-page UI/RPC path was not
+live-verified. V1, desktop/web extensions, and OpenCode forks are not supported.
 
 ## What it shows
 
@@ -21,6 +23,12 @@ supported.
 - **Everything else** — an explicit unsupported, not-applicable, or
   auth-required explanation. There is no generic credential forwarding and no
   advertised support for an unvalidated source.
+- **Claude Code (full page only)** — current session and current week
+  percentages and reset times from the locally authenticated Claude Code CLI's
+  `/usage` command. It is a dedicated page-only source, not a provider: there is
+  no sidebar card, inventory entry, or row in the provider support matrix or
+  machine-checked adapter declarations. See
+  [Claude Code usage](#claude-code-usage-full-page-only).
 
 The exact authentication/storage matrix, evidence levels, and reason-code copy
 live in [`docs/support.md`](docs/support.md).
@@ -146,18 +154,51 @@ has already been imported.
 - `Show provider usage` (`provider-quota.usage`) opens the full page. The slash
   command is `/usage`; if that name is occupied at setup the plugin registers
   `/provider-usage` instead. The page renders one framed card per connected
-  provider, and each card body is exactly the sidebar widget for that
-  provider: same compact rows, duration labels, countdown resets, and tones,
-  with no extra rows added by the page. Cards share a row when the terminal is
-  wide enough and stack when narrow. Unsupported providers show only their
-  name and `Quota unavailable`.
+  provider and, when collection succeeds, a page-only Claude Code card. Each
+  provider card body is exactly the sidebar widget for that provider: same
+  compact rows, duration labels, countdown resets, and tones, with no extra rows
+  added by the page. The Claude Code card uses the same rows and tones with its
+  own identity. Cards share a row when the terminal is wide enough and stack
+  when narrow. Unsupported providers show only their name and `Quota unavailable`.
 - `Refresh provider usage` (`provider-quota.refresh`) refreshes the selected
   provider and shows a short status toast.
-- On the full page, `ctrl+r` refreshes every listed provider and `escape` goes
-  back. A failed provider inventory shows a retry hint instead of fabricated
-  figures.
+- On the full page, `ctrl+r` refreshes every listed provider and starts a new
+  Claude Code collection, even while its card is hidden; `escape` goes back. A
+  failed provider inventory shows a retry hint instead of fabricated figures.
 
 No UI action triggers a model request or an inference call.
+
+## Claude Code usage (full page only)
+
+- The card is backed by a dedicated page-only CLI source outside the provider
+  inventory. It runs the explicit `/usage` local command of the **already
+  authenticated local Claude Code CLI** and uses that CLI's existing account.
+  It does not ask for or accept a Claude credential, token, account path, or
+  endpoint. The `claude` executable must be installed and signed in on the
+  machine running the OpenCode server.
+- Every opening of the full page starts a fresh collection, and `ctrl+r` starts
+  another. The result is never cached across page opens. Collection is
+  independent of the connected-provider inventory and never changes the
+  sidebar.
+- The card is hidden while collection runs and after any failure: missing CLI,
+  not signed in, timeout, oversized or malformed output, unsupported platform,
+  or a server without the page-only RPC. Other providers keep rendering and no
+  error is shown.
+- Only the current session and current week percentages and reset times are
+  shown. Model-specific windows are ignored, never displayed, and never treated
+  as the overall week.
+- The CLI runs through its normal command path rather than `--bare`. Collection
+  launches it from the **OS home directory**, not the OpenCode project
+  directory, so project-level Claude settings and hooks are not discovered.
+  User/home-level Claude Code settings and hooks may still run, and `--bare`
+  was not used because it also stops using the CLI's logged-in account. No model
+  prompt is sent.
+- Collector verification is limited to **macOS arm64 with Claude Code CLI
+  `2.1.308`**. The live print-mode `/usage` command was independently verified;
+  the full-page UI and RPC integration were not live-verified. Other CLI
+  versions and other POSIX platforms remain unverified. Platforms without POSIX
+  process groups are unsupported and hide the card. So does an unavailable
+  absolute home directory.
 
 ## Freshness and request behavior
 
@@ -206,6 +247,9 @@ No UI action triggers a model request or an inference call.
   nothing else; it cannot select a credential file or supply a token.
 - Credential values, raw JWTs, account identifiers, emails, credential-file
   contents, and raw provider payloads never cross plugin RPC or logs.
+- Claude Code collection returns only two percentages and two reset instants.
+  Raw CLI and terminal output, control sequences, model-specific windows,
+  account identifiers, and errors never cross plugin RPC or logs.
 - Requests are limited to the exact allowlisted origin/path pairs:
   `https://ollama.com/api/balance`,
   `https://chatgpt.com/backend-api/wham/usage`, and
