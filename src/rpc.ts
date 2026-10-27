@@ -1,4 +1,5 @@
 import { Rpc } from "@opencode/plugin";
+import type { ClaudeUsage } from "./claude-code/usage";
 import {
 	isQuotaPresentation,
 	isQuotaRead,
@@ -207,6 +208,39 @@ const emptyInputSchema = {
 
 const versionSchema = { type: "number", const: QUOTA_RPC_VERSION } as const;
 
+const claudeUsageWindowSchema = {
+	type: "object",
+	properties: {
+		usedPercent: { type: "number", minimum: 0, maximum: 100 },
+		resetsAt: {
+			type: "integer",
+			minimum: 1,
+			maximum: Number.MAX_SAFE_INTEGER,
+		},
+	},
+	required: ["usedPercent", "resetsAt"],
+	additionalProperties: false,
+} as const;
+
+/**
+ * Page-only quota data from the local Claude Code CLI. It is deliberately not
+ * a provider view: no credentials, terminal output, or provider identity
+ * crosses this boundary.
+ */
+const claudeUsageSchema = {
+	type: "object",
+	properties: {
+		session: claudeUsageWindowSchema,
+		week: claudeUsageWindowSchema,
+	},
+	required: ["session", "week"],
+	additionalProperties: false,
+} as const;
+
+const claudeUsageOutputSchema = {
+	oneOf: [claudeUsageSchema, { type: "null" }],
+} as const;
+
 const invalidInputSchema = {
 	type: "object",
 	properties: {
@@ -276,6 +310,19 @@ export const QuotaRpc = Rpc.define({
 			output: getOutputSchema,
 			errors: { invalid_input: invalidInputSchema },
 		},
+		/**
+		 * Page-only collection from the local Claude Code CLI. Failure is a
+		 * null result, never an error or an omission of other providers.
+		 *
+		 * The method is additive and unversioned, so v2 servers predating it
+		 * answer `rpc.method_not_found`; clients must treat that as "no Claude
+		 * data" and keep the rest of the page usable.
+		 */
+		claudeCodeUsage: {
+			input: emptyInputSchema,
+			output: claudeUsageOutputSchema,
+			errors: { invalid_input: invalidInputSchema },
+		},
 	},
 	events: {
 		updated: { schema: updatedEventSchema },
@@ -334,6 +381,11 @@ export type QuotaRpcSource = {
 export type QuotaRpcOptions = {
 	source: QuotaRpcSource;
 	publish?(event: QuotaUpdatedEvent): Promise<void> | void;
+	/**
+	 * Page-only Claude Code collection. Optional so existing custom sources and
+	 * tests keep their contract; a missing collector means "no data".
+	 */
+	claudeUsage?(signal: AbortSignal): Promise<ClaudeUsage | null>;
 };
 
 type QuotaMethods = typeof QuotaRpc.methods;
@@ -436,6 +488,35 @@ export function isQuotaUpdatedEvent(
 		isQuotaRead(value.quota) &&
 		(value.presentation === undefined ||
 			isQuotaPresentation(value.presentation))
+	);
+}
+
+function isClaudeUsageWindow(value: unknown): boolean {
+	return (
+		isRecord(value) &&
+		hasOnlyKeys(value, ["usedPercent", "resetsAt"]) &&
+		typeof value.usedPercent === "number" &&
+		Number.isFinite(value.usedPercent) &&
+		value.usedPercent >= 0 &&
+		value.usedPercent <= 100 &&
+		typeof value.resetsAt === "number" &&
+		Number.isSafeInteger(value.resetsAt) &&
+		value.resetsAt >= 1
+	);
+}
+
+/**
+ * Validates page-only Claude usage: exactly two windows of finite 0-100
+ * percentages and positive safe-integer epoch-millisecond reset instants,
+ * matching the wire schema. Unknown fields are rejected so raw or
+ * credential-shaped data can never cross the boundary.
+ */
+export function isClaudeUsage(value: unknown): value is ClaudeUsage {
+	return (
+		isRecord(value) &&
+		hasOnlyKeys(value, ["session", "week"]) &&
+		isClaudeUsageWindow(value.session) &&
+		isClaudeUsageWindow(value.week)
 	);
 }
 
@@ -625,6 +706,32 @@ export function createQuotaRpcHandlers(
 					? {}
 					: { presentation: view.presentation }),
 			};
+		},
+
+		async claudeCodeUsage(input, context) {
+			const parsed = parseEmptyInput(input);
+			if (!parsed.ok) {
+				return context.error("invalid_input", parsed.message, {
+					message: parsed.message,
+				});
+			}
+			const collect = options.claudeUsage;
+			if (collect === undefined || context.signal.aborted) {
+				return null;
+			}
+			try {
+				const usage = await collect(context.signal);
+				// A result that settles after cancellation belongs to a closed or
+				// superseded page and must not be delivered.
+				if (context.signal.aborted || !isClaudeUsage(usage)) {
+					return null;
+				}
+				return usage;
+			} catch {
+				// Collection failure is an omission, never an RPC error that could
+				// affect other providers.
+				return null;
+			}
 		},
 	};
 }

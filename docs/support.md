@@ -13,11 +13,15 @@ fails CI.
 | Terminal | OpenCode V2 terminal only; no desktop/web extension, V1 support, or OpenCode fork |
 | Development runtime | Bun `1.4.4` (pinned) |
 | Validated platform | macOS, local shared server, file-backed Codex login |
+| Claude Code usage (page only) | Dedicated local CLI source; not a provider or adapter and outside the matrix and machine-checked declarations below. Collector verified on macOS arm64 with Claude Code CLI `2.1.308` only; full-page UI/RPC live integration unverified. |
 | Remote server | Not promised for v1; see [No remote or keychain promise](#no-remote-or-keychain-promise) |
 | Quota source | Provider responses only; no local-token estimates, guessed allowances, inferred refills, or API-spending substitution |
 
 Live evidence in this document was gathered on **2026-10-24** and is recorded
-in [`docs/validation.md`](docs/validation.md).
+in [`docs/validation.md`](docs/validation.md). The Claude Code print-command
+observation is separate: it verified the live print-mode `/usage` command only,
+on macOS arm64 with CLI `2.1.308`, and did not live-verify the plugin's
+full-page UI or RPC path.
 
 ## Authentication and compatibility matrix
 
@@ -40,6 +44,41 @@ or auth method that is not named here.
 | OpenCode Console device OAuth | Explicit quota unavailable: no validated quota API. | Connection verified, quota unverified. |
 | Zen/Go inference API keys | Unsupported/unverified quota reporting; do not infer compatibility from Console OAuth. | No validated source. |
 | Other providers / custom compatible endpoints | Unsupported until an explicit adapter and authentication/endpoint combination are validated. | No generic credential forwarding. |
+
+### Claude Code page-only source
+
+Claude Code is deliberately outside the provider matrix above and the
+machine-checked adapter declarations below. It is a dedicated page-only local
+CLI source, not a provider: it has no providerID, adapter capability, sidebar
+card, provider inventory entry, or support matrix row. A collection failure
+yields no card and cannot affect provider reads.
+
+- The collector runs the explicit `/usage` local command of the already
+  authenticated Claude Code CLI and uses that CLI's existing account. It does
+  not accept a credential, token, account path, or endpoint. The `claude`
+  executable must be installed and signed in on the server machine.
+- Collection is fresh on every full-page open and on Ctrl+R, never cached across
+  opens, and independent of the connected-provider inventory.
+- Only the current session and current week percentages and reset times are
+  returned. Model-specific windows are ignored. The card is hidden while
+  collecting and after every failure, including a missing or unauthenticated
+  CLI, timeout, oversized or malformed output, unsupported platform, or a server
+  without the page-only RPC.
+- The process launches in the operating system's home directory rather than the
+  OpenCode project directory, so project-level Claude settings and hooks are not
+  discovered. User/home-level Claude Code settings and hooks may still run. The
+  normal command path is used instead of `--bare`, which would skip hooks but
+  stop using the CLI's logged-in account. No model prompt is sent.
+- Platform limitations: only platforms with POSIX process-group semantics are
+  supported; other platforms fail closed and hide the card. An unavailable
+  absolute home directory also hides it. Collection is bounded to 30 seconds
+  and 1 MiB of output.
+- Verification: the collector was verified only on macOS arm64 with Claude Code
+  CLI `2.1.308`. The live print-mode `/usage` command was independently
+  verified. Other CLI versions and platforms are unverified, and the full-page
+  UI/RPC integration was not live-verified; those paths rely on synthetic page,
+  RPC, and parser tests. This source is outside the provider evidence levels
+  above.
 
 ### Evidence levels
 
@@ -315,11 +354,15 @@ prompt's currently selected provider.
 
 ## Usage page presentation
 
-The `/usage` page renders one framed, padded card per connected provider, and
-each card body is exactly the sidebar widget for that provider: same header
+The `/usage` page renders one framed, padded card per connected provider and,
+when its page-only CLI collection succeeds, a separate Claude Code card. Each
+provider card body is exactly the sidebar widget for that provider: same header
 name, rows, tones, duration labels, and countdown resets. The page adds no
 rows of its own; shared-plan windows, configured caps, and the derived total
-pool stay hidden, exactly as the compact sidebar hides them.
+pool stay hidden, exactly as the compact sidebar hides them. The Claude Code
+card is not a provider card: it uses the same rows and tones under its own
+identity, is hidden while collecting and on failure, and Ctrl+R starts a new
+collection independently of the provider loop.
 
 Two quota cards share a row when the terminal is wide enough and stack when
 narrow; a card that cannot share a row spans the full width. Page content is
