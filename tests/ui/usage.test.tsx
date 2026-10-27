@@ -1055,7 +1055,7 @@ describe("host-rendered wrappers", () => {
 			locale: LOCALE,
 			now: NOW,
 		});
-		expect(companion?.split("\n")[0]).toBe("OpenAI · Codex quota");
+		expect(companion?.split("\n")[0]).toBe("OpenAI ChatGPT");
 		expect(companion).not.toContain("requires companion");
 		expect(companion).not.toContain("live-validated");
 		expect(companion).toContain(AUTH_UNAVAILABLE_COPY);
