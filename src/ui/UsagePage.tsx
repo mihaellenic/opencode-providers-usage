@@ -107,9 +107,15 @@ export function UsagePage(props: UsagePageProps) {
 			};
 			// Quota widgets share the first rows; source-less accounts follow as
 			// full-width cards, matching the approved mock without provider rules.
+			// Unsupported providers would only repeat "Quota unavailable", so the
+			// page omits them; the sidebar and other views are unaffected.
 			const cards = [
 				...model.cards.filter((card) => !unavailable(card.id)),
-				...model.cards.filter((card) => unavailable(card.id)),
+				...model.cards.filter(
+					(card) =>
+						unavailable(card.id) &&
+						props.quotaByProvider[card.id]?.state !== "unsupported",
+				),
 			];
 			children.push(
 				jsx("box", {
