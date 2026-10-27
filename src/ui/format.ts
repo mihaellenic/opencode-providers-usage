@@ -426,9 +426,9 @@ export function formatSidebarRows(
 	now: number = Date.now(),
 ): DisplayRow[] {
 	const headerName =
-		new Map([
-			["OpenAI ChatGPT with Codex companion", "OpenAI · Codex quota"],
-		]).get(provider.name) ?? provider.name;
+		new Map([["OpenAI ChatGPT with Codex companion", "OpenAI ChatGPT"]]).get(
+			provider.name,
+		) ?? provider.name;
 	const header: DisplayRow = {
 		id: "provider",
 		label: headerName,

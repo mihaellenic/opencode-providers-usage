@@ -75,7 +75,7 @@ const NATIVE_REASONS: ReadonlySet<string> = new Set([
 const CAPABILITIES: readonly ProviderCapability[] = [
 	{
 		match: { integrationID: OPENAI_INTEGRATION_ID, authMethod: "oauth" },
-		name: "OpenAI ChatGPT with Codex companion",
+		name: "OpenAI ChatGPT",
 		support: "requires-companion",
 		evidence: "live-validated",
 	},

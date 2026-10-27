@@ -492,12 +492,12 @@ describe("formatSidebarText", () => {
 		const codex = { ...provider, name: "OpenAI ChatGPT with Codex companion" };
 		const row = formatSidebarRows(codex, read([]), LOCALE, NOW)[0];
 		expect(row).toMatchObject({
-			label: "OpenAI · Codex quota",
+			label: "OpenAI ChatGPT",
 			value: "",
 			tone: "normal",
 		});
 		expect(formatSidebarText(codex, read([]), LOCALE, NOW).split("\n")[0]).toBe(
-			"OpenAI · Codex quota",
+			"OpenAI ChatGPT",
 		);
 	});
 });

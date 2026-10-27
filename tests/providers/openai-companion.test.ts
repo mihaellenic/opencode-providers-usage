@@ -1142,7 +1142,7 @@ describe("adapter declarations", () => {
 		const byName = new Map(
 			h.adapter.capabilities.map((capability) => [capability.name, capability]),
 		);
-		expect(byName.get("OpenAI ChatGPT with Codex companion")).toMatchObject({
+		expect(byName.get("OpenAI ChatGPT")).toMatchObject({
 			match: { integrationID: "openai", authMethod: "oauth" },
 			support: "requires-companion",
 			evidence: "live-validated",
