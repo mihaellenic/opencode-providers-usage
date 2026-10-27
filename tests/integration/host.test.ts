@@ -764,13 +764,15 @@ describe("server provider mapping", () => {
 			},
 		};
 
-		QUOTA_ADAPTERS.push({
-			id: "rejecting-adapter",
-			capabilities: [],
-			async resolve() {
-				throw new Error("adapter bug");
-			},
-		});
+		const adaptersBefore = [...QUOTA_ADAPTERS];
+		const index =
+			QUOTA_ADAPTERS.push({
+				id: "rejecting-adapter",
+				capabilities: [],
+				async resolve() {
+					throw new Error("adapter bug");
+				},
+			}) - 1;
 		try {
 			await setupQuotaServer(context as never);
 			const result = (await registered?.get(
@@ -782,7 +784,8 @@ describe("server provider mapping", () => {
 				reason: "invalid_response",
 			});
 		} finally {
-			QUOTA_ADAPTERS.splice(0, QUOTA_ADAPTERS.length);
+			QUOTA_ADAPTERS.splice(index, 1);
 		}
+		expect(QUOTA_ADAPTERS).toEqual(adaptersBefore);
 	});
 });
