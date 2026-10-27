@@ -210,7 +210,7 @@ function pageFixtures(): {
 				],
 			},
 			zen: {
-				state: "unsupported",
+				state: "not-applicable",
 				reason: "no_validated_quota_source",
 				attemptedAt: fetchedAt,
 			},
@@ -480,7 +480,33 @@ describe("usage page card layout", () => {
 		}
 	});
 
-	test("reduces an unsupported provider card to its name and unavailable title", async () => {
+	test("hides source-less provider cards while keeping populated ones", async () => {
+		const fixtures = pageFixtures();
+		const setup = await renderPage({
+			width: 120,
+			...fixtures,
+			providers: [OPENAI, ZEN, OLLAMA],
+			quotaByProvider: {
+				...fixtures.quotaByProvider,
+				zen: {
+					state: "unsupported",
+					reason: "no_validated_quota_source",
+					attemptedAt: Date.now() - 30_000,
+				},
+			},
+		});
+		try {
+			const frame = setup.captureCharFrame();
+			expect(frame).toContain("OpenAI");
+			expect(frame).toContain("Ollama Cloud");
+			expect(frame).not.toContain("OpenCode / Zen");
+			expect(frame).not.toContain("Quota unavailable");
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("hides an unsupported provider card entirely", async () => {
 		const setup = await renderPage({
 			width: 60,
 			providers: [ZEN],
@@ -494,10 +520,9 @@ describe("usage page card layout", () => {
 		});
 		try {
 			const frame = setup.captureCharFrame();
-			expect(frame).toContain("OpenCode / Zen");
-			expect(frame).toContain("Quota unavailable");
-			expect(frame).not.toContain("no quota source is validated");
-			expect(frame).not.toContain("Last attempt");
+			expect(frame).not.toContain("OpenCode / Zen");
+			expect(frame).not.toContain("Quota unavailable");
+			expect(frame).toContain("Provider usage");
 		} finally {
 			await setup.dispose();
 		}
@@ -582,7 +607,7 @@ describe("usage page card layout", () => {
 			expect(zen.right - zen.left).toBeGreaterThan(openaiWidth);
 			expect(zen.right - zen.left).toBeGreaterThan(ollamaWidth);
 
-			const unavailable = textInFrame(rows, zen, "Quota unavailable");
+			const unavailable = textInFrame(rows, zen, "Quota not applicable");
 			expect(unavailable.row).toBeGreaterThan(zen.top);
 		} finally {
 			await setup.dispose();
