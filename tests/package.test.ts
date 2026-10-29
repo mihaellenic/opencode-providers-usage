@@ -16,12 +16,21 @@ const read = (path: string): string => readFileSync(join(root, path), "utf8");
 const manifest = JSON.parse(read("package.json"));
 const dist = (path: string): string => join(root, "dist", path);
 
-const EXPECTED_DIST_FILES = ["index.js", "rpc.js", "tui.js"];
+const GUI_BUNDLE = "gui-experimental.cjs";
+const CLI_DIST_FILES = ["index.js", "rpc.js", "tui.js"];
+const EXPECTED_DIST_FILES = [GUI_BUNDLE, ...CLI_DIST_FILES];
+const GUI_HOST_MODULES = new Set([
+	"@opencode/plugin/gui",
+	"@opencode/plugin/rpc",
+	"solid-js",
+	"solid-js/web",
+]);
 const EXPECTED_EXPORTS = {
 	".": "./dist/index.js",
 	"./server": "./dist/index.js",
 	"./tui": "./dist/tui.js",
 	"./rpc": "./dist/rpc.js",
+	"./gui-experimental": "./dist/gui-experimental.cjs",
 };
 const ROOT_SHIMS = {
 	"index.js": 'export { default } from "./dist/index.js"',
@@ -31,6 +40,7 @@ const ROOT_SHIMS = {
 const EXPECTED_TARBALL = [
 	"LICENSE",
 	"README.md",
+	"dist/gui-experimental.cjs",
 	"dist/index.js",
 	"dist/rpc.js",
 	"dist/tui.js",
@@ -116,9 +126,9 @@ describe("package manifest", () => {
 	});
 
 	test("declares the host runtime contract without changing peers", () => {
-		expect(manifest.dependencies["@opencode/plugin"]).toBe("2.1.4");
+		expect(manifest.dependencies["@opencode/plugin"]).toBe("2.2.0");
 		expect(manifest.peerDependencies).toEqual({
-			"@opencode/theme": "2.1.4",
+			"@opencode/theme": "2.2.0",
 			"@opentui/core": ">=0.6.8",
 			"@opentui/solid": ">=0.6.8",
 			"solid-js": ">=1.9.0",
@@ -137,7 +147,7 @@ describe("built artifacts", () => {
 		expect(build.status).toBe(0);
 	});
 
-	test("dist contains exactly the three runtime entry files", () => {
+	test("dist contains exactly the CLI entry files and the GUI bundle", () => {
 		expect(readdirSync(join(root, "dist")).sort()).toEqual(EXPECTED_DIST_FILES);
 	});
 
@@ -179,7 +189,7 @@ describe("built artifacts", () => {
 	});
 
 	test("bundles import only node builtins, declared host packages, or externals", () => {
-		for (const file of EXPECTED_DIST_FILES) {
+		for (const file of CLI_DIST_FILES) {
 			const specifiers = importedSpecifiers(readFileSync(dist(file), "utf8"));
 			for (const specifier of specifiers) {
 				expect(specifier.startsWith(".") || specifier.startsWith("/")).toBe(
@@ -192,7 +202,7 @@ describe("built artifacts", () => {
 	});
 
 	test("never imports checkout-only source or root shims", () => {
-		for (const file of EXPECTED_DIST_FILES) {
+		for (const file of CLI_DIST_FILES) {
 			const code = readFileSync(dist(file), "utf8");
 			expect(code).not.toMatch(/["'](?:\.\.?\/)?src\//);
 			expect(code).not.toMatch(/\.tsx?["']/);
@@ -210,7 +220,7 @@ describe("built artifacts", () => {
 	});
 
 	test("does not bundle a second Solid or OpenTUI runtime", () => {
-		for (const file of EXPECTED_DIST_FILES) {
+		for (const file of CLI_DIST_FILES) {
 			const code = readFileSync(dist(file), "utf8");
 			expect(code).not.toMatch(/function createSignal\b/);
 			expect(code).not.toMatch(/function createRoot\b/);
@@ -224,6 +234,41 @@ describe("built artifacts", () => {
 			/React\.createElement|React\.jsx\b|\bcreateElement\(/,
 		);
 		expect(tui).not.toMatch(/<[A-Z][A-Za-z0-9]*[\s/>]/);
+	});
+
+	test("CLI bundles contain no GUI SDK or browser Solid import", () => {
+		for (const file of CLI_DIST_FILES) {
+			const code = readFileSync(dist(file), "utf8");
+			for (const specifier of importedSpecifiers(code)) {
+				expect(specifier).not.toMatch(/^@opencode\/plugin\/gui/);
+				expect(specifier).not.toBe("solid-js/web");
+			}
+			expect(code).not.toContain("@opencode/plugin/gui");
+			expect(code).not.toContain("solid-js/web");
+		}
+	});
+
+	test("GUI bundle is CommonJS requiring only host modules and Node/Electron externals", () => {
+		const code = readFileSync(dist(GUI_BUNDLE), "utf8");
+		expect(code).toContain("exports");
+		expect(code).not.toMatch(/^\s*(?:import|export)\s/m);
+		const required = [
+			...code.matchAll(/\brequire\(\s*["']([^"']+)["']\s*\)/g),
+		].map((match) => match[1] ?? "");
+		expect(required).toContain("@opencode/plugin/gui");
+		for (const specifier of required) {
+			const allowed =
+				GUI_HOST_MODULES.has(specifier) ||
+				specifier.startsWith("node:") ||
+				specifier === "electron";
+			expect(allowed).toBe(true);
+		}
+	});
+
+	test("building twice leaves exactly the expected files", () => {
+		expect(runBuild().status).toBe(0);
+		expect(runBuild().status).toBe(0);
+		expect(readdirSync(join(root, "dist")).sort()).toEqual(EXPECTED_DIST_FILES);
 	});
 
 	test("removes stale dist files on rebuild", () => {
@@ -261,6 +306,12 @@ describe("README distribution contract", () => {
 		}
 		expect(Object.fromEntries(rows)).toEqual(manifest.exports);
 		expect(rows.size).toBe(Object.keys(manifest.exports).length);
+	});
+
+	test("lists the experimental GUI export row", () => {
+		expect(readme).toContain(
+			"| `./gui-experimental` | `./dist/gui-experimental.cjs` |",
+		);
 	});
 
 	test("provides the published npm install path and a separate source-checkout path", () => {
@@ -318,5 +369,17 @@ describe("npm tarball", () => {
 			expect(path).not.toMatch(/^(?:index|tui|rpc)\.tsx?$/);
 			expect(path).not.toMatch(/^(?:bun\.lock|tsconfig\.json)$/);
 		}
+	});
+});
+
+describe("README Desktop GUI statement", () => {
+	const readme = read("README.md");
+
+	test("is experimental, version-qualified, and keeps web/V1/forks unsupported", () => {
+		expect(readme).toContain("Desktop GUI (experimental)");
+		expect(readme).toContain("`@opencode/plugin` `2.2.0`");
+		expect(readme).toContain("Desktop `2.2.1`");
+		expect(readme).toContain("Web, V1, and OpenCode forks are not supported.");
+		expect(readme).toContain("exports five entrypoints");
 	});
 });

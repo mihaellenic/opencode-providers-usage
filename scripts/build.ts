@@ -2,13 +2,20 @@ import { rmSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createSolidTransformPlugin } from "@opentui/solid/bun-plugin";
+import { build as viteBuild } from "vite";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const distDir = `${root}dist`;
 const entrypoints = ["src/index.ts", "src/tui.tsx", "src/rpc.ts"].map(
 	(path) => `${root}${path}`,
 );
-const expectedOutputs = ["index.js", "rpc.js", "tui.js"];
+// Sorted: the GUI bundle emitted by Vite sorts before the Bun outputs.
+const expectedOutputs = [
+	"gui-experimental.cjs",
+	"index.js",
+	"rpc.js",
+	"tui.js",
+];
 
 // Host-provided runtimes stay external so the single copy supplied by OpenCode
 // is used. Solid is also external to avoid a second reactive runtime.
@@ -32,6 +39,14 @@ if (!result.success) {
 	for (const log of result.logs) console.error(log);
 	process.exit(1);
 }
+
+// GUI bundle: Vite runs after Bun and must not empty dist (keeps CLI outputs).
+await viteBuild({
+	root,
+	configFile: `${root}vite.config.ts`,
+	logLevel: "warn",
+	build: { emptyOutDir: false },
+});
 
 const produced = (await readdir(distDir)).sort();
 if (JSON.stringify(produced) !== JSON.stringify(expectedOutputs)) {

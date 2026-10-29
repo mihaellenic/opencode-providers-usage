@@ -12,6 +12,7 @@ import { renderSidebarLines } from "./bar-row";
 import { defaultLocaleContext } from "./format";
 import { resolveSidebarTheme } from "./theme";
 import { buildUsagePageModel } from "./usage-page-model";
+import { orderUsageCards } from "./usage-shared";
 
 const CARD_WIDTH = 56;
 
@@ -101,22 +102,15 @@ export function UsagePage(props: UsagePageProps) {
 				}),
 			);
 		} else {
-			const unavailable = (id: string) => {
-				const state = props.quotaByProvider[id]?.state;
-				return state === "unsupported" || state === "not-applicable";
-			};
-			// Quota widgets share the first rows; source-less accounts follow as
-			// full-width cards, matching the approved mock without provider rules.
 			// Unsupported providers would only repeat "Quota unavailable", so the
-			// page omits them; the sidebar and other views are unaffected.
-			const cards = [
-				...model.cards.filter((card) => !unavailable(card.id)),
-				...model.cards.filter(
-					(card) =>
-						unavailable(card.id) &&
-						props.quotaByProvider[card.id]?.state !== "unsupported",
+			// TUI page omits them before ordering; the sidebar, Desktop GUI and
+			// other views are unaffected.
+			const cards = orderUsageCards(
+				model.cards.filter(
+					(card) => props.quotaByProvider[card.id]?.state !== "unsupported",
 				),
-			];
+				props.quotaByProvider,
+			);
 			children.push(
 				jsx("box", {
 					key: "cards",
@@ -127,11 +121,11 @@ export function UsagePage(props: UsagePageProps) {
 					columnGap: 2,
 					rowGap: 1,
 					marginY: 1,
-					children: cards.map((card) =>
+					children: cards.map(({ card, fullRow }) =>
 						jsx("box", {
 							key: `${card.id}:card`,
 							flexDirection: "column",
-							width: unavailable(card.id) ? "100%" : CARD_WIDTH,
+							width: fullRow ? "100%" : CARD_WIDTH,
 							flexShrink: 0,
 							maxWidth: "100%",
 							border: true,

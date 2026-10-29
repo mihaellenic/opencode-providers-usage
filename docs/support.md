@@ -9,16 +9,45 @@ fails CI.
 
 | Item | Value |
 | --- | --- |
-| OpenCode baseline | `2.1.4` (V2 plugin, RPC, and terminal APIs) |
-| Terminal | OpenCode V2 terminal only; no desktop/web extension, V1 support, or OpenCode fork |
+| Validation history | Historical validation: OpenCode `2.1.4` (V2 plugin, RPC, and terminal APIs). It is not the current tested version. |
+| Current tested versions | The current package SDK is `@opencode/plugin` `2.2.0`, with a clean TUI smoke on CLI `2.2.0` under the candidate SDK and a synthetic smoke on the Desktop `2.2.1` server. OpenCode `2.1.4` hosts were not tested with this build. |
+| Terminal | OpenCode V2 terminal (tested versions above) |
+| OpenTUI | `@opentui/solid` `0.6.8` is retained because `0.7.0` changed glyph rounding in the Ollama credit bar (a behavior change visible in tests). The OpenTUI `0.7.0` peers of SDK `2.2.0` are optional. |
+| Desktop GUI (experimental) | `./gui-experimental` is experimental. Built with SDK `@opencode/plugin` `2.2.0`; smoke-tested only on OpenCode Desktop `2.2.1` (macOS arm64) with synthetic data (a stubbed Claude Code CLI and dummy providers without quota). No minimum Desktop version is recorded. Real provider quota on Desktop is not verified. Results are in [Desktop GUI smoke results](#desktop-gui-smoke-results); nothing about the Desktop GUI is verified beyond the PASS rows of that table. |
+| Not supported | Web is not supported, V1 is not supported, and OpenCode forks are not supported |
 | Development runtime | Bun `1.4.4` (pinned) |
 | Validated platform | macOS, local shared server, file-backed Codex login |
 | Claude Code usage (page only) | Dedicated local CLI source; not a provider or adapter and outside the matrix and machine-checked declarations below. Collector verified on macOS arm64 with Claude Code CLI `2.1.308` only; full-page UI/RPC live integration unverified. |
 | Remote server | Not promised for v1; see [No remote or keychain promise](#no-remote-or-keychain-promise) |
 | Quota source | Provider responses only; no local-token estimates, guessed allowances, inferred refills, or API-spending substitution |
 
+## Desktop GUI smoke results
+
+Experimental. Run on 2026-10-29 against the actual built package (`npm pack` tarball of the working tree, installed with `--ignore-scripts`, loaded from an isolated global config) on OpenCode Desktop `2.2.1` (macOS arm64) with SDK `@opencode/plugin` `2.2.0`. All data is synthetic data: a stub `claude` that prints parser-supported `/usage` JSON (37% session, 64% week) and dummy providers served by a loopback canned model server. This is not real quota validation and not a real-provider or real-account test. Without authentication the product server reports "Quota unavailable" for the dummy providers. A harness-only GUI plugin created sessions and sent canned prompts. The Desktop rewrites the service PATH and appends the stub directory last, so `/usr/bin/security` and other system tools still exist on it; the product never calls them and no such call was observed, but helpers are not claimed to be excluded. Electron ran with `--use-mock-keychain`, an empty HOME and the Codex companion disabled. S1-S12 ran against the actual product server entry; S13 ran the actual product GUI bundle (byte-identical, SHA-256 `2153d427...b06f`) against a test-only fixture backend.
+
+The earlier full synthetic smoke (S1-S13) ran on Desktop `2.2.1` with the previous GUI bundle. The final GUI bundle (SHA-256 `761e180f...`) was exercised only for the composer-model, new-session default, dashboard and Back flows, on Desktop `2.2.2`. The other scenarios were not rerun on `2.2.2`, and the final bundle did not run the full matrix on `2.2.1`.
+
+| # | Scenario | Result | Note |
+| --- | --- | --- | --- |
+| S1 | Lazy first load: no provider-usage request before the panel is shown | PASS | 0 requests and 0 collector runs until the panel opened |
+| S2 | Selected-model summary | PASS | follows the session's model |
+| S3 | Dashboard, cards, Claude rules | PASS | Claude 37% / 64% from the stub (synthetic); model-specific week ignored |
+| S4 | Dashboard Refresh | PASS | refresh requests and a new Claude collection |
+| S5 | Back and focus | PASS | focus returns to the summary button |
+| S6 | Summary line click by real hit-testing | PASS | CDP mouse click on a line opens the dashboard |
+| S7 | Session switch, different models | PASS | each session shows its own provider; model switch updates it |
+| S8 | Hide/show, zero hidden requests | PASS | 0 requests in 20 s hidden |
+| S9 | Real 300000 ms idle refresh | PASS | real clock, no input; one refresh at +296 s, measured from a sample that started 4 s after the idle reset, so about 300000 ms in total |
+| S10 | Two windows, different sessions | PASS | window X owns session B, window Y owns session A; with A hidden and B visible, a step in B refreshed only B and a step in hidden A caused 0 requests in either window |
+| S11 | Model step on a live server drives a refresh | PASS | needs a quiet period (an attempt right after a plugin reload saw none, probably the 15 s request floor, unconfirmed) |
+| S12 | Server stopped and restarted | PASS | panel recovered; a step after restart refreshed again |
+| S13 | Old-contract backend (no `claudeCodeUsage`) | PASS (fixture backend) | test-only fixture, not a real older binary: same wire for list/get/refresh/updated; no Claude card, other cards and Refresh work, 0 collector runs |
+| S14 | Real older OpenCode server binary | NOTRUN | none available; S13 is the only older-contract evidence |
+
+An earlier same-session two-window attempt was inconclusive (the host seems to share panel layout for the same session); S10 supersedes it with different sessions.
+
 Live evidence in this document was gathered on **2026-10-24** and is recorded
-in [`docs/validation.md`](docs/validation.md). The Claude Code print-command
+in [`docs/validation.md`](validation.md). The Claude Code print-command
 observation is separate: it verified the live print-mode `/usage` command only,
 on macOS arm64 with CLI `2.1.308`, and did not live-verify the plugin's
 full-page UI or RPC path.

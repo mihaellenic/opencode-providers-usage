@@ -5,11 +5,15 @@ a full-page provider dashboard for the quota each provider actually reports.
 There are no local-token estimates, guessed allowances, inferred refills, or
 API-spending substitutions.
 
-Baseline: OpenCode `2.1.4` (V2 plugin, RPC, and terminal APIs), Bun `1.4.4`,
-macOS local shared server. The page-only Claude Code collector is verified only
+Historical validation: OpenCode `2.1.4` (V2 plugin, RPC, and terminal APIs) with Bun `1.4.4` on a macOS local shared server. That is not the current tested version: the current package SDK is `@opencode/plugin` `2.2.0`, with a clean TUI smoke on CLI `2.2.0` under the candidate SDK and a synthetic smoke on the Desktop `2.2.1` server. OpenCode `2.1.4` hosts were not tested with this build.
+
+The page-only Claude Code collector is verified only
 on macOS arm64 with Claude Code CLI `2.1.308`; the live print-mode `/usage`
 command was independently verified, but the full-page UI/RPC path was not
-live-verified. V1, desktop/web extensions, and OpenCode forks are not supported.
+live-verified.
+
+Desktop GUI (experimental): the `./gui-experimental` export is an experimental OpenCode Desktop plugin. It is built with SDK `@opencode/plugin` `2.2.0` (Bun `1.4.4`, Vite `7.3.7`) and was smoke-tested only on OpenCode Desktop `2.2.1` on macOS arm64, with a synthetic Claude Code stub and no real provider quota. No minimum Desktop version is recorded; other Desktop versions are untested. The earlier full synthetic smoke (S1-S13) ran on Desktop `2.2.1` with the previous GUI bundle. The final GUI bundle (SHA-256 `761e180f...`) was exercised only for the composer-model, new-session default, dashboard and Back flows, on Desktop `2.2.2`. The other scenarios were not rerun on `2.2.2`, and the final bundle did not run the full matrix on `2.2.1`. See [Desktop GUI smoke results](docs/support.md#desktop-gui-smoke-results): nothing about the Desktop GUI is verified beyond the PASS rows of that table.
+Web, V1, and OpenCode forks are not supported.
 
 ## What it shows
 
@@ -41,7 +45,7 @@ live in [`docs/support.md`](docs/support.md).
 npm install opencode-providers-usage
 ```
 
-The published package exports four entrypoints. Named installs resolve them
+The published package exports five entrypoints. Named installs resolve them
 through the `exports` map:
 
 | Export | Target | Purpose |
@@ -50,6 +54,7 @@ through the `exports` map:
 | `./server` | `./dist/index.js` | Explicit alias for the server plugin |
 | `./tui` | `./dist/tui.js` | Terminal plugin: sidebar slot, `/usage` page, palette commands |
 | `./rpc` | `./dist/rpc.js` | Versioned, validated RPC contract types |
+| `./gui-experimental` | `./dist/gui-experimental.cjs` | Experimental Desktop GUI plugin (CommonJS); see the Desktop GUI note above |
 
 OpenCode loads the `./tui` export beside the main plugin automatically; do not
 add a second plugin entry for it. The package ships the built `dist/` files and

@@ -706,7 +706,13 @@ async function runUsageCommand(
 		return null;
 	}
 
-	let reader: ReturnType<ClaudeUsageChild["stdout"]["getReader"]>;
+	// Structural on purpose: ReturnType<getReader> resolves to the BYOB overload
+	// under the DOM lib used by the browser typecheck.
+	let reader: {
+		read(): Promise<{ done: boolean; value?: Uint8Array | undefined }>;
+		cancel(): Promise<void>;
+		releaseLock(): void;
+	};
 	try {
 		reader = child.stdout.getReader();
 	} catch {
