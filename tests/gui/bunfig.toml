@@ -1,0 +1,4 @@
+# Applied when bun runs from this directory. The root script passes the same
+# preload explicitly because `bun test --config` does not apply preloads.
+[test]
+preload = ["./dom-setup.ts"]

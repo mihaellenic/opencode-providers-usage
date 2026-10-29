@@ -1,4 +1,4 @@
-import { Rpc } from "@opencode/plugin";
+import { Rpc } from "@opencode/plugin/rpc";
 import type { ClaudeUsage } from "./claude-code/usage";
 import {
 	isQuotaPresentation,

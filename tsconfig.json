@@ -15,5 +15,6 @@
     "forceConsistentCasingInFileNames": true,
     "types": ["bun"]
   },
-  "include": ["src", "tests"]
+  "include": ["src", "tests"],
+  "exclude": ["src/gui", "src/gui.tsx", "tests/gui"]
 }
