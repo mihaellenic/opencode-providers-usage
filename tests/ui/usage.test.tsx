@@ -732,9 +732,10 @@ describe("page constraints and narrow terminals", () => {
 		const serialized = JSON.stringify(model);
 		expect(serialized).not.toContain("90%");
 		expect(serialized).not.toContain("10%");
-		expect(serialized).toContain(UNAVAILABLE_NO_CURRENT_COPY);
-		// Shared-plan rows are sidebar-only omissions; they never reach the page.
-		expect(serialized).not.toContain("20%");
+		// The fresh shared plan is the primary metric, so its row renders and the
+		// expired app section is suppressed rather than reported.
+		expect(serialized).toContain("20%");
+		expect(serialized).not.toContain(UNAVAILABLE_NO_CURRENT_COPY);
 		expect(model.cards[0]).not.toHaveProperty("updated");
 
 		const allExpired = revalidateQuota(
@@ -758,7 +759,15 @@ describe("page constraints and narrow terminals", () => {
 		});
 		const staleSerialized = JSON.stringify(staleModel);
 		expect(staleSerialized).not.toContain("90%");
-		expect(staleModel.cards[0]?.lines).toEqual([]);
+		// An expired shared-plan section is now reported instead of hidden.
+		expect(staleModel.cards[0]?.lines).toEqual([
+			{
+				id: "0:shared-plan:status",
+				kind: "status",
+				text: `Shared: ${UNAVAILABLE_NO_CURRENT_COPY}`,
+				tone: "error",
+			},
+		]);
 	});
 });
 
@@ -860,25 +869,9 @@ describe("host-rendered wrappers", () => {
 					},
 				},
 				{
+					// The plan fetch failed, so the app rows are the fallback and the
+					// plan failure is reported.
 					scope: "shared-plan",
-					result: {
-						state: "available",
-						metrics: [
-							windowMetric({
-								id: "secondary",
-								label: "Secondary",
-								windowSeconds: 18_000,
-								remainingPercent: 70,
-								usedPercent: 30,
-								resetsAt: SECONDARY_RESET,
-							}),
-						],
-						fetchedAt: NOW - 12_000,
-						expiresAt: NOW + 48_000,
-					},
-				},
-				{
-					scope: "app",
 					result: {
 						state: "unavailable",
 						reason: "rate_limited",
@@ -919,7 +912,7 @@ describe("host-rendered wrappers", () => {
 			expect(wide).toContain("7d");
 			expect(wide).toContain("10%");
 			expect(wide).toContain("resets 6d 2h");
-			expect(wide).not.toContain("Shared");
+			expect(wide).toContain("Shared");
 			expect(wide).not.toContain("70%");
 			expect(wide.replace(/\s+/g, "")).toContain(
 				"Quotaunavailable:theproviderratelimit".replace(/\s+/g, ""),
@@ -944,7 +937,7 @@ describe("host-rendered wrappers", () => {
 			expect(narrow).toContain("7d");
 			expect(narrow).toContain("10%");
 			expect(narrow.replace(/\s+/g, "")).toContain("resets6d2h");
-			expect(narrow).not.toContain("Shared");
+			expect(narrow).toContain("Shared");
 			expect(narrow).not.toContain("70%");
 			expect(narrow).not.toContain("updated");
 			expect(narrow).not.toContain("View all providers");

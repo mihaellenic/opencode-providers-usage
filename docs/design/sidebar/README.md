@@ -23,6 +23,9 @@ Renders:
   `· resets 6d 20h`).
 - Window rows use duration-only labels (`5h`, `7d`) sorted by duration
   ascending.
+- OpenAI shows the shared ChatGPT plan windows when available (with a
+  `Limit reached` error row when the provider reports exhaustion) and hides the
+  app-scope windows; app windows are the fallback when the plan read fails.
 - Ollama renders the credit pair (`$33.47 / $60.00 used` / `+$4.27 credits`);
   the derived total pool is folded into that pair and never shown separately.
 - A provider with no quota source reduces to its name plus
@@ -34,7 +37,9 @@ Renders:
   the sidebar widget for that provider: same header name, same rows, same
   compact duration labels, same countdown resets, same tones. The page adds no
   rows of its own — no update-age cell, no absolute reset timestamps, no
-  `Total credits` row, no shared-plan rows, no configured-cap row.
+  `Total credits` row, no configured-cap row. Shared-plan windows and a
+  `Limit reached` row appear exactly as in the sidebar; app rows appear only
+  when no shared-plan section is available.
 - The card header uses the host registry display name (for example `OpenAI`),
   falling back to the declared provider name when the host has no label.
 - Cards share a row when the terminal is wide enough and stack when narrow; a

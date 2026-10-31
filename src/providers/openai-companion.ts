@@ -537,6 +537,31 @@ function parsePlanSection(
 		return invalidSection();
 	}
 
+	// Exhaustion is taken from the reported state, never inferred from percents.
+	// `allowed` is the complement of `limit_reached`; a contradictory pair is
+	// rejected the same way contradictory used/remaining values are.
+	const limitReached: unknown = rateLimit.limit_reached;
+	const allowed: unknown = rateLimit.allowed;
+	if (limitReached !== undefined && typeof limitReached !== "boolean") {
+		return invalidSection();
+	}
+	if (allowed !== undefined && typeof allowed !== "boolean") {
+		return invalidSection();
+	}
+	if (
+		limitReached !== undefined &&
+		allowed !== undefined &&
+		limitReached !== !allowed
+	) {
+		return invalidSection();
+	}
+	const reached =
+		limitReached !== undefined
+			? limitReached
+			: allowed !== undefined
+				? !allowed
+				: undefined;
+
 	return {
 		ok: true,
 		section: {
@@ -546,6 +571,7 @@ function parsePlanSection(
 				metrics,
 				fetchedAt,
 				expiresAt: sectionExpiry(fetchedAt, metrics, companion),
+				...(reached === true ? { limitReached: true } : {}),
 			},
 		},
 	};

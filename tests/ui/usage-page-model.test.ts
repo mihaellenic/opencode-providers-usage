@@ -127,6 +127,15 @@ describe("buildUsagePageModel", () => {
 						remainingPercent: 41,
 						resetsAt: NOW + 8 * 3_600_000,
 					},
+					{
+						kind: "window",
+						id: "shared-secondary",
+						scope: "shared-plan",
+						label: "Secondary",
+						windowSeconds: 604_800,
+						remainingPercent: 68,
+						resetsAt: NOW + 2 * 86_400_000 + 4 * 3_600_000,
+					},
 				],
 			},
 		]);
@@ -138,8 +147,12 @@ describe("buildUsagePageModel", () => {
 		]);
 		expect(model.cards[0]).not.toHaveProperty("updated");
 		const serialized = JSON.stringify(model);
+		// The shared plan rows replace the app rows, so only plan rows reach the
+		// page.
 		expect(serialized).toContain("5h");
 		expect(serialized).toContain("7d");
+		expect(serialized).toContain("32%");
+		expect(serialized).not.toContain(":app:");
 		expect(serialized).toContain("resets 8h");
 		expect(serialized).not.toContain("Configured app cap");
 		expect(serialized).not.toContain("Shared plan");
@@ -276,16 +289,22 @@ describe("buildUsagePageModel", () => {
 					{
 						scope: "shared-plan",
 						result: {
-							state: "available",
-							metrics: [],
-							fetchedAt: NOW - 12_000,
-							expiresAt: NOW + 48_000,
+							state: "unavailable",
+							reason: "timeout",
+							attemptedAt: NOW - 5_000,
 						},
 					},
 				],
 			},
 		});
+		// No available plan section, so the app failure is still reported.
 		expect(partial.cards[0]?.lines).toEqual([
+			{
+				id: "1:shared-plan:status",
+				kind: "status",
+				text: `Shared: ${unavailableCopy("unavailable", "timeout")}`,
+				tone: "error",
+			},
 			{
 				id: "0:app:status",
 				kind: "status",

@@ -22,6 +22,46 @@ const REASON_CODES = [
 	"no_validated_quota_source",
 ] as const;
 
+describe("limitReached contract", () => {
+	function planRead(extra: Record<string, unknown>): unknown {
+		return {
+			state: "available",
+			authSource: "codex-companion",
+			sections: [
+				{
+					scope: "shared-plan",
+					result: {
+						state: "available",
+						metrics: [
+							{
+								kind: "window",
+								id: "plan",
+								scope: "shared-plan",
+								label: "Shared plan primary limit",
+								windowSeconds: 18_000,
+								usedPercent: 100,
+							},
+						],
+						fetchedAt: 1,
+						expiresAt: 2,
+						...extra,
+					},
+				},
+			],
+		};
+	}
+
+	test("accepts_boolean_limit_reached_and_rejects_other_types", () => {
+		expect(isQuotaRead(planRead({}))).toBe(true);
+		expect(isQuotaRead(planRead({ limitReached: true }))).toBe(true);
+		expect(isQuotaRead(planRead({ limitReached: false }))).toBe(true);
+		expect(isQuotaRead(planRead({ limitReached: "true" }))).toBe(false);
+		expect(isQuotaRead(planRead({ limitReached: 1 }))).toBe(false);
+		expect(isQuotaRead(planRead({ limitReached: null }))).toBe(false);
+		expect(isQuotaRead(planRead({ unknownKey: true }))).toBe(false);
+	});
+});
+
 describe("quota contracts", () => {
 	test("rejects_secret_fields_and_accepts_scoped_quota", () => {
 		expect(

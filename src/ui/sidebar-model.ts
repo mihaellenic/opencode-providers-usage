@@ -116,10 +116,7 @@ function compactDuration(seconds: number): string {
 function windowCounts(read: SectionsRead) {
 	const counts = new Map<string, number>();
 	for (const section of read.sections) {
-		if (
-			section.scope === "shared-plan" ||
-			section.result.state !== "available"
-		) {
+		if (section.result.state !== "available") {
 			continue;
 		}
 		for (const metric of section.result.metrics) {
@@ -252,12 +249,18 @@ function windowDisplay(
 		};
 	}
 	if (metric.usedPercent !== undefined) {
-		// Used-only input never proves how much remains. Show the reported usage
-		// without inferring a remaining percentage or a healthy tone.
+		// Used-only input never proves how much remains, so no remaining
+		// percentage is inferred. The tone follows the same thresholds as the
+		// reported-remaining branch, applied to the reported used percentage.
 		return {
 			value: {
 				text: `${formatPercent(metric.usedPercent, locale)}%`,
-				tone: "normal",
+				tone:
+					metric.usedPercent >= 100
+						? "error"
+						: metric.usedPercent >= 80
+							? "warning"
+							: "normal",
 			},
 			fill: Math.min(1, Math.max(0, metric.usedPercent / 100)),
 		};
@@ -459,6 +462,15 @@ function availableLines(
 	}
 
 	const lines: SidebarLine[] = [];
+	if (section.scope === "shared-plan" && result.limitReached === true) {
+		// Exhaustion is the provider's reported state, never inferred from percents.
+		lines.push({
+			id: `${sectionIndex}:${section.scope}:limit`,
+			kind: "status",
+			text: "Limit reached",
+			tone: "error",
+		});
+	}
 	const windowDurations = new Map<string, number>();
 	for (let index = 0; index < result.metrics.length; index += 1) {
 		const metric = result.metrics[index];
@@ -553,9 +565,12 @@ function retrySuffix(retryAfterMs: number | undefined): string {
 /**
  * Pure structured sidebar view model. Every cell and status is derived from
  * reported quota fields; formatted display strings are never parsed back into
- * data. Source section and non-window metric order is preserved, window rows
- * are stably sorted by duration ascending, missing values stay absent, and no
- * allowance, total, or remaining value is inferred.
+ * data. Shared-plan sections render first and suppress app-scope sections
+ * while one is available (app rows are the fallback otherwise); remaining
+ * section and non-window metric order is preserved, window rows are stably
+ * sorted by duration ascending, missing values stay absent, and no allowance,
+ * total, or remaining value is inferred. A reported `limitReached` plan gets an
+ * explicit "Limit reached" status row.
  *
  * `displayName` is the caller-resolved host provider name. The model never
  * reads host state: when the name is absent, empty, or just the providerID, the
@@ -612,11 +627,24 @@ export function buildSidebarModel(
 
 	const counts = windowCounts(read);
 	const usedLabels = new Set<string>();
-	read.sections.forEach((section, sectionIndex) => {
-		// The sidebar card surfaces app-scope windows; shared-plan stays on the
-		// full usage page. This filter is local to the sidebar model.
-		if (section.scope === "shared-plan") {
-			return;
+	// The shared plan is the primary metric: when a shared-plan section is
+	// available, app-scope sections (available or not) are suppressed. Otherwise
+	// they render as the fallback. Shared-plan sections come first, the rest keep
+	// source order.
+	const hasPlan = read.sections.some(
+		(section) =>
+			section.scope === "shared-plan" && section.result.state === "available",
+	);
+	const ordered = read.sections
+		.map((section, sectionIndex) => ({ section, sectionIndex }))
+		.sort(
+			(left, right) =>
+				Number(right.section.scope === "shared-plan") -
+				Number(left.section.scope === "shared-plan"),
+		);
+	for (const { section, sectionIndex } of ordered) {
+		if (hasPlan && section.scope === "app") {
+			continue;
 		}
 		if (section.result.state !== "available") {
 			lines.push({
@@ -625,12 +653,12 @@ export function buildSidebarModel(
 				text: `${SCOPE_NAMES[section.scope]}: ${unavailableCopy(section.result.state, section.result.reason)}${retrySuffix(section.result.retryAfterMs)}`,
 				tone: statusTone(section.result.state),
 			});
-			return;
+			continue;
 		}
 		lines.push(
 			...availableLines(section, sectionIndex, locale, now, counts, usedLabels),
 		);
-	});
+	}
 
 	if (read.sections.length === 0) {
 		lines.push({

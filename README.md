@@ -20,10 +20,11 @@ Web, V1, and OpenCode forks are not supported.
 - **Ollama Cloud** — included credits, purchased credits, and their separate
   total, read through the existing `ollama-cloud` API-key connection with
   `GET https://ollama.com/api/balance`. No extra key setup.
-- **OpenAI ChatGPT token-sharing + Codex companion (on by default)** — current-app
-  windows and shared-plan windows, kept separate with their own durations and
-  reset times. Uses the existing file-backed Codex login read-only. OpenCode's
-  native inference sign-in is preserved.
+- **OpenAI ChatGPT token-sharing + Codex companion (on by default)** — the
+  shared ChatGPT plan windows (with a "Limit reached" status when the plan is
+  exhausted), each with its own duration and reset time, falling back to the
+  current-app windows when the plan read fails. Uses the existing file-backed
+  Codex login read-only. OpenCode's native inference sign-in is preserved.
 - **Everything else** — an explicit unsupported, not-applicable, or
   auth-required explanation. There is no generic credential forwarding and no
   advertised support for an unvalidated source.

@@ -102,7 +102,7 @@ describe("buildSidebarModel", () => {
 			}),
 		).toEqual(plain);
 	});
-	test("sorts compact app-only window bars and ignores shared-plan", () => {
+	test("shared-plan rows replace app rows, ordered 5h then 7d", () => {
 		const model = buildSidebarModel(
 			{ ...provider, name: "OpenAI ChatGPT with Codex companion" },
 			{
@@ -111,27 +111,34 @@ describe("buildSidebarModel", () => {
 				sections: [
 					available("app", [
 						windowMetric({
-							id: "week",
+							id: "app-week",
 							scope: "app",
 							windowSeconds: 604_800,
 							remainingPercent: 75,
-							resetsAt: NOW + 2 * 86_400_000 + 4 * 3_600_000,
 						}),
 						windowMetric({
-							id: "five-hour",
+							id: "app-five-hour",
 							scope: "app",
 							windowSeconds: 18_000,
 							remainingPercent: 41,
-							resetsAt: NOW + 8 * 3_600_000,
 						}),
 					]),
 					available("shared-plan", [
 						windowMetric({
-							id: "shared",
+							id: "plan-week",
+							scope: "shared-plan",
+							label: "Shared plan secondary limit",
+							windowSeconds: 604_800,
+							remainingPercent: 68,
+							resetsAt: NOW + 2 * 86_400_000 + 4 * 3_600_000,
+						}),
+						windowMetric({
+							id: "plan-five-hour",
 							scope: "shared-plan",
 							label: "Shared plan primary limit",
-							remainingPercent: 9,
-							resetsAt: NOW + 21 * 86_400_000,
+							windowSeconds: 18_000,
+							remainingPercent: 0,
+							resetsAt: NOW + 8 * 3_600_000,
 						}),
 					]),
 				],
@@ -144,27 +151,194 @@ describe("buildSidebarModel", () => {
 		expect(model.provider).toBe("OpenAI");
 		expect(model.lines).toEqual([
 			{
-				id: "0:app:five-hour",
+				id: "1:shared-plan:plan-five-hour",
 				kind: "window",
 				label: "5h",
-				value: { text: "59%", tone: "normal" },
-				fill: 0.59,
+				value: { text: "100%", tone: "error" },
+				fill: 1,
 				reset: "resets 8h",
 			},
 			{
-				id: "0:app:week",
+				id: "1:shared-plan:plan-week",
 				kind: "window",
 				label: "7d",
-				value: { text: "25%", tone: "normal" },
-				fill: 0.25,
+				value: { text: "32%", tone: "normal" },
+				fill: 0.32,
 				reset: "resets 2d 4h",
 			},
 		]);
 		const serialized = JSON.stringify(model);
-		expect(serialized).not.toContain("shared-plan");
-		expect(serialized).not.toContain("Account-wide");
-		expect(serialized).not.toContain("ChatGPT Plus");
-		expect(serialized).not.toContain("ago");
+		expect(serialized).not.toContain(":app:");
+		expect(serialized).not.toContain("59%");
+		expect(serialized).not.toContain("25%");
+	});
+
+	test("falls back to app rows plus the plan failure when the plan is unavailable", () => {
+		const model = buildSidebarModel(
+			provider,
+			partial([
+				available("app", [
+					windowMetric({
+						id: "app-week",
+						scope: "app",
+						remainingPercent: 75,
+					}),
+				]),
+				{
+					scope: "shared-plan",
+					result: {
+						state: "unavailable",
+						reason: "timeout",
+						attemptedAt: NOW - 5000,
+					},
+				},
+			]),
+			LOCALE,
+			NOW,
+		);
+		expect(model.lines.map((line) => line.id)).toEqual([
+			"1:shared-plan:status",
+			"0:app:app-week",
+		]);
+		expect(model.lines[0]).toMatchObject({
+			kind: "status",
+			text: `Shared: ${unavailableCopy("unavailable", "timeout")}`,
+			tone: "error",
+		});
+		expect(model.lines[1]).toMatchObject({
+			kind: "window",
+			label: "7d",
+			value: { text: "25%", tone: "normal" },
+		});
+	});
+
+	test("an unavailable app section is suppressed while a plan section is available", () => {
+		const model = buildSidebarModel(
+			provider,
+			partial([
+				{
+					scope: "app",
+					result: {
+						state: "unavailable",
+						reason: "timeout",
+						attemptedAt: NOW - 5000,
+					},
+				},
+				available("shared-plan", [
+					windowMetric({
+						id: "plan",
+						scope: "shared-plan",
+						usedPercent: 10,
+					}),
+				]),
+			]),
+			LOCALE,
+			NOW,
+		);
+		expect(model.lines.map((line) => line.id)).toEqual(["1:shared-plan:plan"]);
+	});
+
+	test("a reported limit-reached plan renders a Limit reached status row", () => {
+		const section = available("shared-plan", [
+			windowMetric({ id: "plan", scope: "shared-plan", usedPercent: 40 }),
+		]);
+		const model = buildSidebarModel(
+			provider,
+			partial([
+				{
+					scope: "shared-plan",
+					result: { ...section.result, limitReached: true },
+				},
+			]),
+			LOCALE,
+			NOW,
+		);
+		expect(model.lines[0]).toEqual({
+			id: "0:shared-plan:limit",
+			kind: "status",
+			text: "Limit reached",
+			tone: "error",
+		});
+		expect(model.lines[1]).toMatchObject({ kind: "window" });
+
+		const notReached = buildSidebarModel(
+			provider,
+			partial([section]),
+			LOCALE,
+			NOW,
+		);
+		expect(JSON.stringify(notReached)).not.toContain("Limit reached");
+	});
+
+	test("used-only windows tone by used percent thresholds", () => {
+		const tone = (usedPercent: number) => {
+			const model = buildSidebarModel(
+				provider,
+				partial([
+					available("shared-plan", [
+						windowMetric({ id: "w", scope: "shared-plan", usedPercent }),
+					]),
+				]),
+				LOCALE,
+				NOW,
+			);
+			const line = model.lines[0];
+			return line?.kind === "window" ? line.value.tone : undefined;
+		};
+		expect(tone(79)).toBe("normal");
+		expect(tone(80)).toBe("warning");
+		expect(tone(99)).toBe("warning");
+		expect(tone(100)).toBe("error");
+	});
+
+	test("live-shaped plan payload renders 100%, 32% and Limit reached but no app values", () => {
+		const plan = available("shared-plan", [
+			windowMetric({
+				id: "openai-plan-primary",
+				scope: "shared-plan",
+				label: "Shared plan primary limit",
+				windowSeconds: 18_000,
+				usedPercent: 100,
+			}),
+			windowMetric({
+				id: "openai-plan-secondary",
+				scope: "shared-plan",
+				label: "Shared plan secondary limit",
+				windowSeconds: 604_800,
+				usedPercent: 32,
+			}),
+		]);
+		const model = buildSidebarModel(
+			provider,
+			partial([
+				available("app", [
+					windowMetric({
+						id: "openai-app-primary",
+						scope: "app",
+						windowSeconds: 18_000,
+						usedPercent: 75,
+					}),
+					windowMetric({
+						id: "openai-app-secondary",
+						scope: "app",
+						windowSeconds: 604_800,
+						usedPercent: 28,
+					}),
+				]),
+				{
+					scope: "shared-plan",
+					result: { ...plan.result, limitReached: true },
+				},
+			]),
+			LOCALE,
+			NOW,
+		);
+		const serialized = JSON.stringify(model);
+		expect(serialized).toContain("100%");
+		expect(serialized).toContain("32%");
+		expect(serialized).toContain("Limit reached");
+		expect(serialized).not.toContain("75%");
+		expect(serialized).not.toContain("28%");
 	});
 
 	test("uses the caller display name and falls back to the summary name", () => {
@@ -204,40 +378,6 @@ describe("buildSidebarModel", () => {
 			buildSidebarModel(summary, read, LOCALE, NOW, summary.providerID)
 				.provider,
 		).toBe(summary.name);
-	});
-
-	test("shared-plan sections and failures produce no sidebar lines", () => {
-		const model = buildSidebarModel(
-			provider,
-			partial([
-				{
-					scope: "shared-plan",
-					result: {
-						state: "available",
-						metrics: [
-							windowMetric({
-								id: "shared-window",
-								scope: "shared-plan",
-								remainingPercent: 40,
-							}),
-						],
-						fetchedAt: NOW - 1000,
-						expiresAt: NOW + 60_000,
-					},
-				},
-				{
-					scope: "shared-plan",
-					result: {
-						state: "unavailable",
-						reason: "timeout",
-						attemptedAt: NOW - 5000,
-					},
-				},
-			]),
-			LOCALE,
-			NOW,
-		);
-		expect(model.lines).toEqual([]);
 	});
 
 	test("renders a used bar and folds purchased credits into the stat row", () => {
@@ -399,7 +539,7 @@ describe("buildSidebarModel", () => {
 		);
 	});
 
-	test("shows used percent with thresholds and keeps used-only neutral", () => {
+	test("shows used percent with thresholds and applies them to used-only windows", () => {
 		const model = buildSidebarModel(
 			provider,
 			{
@@ -459,7 +599,7 @@ describe("buildSidebarModel", () => {
 			"30d",
 		]);
 		expect(windows.map((line) => line.value)).toEqual([
-			{ text: "91%", tone: "normal" },
+			{ text: "91%", tone: "warning" },
 			{ text: "10%", tone: "normal" },
 			{ text: "80%", tone: "warning" },
 			{ text: "100%", tone: "error" },
@@ -996,6 +1136,12 @@ describe("buildSidebarModel", () => {
 
 		expect(model.lines).toEqual([
 			{
+				id: "1:shared-plan:status",
+				kind: "status",
+				text: `Shared: ${unavailableCopy("unavailable", "rate_limited")} · retry after 5s`,
+				tone: "error",
+			},
+			{
 				id: "0:app:valid",
 				kind: "window",
 				label: "7d",
@@ -1007,7 +1153,7 @@ describe("buildSidebarModel", () => {
 		expect(JSON.stringify(model)).not.toContain("ago");
 	});
 
-	test("preserves source section order when a failure precedes a valid section", () => {
+	test("lists the plan failure first, then the app fallback rows, when a failure precedes a valid section", () => {
 		const model = buildSidebarModel(
 			provider,
 			partial([
@@ -1038,8 +1184,11 @@ describe("buildSidebarModel", () => {
 			LOCALE,
 			NOW,
 		);
-		expect(model.lines.map((line) => line.id)).toEqual(["1:app:valid"]);
-		expect(model.lines[0]).toMatchObject({
+		expect(model.lines.map((line) => line.id)).toEqual([
+			"0:shared-plan:status",
+			"1:app:valid",
+		]);
+		expect(model.lines[1]).toMatchObject({
 			label: "7d",
 			value: { text: "25%", tone: "normal" },
 			fill: 0.25,

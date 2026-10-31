@@ -834,6 +834,76 @@ describe("shared-plan windows", () => {
 		expect(planMetrics[0]?.remainingPercent).toBe(95);
 	});
 
+	test("limit_reached_true_sets_limitReached_on_the_plan_section", async () => {
+		const h = harness({
+			plan: planPayload({
+				primary_window: planWindow({
+					used_percent: 100,
+					remaining_percent: 0,
+					limit_window_seconds: 18_000,
+				}),
+				secondary_window: planWindow({
+					used_percent: 32,
+					remaining_percent: 68,
+				}),
+				allowed: false,
+				limit_reached: true,
+			}),
+		});
+		const read = await h.read();
+		expect(isQuotaRead(read)).toBe(true);
+		expect(section(read, "shared-plan")).toMatchObject({
+			state: "available",
+			limitReached: true,
+		});
+		expect(section(read, "app")).not.toHaveProperty("limitReached");
+	});
+
+	test("allowed_false_alone_sets_limitReached", async () => {
+		const h = harness({
+			plan: planPayload({ primary_window: planWindow(), allowed: false }),
+		});
+		expect(section(await h.read(), "shared-plan")).toMatchObject({
+			limitReached: true,
+		});
+	});
+
+	test("not_reached_or_absent_state_omits_the_limitReached_key", async () => {
+		for (const state of [
+			{},
+			{ limit_reached: false },
+			{ allowed: true },
+			{ allowed: true, limit_reached: false },
+		]) {
+			const h = harness({
+				plan: planPayload({ primary_window: planWindow(), ...state }),
+			});
+			const result = section(await h.read(), "shared-plan");
+			expect(result.state).toBe("available");
+			expect(result).not.toHaveProperty("limitReached");
+		}
+	});
+
+	test("non_boolean_or_contradictory_limit_state_is_invalid_response", async () => {
+		for (const state of [
+			{ limit_reached: "true" },
+			{ limit_reached: 1 },
+			{ limit_reached: null },
+			{ allowed: "false" },
+			{ allowed: null },
+			{ allowed: true, limit_reached: true },
+			{ allowed: false, limit_reached: false },
+		]) {
+			const h = harness({
+				plan: planPayload({ primary_window: planWindow(), ...state }),
+			});
+			expect(section(await h.read(), "shared-plan")).toMatchObject({
+				state: "unavailable",
+				reason: "invalid_response",
+			});
+		}
+	});
+
 	test("skips_a_single_null_plan_window", async () => {
 		const h = harness({
 			plan: planPayload({

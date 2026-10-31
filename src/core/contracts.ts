@@ -35,6 +35,8 @@ export type SectionResult =
 			fetchedAt: number;
 			expiresAt: number;
 			configuredAppCapPercent?: number;
+			/** Reported plan exhaustion; present only when the provider says reached. */
+			limitReached?: boolean;
 	  }
 	| {
 			state: UnavailableState;
@@ -284,6 +286,10 @@ function isOptionalNonNegativeNumber(
 	return value === undefined || isNonNegativeNumber(value);
 }
 
+function isOptionalBoolean(value: unknown): value is boolean | undefined {
+	return value === undefined || typeof value === "boolean";
+}
+
 function isPositiveNumber(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0;
 }
@@ -355,12 +361,14 @@ function isSectionResult(value: unknown): value is SectionResult {
 				"fetchedAt",
 				"expiresAt",
 				"configuredAppCapPercent",
+				"limitReached",
 			]) &&
 			Array.isArray(value.metrics) &&
 			value.metrics.every(isQuotaMetric) &&
 			isNonNegativeNumber(value.fetchedAt) &&
 			isNonNegativeNumber(value.expiresAt) &&
-			isOptionalNonNegativeNumber(value.configuredAppCapPercent)
+			isOptionalNonNegativeNumber(value.configuredAppCapPercent) &&
+			isOptionalBoolean(value.limitReached)
 		);
 	}
 

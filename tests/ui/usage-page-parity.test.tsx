@@ -48,8 +48,10 @@ const OLLAMA: ProviderSummary = {
 
 const DISPLAY_NAMES = { openai: "OpenAI" };
 
-// Includes page-only data (a shared-plan section and a configured cap) that the
-// sidebar does not render. A parity card must drop it too.
+// Includes an app section (suppressed while the shared plan is available) and a
+// configured cap that the sidebar does not render. The shared-plan section is
+// the primary metric and reports an exhausted limit. A parity card must drop
+// the app rows and cap too.
 function openaiRead(): QuotaRead {
 	return {
 		state: "available",
@@ -93,14 +95,24 @@ function openaiRead(): QuotaRead {
 					metrics: [
 						{
 							kind: "window",
-							id: "shared-primary",
+							id: "plan-week",
 							scope: "shared-plan",
-							label: "Primary",
+							label: "Shared plan secondary limit",
+							windowSeconds: 604_800,
+							usedPercent: 32,
+							resetsAt: NOW + 2 * 86_400_000 + 4 * 3_600_000,
+						},
+						{
+							kind: "window",
+							id: "plan-five-hour",
+							scope: "shared-plan",
+							label: "Shared plan primary limit",
 							windowSeconds: 18_000,
-							remainingPercent: 41,
+							usedPercent: 100,
 							resetsAt: NOW + 8 * 3_600_000,
 						},
 					],
+					limitReached: true,
 					fetchedAt: NOW - 30_000,
 					expiresAt: NOW + 60_000,
 				},
@@ -288,8 +300,11 @@ describe("usage page cards match the sidebar widgets exactly", () => {
 			expect(all).not.toContain("resets Oct");
 			expect(all).toContain("5h");
 			expect(all).toContain("7d");
-			expect(all).toContain("59%");
-			expect(all).toContain("25%");
+			expect(all).toContain("100%");
+			expect(all).toContain("32%");
+			expect(all).toContain("Limit reached");
+			expect(all).not.toContain("59%");
+			expect(all).not.toContain("25%");
 		} finally {
 			await setup.dispose();
 		}

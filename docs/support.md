@@ -65,7 +65,7 @@ or auth method that is not named here.
 | Signed-in local Ollama cloud proxy | Unsupported in v1; installed endpoint absent. No automatic daemon upgrade or private-key extraction. | Local `404`; newer source only. |
 | Purely local Ollama inference | Not applicable: no provider cloud allowance for that model. Never label this as unlimited. | Scope distinction. |
 | OpenAI current ChatGPT token-sharing OAuth, companion explicitly opted out | Quota unavailable because the companion is disabled by configuration; explain the opt-out. | Live rejection and OpenAI maintainer statement. |
-| Current token-sharing OAuth plus valid, file-backed, matching Codex companion login | Supported: current-app windows and shared-plan windows, separately labeled. Native inference login unchanged. | Live-validated combination. |
+| Current token-sharing OAuth plus valid, file-backed, matching Codex companion login | Supported: the shared ChatGPT plan windows (with a reported "Limit reached" state) are the primary metric; current-app windows are the fallback when the plan read fails. Native inference login unchanged. | Live-validated combination. |
 | Same combination, but missing/expired/mismatched companion login | Unavailable with the specific companion reason; no fallback to Codex totals, another app, or another saved account. | Required fail-closed behavior. |
 | Keychain/encrypted Codex cache | Unsupported companion storage in v1. Never silently read a stale file that does not represent the configured active store. | Not live-validated. |
 | OpenAI inference API key | Account/subscription quota reporting unsupported in v1. API spending/rate limits are not ChatGPT subscription allowance. | No implemented quota source. |
@@ -358,10 +358,17 @@ prompt's currently selected provider.
   used (`━`, base color) versus remaining (`─`, muted), the used percentage,
   then an inline `· resets 8h` countdown. Rows sort by duration ascending
   (`5h` before `7d`); equal durations keep source order and de-dup suffixes.
-  `shared-plan` sections are omitted from the sidebar card. Reported
-  `remainingPercent` is inverted to used percent and keeps the percentage
-  thresholds; `usedPercent`-only input stays neutral; no reported percentage
-  keeps the muted `Unknown (not reported)` fallback without a bar.
+  An available `shared-plan` section is the primary metric: it renders first
+  and the app-scope sections (rows and failures) are suppressed. When no
+  shared-plan section is available, app-scope rows render as the fallback
+  alongside the plan failure status. A plan whose reported
+  `rate_limit.limit_reached` is true (or `allowed` is false) gets a
+  `Limit reached` error status row before its windows; exhaustion is never
+  inferred from percentages. Reported `remainingPercent` is inverted to used
+  percent and keeps the percentage thresholds; `usedPercent`-only input uses
+  the same thresholds on the reported used percent (warning from 80, error at
+  100) without inferring a remaining percentage; no reported percentage keeps
+  the muted `Unknown (not reported)` fallback without a bar.
 - Included credits with a positive reported allowance render one compact bar
   row followed by one stat row. The bar row shows used (`━`, base color) versus
   remaining (`─`, muted), then the used percentage and an inline
@@ -387,8 +394,9 @@ The `/usage` page renders one framed, padded card per connected provider and,
 when its page-only CLI collection succeeds, a separate Claude Code card. Each
 provider card body is exactly the sidebar widget for that provider: same header
 name, rows, tones, duration labels, and countdown resets. The page adds no
-rows of its own; shared-plan windows, configured caps, and the derived total
-pool stay hidden, exactly as the compact sidebar hides them. The Claude Code
+rows of its own; configured caps and the derived total pool stay hidden, and
+shared-plan windows (with their `Limit reached` row) show exactly as the compact
+sidebar shows them. The Claude Code
 card is not a provider card: it uses the same rows and tones under its own
 identity, is hidden while collecting and on failure, and Ctrl+R starts a new
 collection independently of the provider loop.
