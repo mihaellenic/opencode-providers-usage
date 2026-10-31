@@ -117,18 +117,13 @@ function Line(props: { line: SidebarLine; subject: string }): JSX.Element {
 
 export type ProviderCardProps = {
 	card: UsagePageCard;
-	fullRow: boolean;
 	error?: string | undefined;
 	onRetry?: (() => void) | undefined;
 };
 
 export function ProviderCard(props: ProviderCardProps): JSX.Element {
 	return (
-		<article
-			class="ou-card"
-			data-provider={props.card.id}
-			data-full-row={props.fullRow ? "true" : "false"}
-		>
+		<article class="ou-card" data-provider={props.card.id}>
 			<h3 class="ou-card-name">{props.card.name}</h3>
 			<UsageLines lines={props.card.lines} subject={props.card.name} />
 			<Show when={props.error}>

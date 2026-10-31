@@ -12,7 +12,7 @@ import { renderSidebarLines } from "./bar-row";
 import { defaultLocaleContext } from "./format";
 import { resolveSidebarTheme } from "./theme";
 import { buildUsagePageModel } from "./usage-page-model";
-import { orderUsageCards } from "./usage-shared";
+import { partitionUsageCards } from "./usage-shared";
 
 const CARD_WIDTH = 56;
 
@@ -102,50 +102,63 @@ export function UsagePage(props: UsagePageProps) {
 				}),
 			);
 		} else {
-			// Unsupported providers would only repeat "Quota unavailable", so the
-			// TUI page omits them before ordering; the sidebar, Desktop GUI and
-			// other views are unaffected.
-			const cards = orderUsageCards(
-				model.cards.filter(
-					(card) => props.quotaByProvider[card.id]?.state !== "unsupported",
-				),
+			// Unsupported and not-applicable providers have no quota to show, so
+			// they move to one muted note below the grid instead of cards. An
+			// all-unavailable inventory renders only that note and no empty grid.
+			const { cards, unavailableNote } = partitionUsageCards(
+				model.cards,
 				props.quotaByProvider,
 			);
-			children.push(
-				jsx("box", {
-					key: "cards",
-					width: "100%",
-					maxWidth: CARD_WIDTH * 2 + 2,
-					flexDirection: "row",
-					flexWrap: "wrap",
-					columnGap: 2,
-					rowGap: 1,
-					marginY: 1,
-					children: cards.map(({ card, fullRow }) =>
-						jsx("box", {
-							key: `${card.id}:card`,
-							flexDirection: "column",
-							width: fullRow ? "100%" : CARD_WIDTH,
-							flexShrink: 0,
-							maxWidth: "100%",
-							border: true,
-							borderStyle: "single",
-							borderColor: theme.muted,
-							padding: 1,
-							children: [
-								jsx("text", {
-									key: `${card.id}:name`,
-									maxWidth: "100%",
-									wrapMode: "word",
-									fg: theme.base,
-									children: card.name,
-								}),
-								...renderSidebarLines(card.lines, theme),
-							],
-						}),
-					),
-				}),
-			);
+			if (cards.length > 0) {
+				children.push(
+					jsx("box", {
+						key: "cards",
+						width: "100%",
+						maxWidth: CARD_WIDTH * 2 + 2,
+						flexDirection: "row",
+						flexWrap: "wrap",
+						columnGap: 2,
+						rowGap: 1,
+						marginY: 1,
+						children: cards.map((card) =>
+							jsx("box", {
+								key: `${card.id}:card`,
+								flexDirection: "column",
+								width: CARD_WIDTH,
+								flexShrink: 0,
+								maxWidth: "100%",
+								border: true,
+								borderStyle: "single",
+								borderColor: theme.muted,
+								padding: 1,
+								children: [
+									jsx("text", {
+										key: `${card.id}:name`,
+										maxWidth: "100%",
+										wrapMode: "word",
+										fg: theme.base,
+										children: card.name,
+									}),
+									...renderSidebarLines(card.lines, theme),
+								],
+							}),
+						),
+					}),
+				);
+			}
+			if (unavailableNote !== undefined) {
+				children.push(
+					jsx("text", {
+						key: "unavailable",
+						maxWidth: "100%",
+						wrapMode: "word",
+						fg: theme.muted,
+						marginTop: cards.length > 0 ? 0 : 1,
+						marginBottom: 1,
+						children: unavailableNote,
+					}),
+				);
+			}
 		}
 		children.push(
 			jsx("box", {

@@ -64,6 +64,11 @@ const transient: QuotaRead = {
 	reason: "transport",
 	attemptedAt: 0,
 };
+const notApplicable: QuotaRead = {
+	state: "not-applicable",
+	reason: "no_validated_quota_source",
+	attemptedAt: 0,
+};
 
 const listOf = (...items: [string, QuotaRead][]): QuotaListResult => ({
 	version: QUOTA_RPC_VERSION,
@@ -149,6 +154,25 @@ function mount(h: ReturnType<typeof setup>): HTMLElement {
 	disposers.push(render(() => <App controller={h.controller} />, root));
 	return root;
 }
+
+/** The CSS block whose selector list is exactly `selector`. */
+function ruleFor(selector: string): string {
+	const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const match = new RegExp(`(?:^|[\\s},])${escaped}\\s*\\{([^}]*)\\}`).exec(
+		styles,
+	);
+	if (match === null) throw new Error(`no CSS rule for ${selector}`);
+	return match[1] ?? "";
+}
+
+const retryOf = (root: ParentNode, id: string): HTMLButtonElement => {
+	const card = root.querySelector(`[data-provider="${id}"]`);
+	const found = [...(card?.querySelectorAll("button") ?? [])].find(
+		(b) => b.textContent?.trim() === "Retry",
+	);
+	if (found === undefined) throw new Error(`no Retry button for ${id}`);
+	return found;
+};
 
 const button = (root: HTMLElement): HTMLButtonElement => {
 	const found = root.querySelector("button");
@@ -288,25 +312,174 @@ describe("DashboardView", () => {
 		);
 	});
 
-	test("orders cards and marks unavailable ones full row", async () => {
+	test("orders available cards and moves unsupported and not-applicable ones into one note after the grid", async () => {
 		const h = setup();
 		const root = mount(h);
 		await openDashboard(h, root);
 		h.rpc.resolve(
 			"list",
-			listOf(["a", unsupported], ["b", transient], ["c", windowQuota(10)]),
+			listOf(
+				["a", unsupported],
+				["b", transient],
+				["c", windowQuota(10)],
+				["d", notApplicable],
+			),
 		);
 		await flush();
 		const order = [...root.querySelectorAll("[data-provider]")].map((n) =>
 			n.getAttribute("data-provider"),
 		);
-		expect(order).toEqual(["b", "c", "a"]);
+		expect(order).toEqual(["b", "c"]);
+		expect(root.querySelector('[data-provider="a"]')).toBeNull();
+		expect(root.querySelector('[data-provider="d"]')).toBeNull();
+		expect(root.querySelector("[data-full-row]")).toBeNull();
+
+		const note = root.querySelector("[data-unavailable-note]");
+		expect(note?.textContent).toBe(
+			"Usage unavailable for: Provider a, Provider d",
+		);
+		expect(note?.tagName).toBe("P");
+		const grid = root.querySelector(".ou-grid");
+		expect(grid).not.toBeNull();
+		expect(note).not.toBeNull();
 		expect(
-			root.querySelector('[data-provider="a"]')?.getAttribute("data-full-row"),
-		).toBe("true");
-		expect(
-			root.querySelector('[data-provider="c"]')?.getAttribute("data-full-row"),
-		).toBe("false");
+			(grid?.compareDocumentPosition(note as Node) ?? 0) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).not.toBe(0);
+	});
+
+	test("an all-unavailable inventory shows only the note, with no grid and no disconnected message", async () => {
+		const h = setup();
+		const root = mount(h);
+		await openDashboard(h, root);
+		h.rpc.resolve("list", listOf(["a", unsupported], ["b", notApplicable]));
+		await flush();
+		expect(root.querySelector("[data-provider]")).toBeNull();
+		expect(root.querySelector(".ou-grid")).toBeNull();
+		expect(root.querySelector("[data-unavailable-note]")?.textContent).toBe(
+			"Usage unavailable for: Provider a, Provider b",
+		);
+		expect(root.textContent).not.toContain("No connected providers.");
+	});
+
+	test("an inventory without unavailable providers renders no note", async () => {
+		const h = setup();
+		const root = mount(h);
+		await openDashboard(h, root);
+		h.rpc.resolve("list", listOf(["a", windowQuota(10)], ["b", transient]));
+		await flush();
+		expect(root.querySelector("[data-unavailable-note]")).toBeNull();
+		expect(root.querySelectorAll("[data-provider]").length).toBe(2);
+	});
+
+	test("an empty inventory keeps the disconnected message and no note", async () => {
+		const h = setup();
+		const root = mount(h);
+		await openDashboard(h, root);
+		h.rpc.resolve("list", listOf());
+		await flush();
+		expect(root.textContent).toContain("No connected providers.");
+		expect(root.querySelector("[data-unavailable-note]")).toBeNull();
+	});
+
+	test("the note is muted and wraps a long unbroken display name", async () => {
+		const longName =
+			"Unbroken-Quarterly-Enterprise-Gateway-Provider-Name-Without-Spaces";
+		const h = setup();
+		const root = mount(h);
+		await openDashboard(h, root);
+		h.rpc.resolve("list", {
+			version: QUOTA_RPC_VERSION,
+			providers: [
+				{
+					provider: { ...summary("a"), name: longName },
+					quota: unsupported,
+				},
+			],
+		});
+		await flush();
+		const note = root.querySelector("[data-unavailable-note]");
+		expect(note?.textContent).toBe(`Usage unavailable for: ${longName}`);
+		expect(note?.getAttribute("data-tone")).toBe("muted");
+		expect(ruleFor(".ou-note[data-unavailable-note]")).toMatch(
+			/overflow-wrap:\s*anywhere/,
+		);
+		expect(ruleFor(".ou-note[data-unavailable-note]")).not.toMatch(
+			/white-space/,
+		);
+		expect(ruleFor('.ou-dashboard [data-tone="muted"]')).toMatch(
+			/opacity:\s*0\.\d+/,
+		);
+	});
+
+	test("a failed refresh of an unsupported provider keeps its card with Retry, and a successful Retry returns it to the note", async () => {
+		const h = setup();
+		const root = mount(h);
+		await openDashboard(h, root);
+		h.rpc.resolve(
+			"list",
+			listOf(["a", unsupported], ["b", windowQuota(10)], ["d", notApplicable]),
+		);
+		await flush();
+		expect(root.querySelector("[data-unavailable-note]")?.textContent).toBe(
+			"Usage unavailable for: Provider a, Provider d",
+		);
+
+		buttonByText(root, "Refresh").click();
+		await flush();
+		// Pending refreshes settle oldest first: a, then b and d.
+		h.rpc.reject("refresh", new Error("boom"));
+		h.rpc.resolve("refresh", getOf("b", windowQuota(10)));
+		h.rpc.resolve("refresh", getOf("d", notApplicable));
+		await flush();
+
+		const failed = root.querySelector('[data-provider="a"]');
+		expect(failed?.textContent).toContain("Refresh failed");
+		expect(retryOf(root, "a")).toBeDefined();
+		expect(root.querySelector("[data-unavailable-note]")?.textContent).toBe(
+			"Usage unavailable for: Provider d",
+		);
+
+		retryOf(root, "a").click();
+		await flush();
+		expect(h.retried).toEqual(["a"]);
+		h.rpc.reject("refresh", new Error("still down"));
+		await flush();
+		expect(retryOf(root, "a")).toBeDefined();
+		expect(root.querySelector("[data-unavailable-note]")?.textContent).toBe(
+			"Usage unavailable for: Provider d",
+		);
+
+		retryOf(root, "a").click();
+		await flush();
+		h.rpc.resolve("refresh", getOf("a", unsupported));
+		await flush();
+		expect(root.querySelector('[data-provider="a"]')).toBeNull();
+		expect(root.querySelector("[data-unavailable-note]")?.textContent).toBe(
+			"Usage unavailable for: Provider a, Provider d",
+		);
+	});
+
+	test("a transient failure stays a card whose Retry works while the unsupported provider stays in the note", async () => {
+		const h = setup();
+		const root = mount(h);
+		await openDashboard(h, root);
+		h.rpc.resolve("list", listOf(["a", unsupported], ["b", transient]));
+		await flush();
+		buttonByText(root, "Refresh").click();
+		await flush();
+		// Oldest first: a settles successfully, then b fails.
+		h.rpc.resolve("refresh", getOf("a", unsupported));
+		h.rpc.reject("refresh", new Error("boom"));
+		await flush();
+		const card = root.querySelector('[data-provider="b"]');
+		expect(card?.textContent).toContain("Refresh failed");
+		expect(root.querySelector("[data-unavailable-note]")?.textContent).toBe(
+			"Usage unavailable for: Provider a",
+		);
+		retryOf(root, "b").click();
+		await flush();
+		expect(h.retried).toEqual(["b"]);
 	});
 
 	test("Claude card is absent while collecting, on failure and method_not_found, present on success", async () => {
@@ -437,7 +610,6 @@ describe("ProviderCard", () => {
 			render(
 				() => (
 					<ProviderCard
-						fullRow={false}
 						card={{
 							id: "x",
 							name: "X",

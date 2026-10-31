@@ -1,7 +1,7 @@
 import { createMemo, For, type JSX, Show } from "solid-js";
 import { defaultLocaleContext } from "../ui/format";
 import { buildUsagePageModel } from "../ui/usage-page-model";
-import { orderUsageCards } from "../ui/usage-shared";
+import { partitionUsageCards } from "../ui/usage-shared";
 import { ProviderCard } from "./ProviderCard";
 import { focusSummary, useController } from "./solid";
 import type { UsageController } from "./state";
@@ -32,15 +32,26 @@ export function DashboardView(props: DashboardViewProps): JSX.Element {
 			now: props.now?.() ?? Date.now(),
 			claudeUsage: dashboard.claude,
 		});
-		const quotaByProvider = Object.fromEntries(
-			dashboard.providers.map((view) => [view.provider.providerID, view.quota]),
+		// A card with a visible refresh error must stay a card with its Retry,
+		// even when its last successful read is unsupported or not-applicable.
+		const partitionQuota = Object.fromEntries(
+			dashboard.providers
+				.filter(
+					(view) =>
+						dashboard.cardErrors[view.provider.providerID] === undefined,
+				)
+				.map((view) => [view.provider.providerID, view.quota]),
 		);
+		const partition = partitionUsageCards(model.cards, partitionQuota);
 		return {
 			inventory: dashboard.inventory,
 			cardErrors: dashboard.cardErrors,
 			title: model.title,
 			subtitle: model.subtitle,
-			cards: orderUsageCards(model.cards, quotaByProvider),
+			/** Connected inventory before partitioning decides the disconnected state. */
+			total: model.cards.length,
+			cards: partition.cards,
+			unavailableNote: partition.unavailableNote,
 		};
 	});
 
@@ -77,25 +88,33 @@ export function DashboardView(props: DashboardViewProps): JSX.Element {
 				</p>
 			</Show>
 			<Show
-				when={state().inventory !== "ready" || state().cards.length > 0}
+				when={state().inventory !== "ready" || state().total > 0}
 				fallback={<p class="ou-note">No connected providers.</p>}
 			>
-				<div class="ou-grid">
-					<For each={state().cards}>
-						{({ card, fullRow }) => (
-							<ProviderCard
-								card={card}
-								fullRow={fullRow}
-								error={state().cardErrors[card.id]}
-								onRetry={
-									state().cardErrors[card.id] === undefined
-										? undefined
-										: () => props.controller.retry(card.id)
-								}
-							/>
-						)}
-					</For>
-				</div>
+				<Show when={state().cards.length > 0}>
+					<div class="ou-grid">
+						<For each={state().cards}>
+							{(card) => (
+								<ProviderCard
+									card={card}
+									error={state().cardErrors[card.id]}
+									onRetry={
+										state().cardErrors[card.id] === undefined
+											? undefined
+											: () => props.controller.retry(card.id)
+									}
+								/>
+							)}
+						</For>
+					</div>
+				</Show>
+				<Show when={state().unavailableNote}>
+					{(note) => (
+						<p class="ou-note" data-unavailable-note data-tone="muted">
+							{note()}
+						</p>
+					)}
+				</Show>
 			</Show>
 		</section>
 	);

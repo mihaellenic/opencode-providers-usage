@@ -113,20 +113,31 @@ export function createClaudeUsageRequest(options: {
 	};
 }
 
+const UNAVAILABLE_NOTE_PREFIX = "Usage unavailable for: ";
+
 /**
- * Quota widgets share the first rows; source-less accounts follow as
- * full-width cards, matching the approved mock without provider rules.
+ * Splits page cards into the card grid and one combined note. Only providers
+ * whose read is `unsupported` or `not-applicable` move to the note; their
+ * resolved display names are listed in input order. Every other card, including
+ * pending, loading, transient-failure, and Claude Code cards, keeps its input
+ * order. Inputs are not mutated.
  */
-export function orderUsageCards(
+export function partitionUsageCards(
 	cards: UsagePageCard[],
 	quotaByProvider: Record<string, QuotaRead>,
-): { card: UsagePageCard; fullRow: boolean }[] {
+): { cards: UsagePageCard[]; unavailableNote: string | undefined } {
 	const unavailable = (id: string) => {
 		const state = quotaByProvider[id]?.state;
 		return state === "unsupported" || state === "not-applicable";
 	};
-	return [
-		...cards.filter((card) => !unavailable(card.id)),
-		...cards.filter((card) => unavailable(card.id)),
-	].map((card) => ({ card, fullRow: unavailable(card.id) }));
+	const names = cards
+		.filter((card) => unavailable(card.id))
+		.map((card) => card.name);
+	return {
+		cards: cards.filter((card) => !unavailable(card.id)),
+		unavailableNote:
+			names.length === 0
+				? undefined
+				: `${UNAVAILABLE_NOTE_PREFIX}${names.join(", ")}`,
+	};
 }

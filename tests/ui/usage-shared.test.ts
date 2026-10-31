@@ -7,7 +7,7 @@ import {
 	claudeCountdownRefreshMs,
 	createClaudeUsageRequest,
 	newestQuotaObservation,
-	orderUsageCards,
+	partitionUsageCards,
 	successfulFetchedAt,
 } from "../../src/ui/usage-shared";
 
@@ -174,36 +174,143 @@ test("countdown repaint cadence is bounded and adapts to seconds", () => {
 	).toBeUndefined();
 });
 
-describe("orderUsageCards", () => {
-	const cards: UsagePageCard[] = ["a", "b", "c"].map((id) => ({
+describe("partitionUsageCards", () => {
+	const card = (id: string, name = id): UsagePageCard => ({
 		id,
-		name: id,
+		name,
 		lines: [],
-	}));
+	});
+	const available: QuotaRead = {
+		state: "available",
+		authSource: "opencode",
+		sections: [],
+	};
+	const transient: QuotaRead = {
+		state: "unavailable",
+		reason: "transport",
+		attemptedAt: 0,
+	};
+	const notApplicable: QuotaRead = {
+		state: "not-applicable",
+		reason: "no_validated_quota_source",
+		attemptedAt: 0,
+	};
 
-	for (const state of ["unsupported", "not-applicable"] as const) {
-		test(`moves ${state} cards last as full rows`, () => {
-			const a: QuotaRead =
-				state === "unsupported"
-					? { state, reason: "unsupported", attemptedAt: 0 }
-					: { state, reason: "not-applicable", attemptedAt: 0 };
-			const out = orderUsageCards(cards, {
-				a,
-				b: { state: "unavailable", reason: "transport", attemptedAt: 0 },
-				c: { state: "available", authSource: "opencode", sections: [] },
-			});
-			expect(out.map((e) => e.card.id)).toEqual(["b", "c", "a"]);
-			expect(out.map((e) => e.fullRow)).toEqual([false, false, true]);
+	test("moves unsupported and not-applicable cards into one combined note", () => {
+		const cards = [
+			card("zen", "OpenCode"),
+			card("ollama", "Ollama Cloud"),
+			card("openai", "OpenAI"),
+		];
+		const out = partitionUsageCards(cards, {
+			zen: unsupportedRead(),
+			ollama: notApplicable,
+			openai: available,
 		});
-	}
+		expect(out.cards.map((c) => c.id)).toEqual(["openai"]);
+		expect(out.unavailableNote).toBe(
+			"Usage unavailable for: OpenCode, Ollama Cloud",
+		);
+	});
 
-	test("a transient failure retains its relative position", () => {
-		const out = orderUsageCards(cards, {
-			a: { state: "unavailable", reason: "transport", attemptedAt: 0 },
-			b: { state: "available", authSource: "opencode", sections: [] },
-			c: { state: "unavailable", reason: "transport", attemptedAt: 0 },
+	test("note lists resolved names in input order, not state or map order", () => {
+		const cards = [
+			card("b", "Beta Custom"),
+			card("a", "Alpha Custom"),
+			card("c", "Gamma"),
+		];
+		const out = partitionUsageCards(cards, {
+			a: notApplicable,
+			c: available,
+			b: unsupportedRead(),
 		});
-		expect(out.map((e) => e.card.id)).toEqual(["a", "b", "c"]);
-		expect(out.map((e) => e.fullRow)).toEqual([false, false, false]);
+		expect(out.unavailableNote).toBe(
+			"Usage unavailable for: Beta Custom, Alpha Custom",
+		);
+	});
+
+	test("preserves every remaining card in input order", () => {
+		const cards = [
+			card("a"),
+			card("u1"),
+			card("b"),
+			card("t"),
+			card("c"),
+			card("u2"),
+		];
+		const out = partitionUsageCards(cards, {
+			a: available,
+			u1: unsupportedRead(),
+			b: available,
+			t: transient,
+			c: available,
+			u2: notApplicable,
+		});
+		expect(out.cards.map((c) => c.id)).toEqual(["a", "b", "t", "c"]);
+	});
+
+	test("returns no note when no card is unavailable", () => {
+		const cards = [card("a"), card("b")];
+		const out = partitionUsageCards(cards, {
+			a: available,
+			b: transient,
+		});
+		expect(out.cards).toEqual(cards);
+		expect(out.unavailableNote).toBeUndefined();
+	});
+
+	test("all-unavailable input yields no cards and a note", () => {
+		const out = partitionUsageCards([card("a", "A"), card("b", "B")], {
+			a: unsupportedRead(),
+			b: notApplicable,
+		});
+		expect(out.cards).toEqual([]);
+		expect(out.unavailableNote).toBe("Usage unavailable for: A, B");
+	});
+
+	test("empty input yields no cards and no note", () => {
+		expect(partitionUsageCards([], {})).toEqual({
+			cards: [],
+			unavailableNote: undefined,
+		});
+	});
+
+	test("missing reads stay visible as cards", () => {
+		const cards = [card("pending", "Pending"), card("ok", "Ok")];
+		const out = partitionUsageCards(cards, { ok: available });
+		expect(out.cards.map((c) => c.id)).toEqual(["pending", "ok"]);
+		expect(out.unavailableNote).toBeUndefined();
+	});
+
+	test("transient failures stay visible as cards", () => {
+		const cards = [card("a"), card("b")];
+		const out = partitionUsageCards(cards, {
+			a: transient,
+			b: { state: "auth-required", reason: "expired", attemptedAt: 0 },
+		});
+		expect(out.cards).toEqual(cards);
+		expect(out.unavailableNote).toBeUndefined();
+	});
+
+	test("a Claude card without a quota-map entry stays a card", () => {
+		const claude = card("claude-code", "Claude Code");
+		const out = partitionUsageCards([card("zen", "OpenCode"), claude], {
+			zen: unsupportedRead(),
+		});
+		expect(out.cards).toEqual([claude]);
+		expect(out.unavailableNote).toBe("Usage unavailable for: OpenCode");
+	});
+
+	test("does not mutate its inputs", () => {
+		const cards = [card("u", "U"), card("a", "A")];
+		const quota: Record<string, QuotaRead> = {
+			u: unsupportedRead(),
+			a: available,
+		};
+		const cardsBefore = structuredClone(cards);
+		const quotaBefore = structuredClone(quota);
+		partitionUsageCards(cards, quota);
+		expect(cards).toEqual(cardsBefore);
+		expect(quota).toEqual(quotaBefore);
 	});
 });

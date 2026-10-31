@@ -63,7 +63,6 @@ export const styles = `
   border-radius: 0.5em;
   padding: 0.6em 0.75em;
 }
-.ou-card[data-full-row="true"] { grid-column: 1 / -1; }
 .ou-card-name { margin: 0 0 0.4em; font-size: 1em; font-weight: 600; overflow-wrap: anywhere; }
 .ou-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.1em 0.6em; margin: 0.25em 0; min-width: 0; overflow-wrap: anywhere; }
 .ou-label { flex: 0 0 auto; opacity: 0.75; }
@@ -76,4 +75,5 @@ export const styles = `
 .ou-summary [data-tone="error"], .ou-dashboard [data-tone="error"] { font-weight: 700; text-decoration: underline; }
 .ou-error { margin: 0.4em 0 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; }
 .ou-note { margin: 0.25em 0; }
+.ou-note[data-unavailable-note] { overflow-wrap: anywhere; }
 `;

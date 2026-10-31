@@ -3,6 +3,7 @@ import { PluginContextProvider } from "@opencode/plugin/tui";
 import { RGBA } from "@opentui/core";
 import { testRender } from "@opentui/solid";
 import { jsx } from "@opentui/solid/jsx-runtime";
+import type { ClaudeUsage } from "../../src/claude-code/usage";
 import type { ProviderSummary, QuotaRead } from "../../src/core/contracts";
 import {
 	defaultLocaleContext,
@@ -222,6 +223,8 @@ async function renderPage(options: {
 	width: number;
 	providers: ProviderSummary[];
 	quotaByProvider: Record<string, QuotaRead>;
+	displayNames?: Record<string, string>;
+	claudeUsage?: ClaudeUsage | null;
 }) {
 	const { context } = mockHostContext();
 	const setup = await testRender(
@@ -232,6 +235,8 @@ async function renderPage(options: {
 					return jsx(UsagePageHost, {
 						providers: options.providers,
 						quotaByProvider: options.quotaByProvider,
+						displayNames: options.displayNames,
+						claudeUsage: options.claudeUsage,
 						refresh: () => {},
 						back: () => {},
 					});
@@ -480,7 +485,7 @@ describe("usage page card layout", () => {
 		}
 	});
 
-	test("hides source-less provider cards while keeping populated ones", async () => {
+	test("moves unsupported provider cards into the note while keeping populated ones", async () => {
 		const fixtures = pageFixtures();
 		const setup = await renderPage({
 			width: 120,
@@ -499,30 +504,9 @@ describe("usage page card layout", () => {
 			const frame = setup.captureCharFrame();
 			expect(frame).toContain("OpenAI");
 			expect(frame).toContain("Ollama Cloud");
-			expect(frame).not.toContain("OpenCode / Zen");
+			expect(frame).toContain("Usage unavailable for: OpenCode / Zen");
+			expect(frame.split("OpenCode / Zen").length - 1).toBe(1);
 			expect(frame).not.toContain("Quota unavailable");
-		} finally {
-			await setup.dispose();
-		}
-	});
-
-	test("hides an unsupported provider card entirely", async () => {
-		const setup = await renderPage({
-			width: 60,
-			providers: [ZEN],
-			quotaByProvider: {
-				zen: {
-					state: "unsupported",
-					reason: "no_validated_quota_source",
-					attemptedAt: Date.now() - 30_000,
-				},
-			},
-		});
-		try {
-			const frame = setup.captureCharFrame();
-			expect(frame).not.toContain("OpenCode / Zen");
-			expect(frame).not.toContain("Quota unavailable");
-			expect(frame).toContain("Provider usage");
 		} finally {
 			await setup.dispose();
 		}
@@ -560,7 +544,7 @@ describe("usage page card layout", () => {
 		}
 	});
 
-	test("at 180 columns frames OPENAI and OLLAMA side by side above a full-width ZEN card when input interleaves ZEN", async () => {
+	test("at 180 columns frames OPENAI and OLLAMA side by side and notes ZEN below the grid when input interleaves ZEN", async () => {
 		const fixtures = pageFixtures();
 		// ZEN is source-less, so the page intentionally groups it last while
 		// preserving the input order within each group. Listing it between the
@@ -576,7 +560,10 @@ describe("usage page card layout", () => {
 
 			const openai = cardFrame(rows, "OpenAI");
 			const ollama = cardFrame(rows, "Ollama Cloud");
-			const zen = cardFrame(rows, "OpenCode / Zen");
+			const note = textAt(rows, "Usage unavailable for: OpenCode / Zen");
+			expect(note.row).toBeGreaterThan(openai.bottom);
+			expect(note.row).toBeGreaterThan(ollama.bottom);
+			expect(rows[note.row]).not.toContain("│");
 
 			expect(openai.top).toBe(ollama.top);
 			expect(openai.bottom).toBe(ollama.bottom);
@@ -599,16 +586,7 @@ describe("usage page card layout", () => {
 			expect(frameContent(rows, ollama)).toContain(squash(percent(16.5)));
 			expect(frameContent(rows, openai)).not.toContain("Updated");
 			expect(frameContent(rows, ollama)).not.toContain("Total credits");
-
-			expect(zen.top).toBeGreaterThan(openai.bottom);
-			expect(zen.top).toBeGreaterThan(ollama.bottom);
-			expect(zen.left).toBe(openai.left);
-			expect(zen.right).toBe(ollama.right);
-			expect(zen.right - zen.left).toBeGreaterThan(openaiWidth);
-			expect(zen.right - zen.left).toBeGreaterThan(ollamaWidth);
-
-			const unavailable = textInFrame(rows, zen, "Quota not applicable");
-			expect(unavailable.row).toBeGreaterThan(zen.top);
+			expect(rows.join("\n")).not.toContain("Quota not applicable");
 		} finally {
 			await setup.dispose();
 		}
@@ -631,11 +609,9 @@ describe("usage page card layout", () => {
 
 			const openai = cardFrame(rows, "OpenAI");
 			const ollama = cardFrame(rows, "Ollama Cloud");
-			const zen = cardFrame(rows, "OpenCode / Zen");
+			const note = textAt(rows, "Usage unavailable for: OpenCode / Zen");
 
-			expect(
-				Math.max(openai.right, ollama.right, zen.right),
-			).toBeLessThanOrEqual(179);
+			expect(Math.max(openai.right, ollama.right)).toBeLessThanOrEqual(179);
 
 			// Two columns at most: OpenAI and Ollama share a row, then the
 			// third quota card wraps instead of forming a third column.
@@ -648,13 +624,9 @@ describe("usage page card layout", () => {
 			expect(future.top).toBeGreaterThan(ollama.bottom);
 			expect(future.left).toBe(openai.left);
 			expect(future.right).toBe(openai.right);
-			expect(zen.top).toBeGreaterThan(future.bottom);
-			expect(zen.top).toBeGreaterThan(openai.bottom);
-			expect(zen.top).toBeGreaterThan(ollama.bottom);
-			expect(zen.left).toBe(openai.left);
-			expect(zen.right).toBe(ollama.right);
-			expect(zen.right - zen.left).toBeGreaterThan(openai.right - openai.left);
-			expect(zen.right - zen.left).toBeGreaterThan(ollama.right - ollama.left);
+			expect(note.row).toBeGreaterThan(future.bottom);
+			expect(note.row).toBeGreaterThan(openai.bottom);
+			expect(note.row).toBeGreaterThan(ollama.bottom);
 		} finally {
 			await setup.dispose();
 		}
@@ -669,7 +641,7 @@ describe("usage page card layout", () => {
 
 			const openai = cardFrame(rows, "OpenAI");
 			const ollama = cardFrame(rows, "Ollama Cloud");
-			const zen = cardFrame(rows, "OpenCode / Zen");
+			const note = textAt(rows, "Usage unavailable for: OpenCode / Zen");
 
 			// Medium width must still fit a two-column grid: side-by-side cards
 			// share both their top and bottom edge.
@@ -682,13 +654,10 @@ describe("usage page card layout", () => {
 			const ollamaWidth = ollama.right - ollama.left;
 			expect(Math.abs(openaiWidth - ollamaWidth)).toBeLessThanOrEqual(1);
 
-			// The source-less card spans the full grid below both columns.
-			expect(zen.top).toBeGreaterThan(openai.bottom);
-			expect(zen.top).toBeGreaterThan(ollama.bottom);
-			expect(zen.left).toBe(openai.left);
-			expect(zen.right).toBe(ollama.right);
-			expect(zen.right - zen.left).toBeGreaterThan(openaiWidth);
-			expect(zen.right - zen.left).toBeGreaterThan(ollamaWidth);
+			// The source-less provider is a muted note below the grid, not a card.
+			expect(note.row).toBeGreaterThan(openai.bottom);
+			expect(note.row).toBeGreaterThan(ollama.bottom);
+			expect(rows[note.row]).not.toContain("│");
 
 			// Provider names stay whole inside the narrower cards.
 			for (const [label, frame] of [
@@ -731,17 +700,15 @@ describe("usage page card layout", () => {
 
 			const openai = cardFrame(rows, "OpenAI");
 			const ollama = cardFrame(rows, "Ollama Cloud");
-			const zen = cardFrame(rows, "OpenCode / Zen");
+			const note = textAt(rows, "Usage unavailable for: OpenCode / Zen");
 
 			expect(openai.bottom).toBeLessThan(ollama.top);
-			expect(ollama.bottom).toBeLessThan(zen.top);
+			expect(ollama.bottom).toBeLessThan(note.row);
 			for (const frame of [openai, ollama]) {
 				expect(frame.left).toBe(openai.left);
 				expect(frame.right).toBe(openai.right);
 				expect(frame.right - frame.left + 1).toBe(56);
 			}
-			expect(zen.left).toBe(openai.left);
-			expect(zen.right).toBeGreaterThanOrEqual(openai.right);
 
 			for (const [label, frame] of [
 				["OpenAI", openai],
@@ -753,7 +720,7 @@ describe("usage page card layout", () => {
 			}
 
 			// Card padding keeps painted content one cell clear of every border.
-			for (const frame of [openai, ollama, zen]) {
+			for (const frame of [openai, ollama]) {
 				for (let row = frame.top + 1; row < frame.bottom; row += 1) {
 					const line = rows[row] ?? "";
 					expect(line[frame.left + 1]).toBe(" ");
@@ -762,20 +729,185 @@ describe("usage page card layout", () => {
 			}
 
 			const footer = textAt(rows, "[esc] back");
-			expect(footer.row).toBeGreaterThan(zen.bottom);
+			expect(footer.row).toBeGreaterThan(note.row);
 
-			// The footer's top border is a full-width divider between the cards
+			// The footer's top border is a full-width divider between the note
 			// and the key hints, not a continuation of any card frame.
 			const dividerRow = rows.findIndex(
-				(line, row) => row > zen.bottom && /^─+$/.test(line.trim()),
+				(line, row) => row > note.row && /^─+$/.test(line.trim()),
 			);
-			expect(dividerRow).toBeGreaterThan(zen.bottom);
+			expect(dividerRow).toBeGreaterThan(note.row);
 			expect(dividerRow).toBeLessThan(footer.row);
-			expect(rows[dividerRow]?.trim().length).toBe(zen.right - zen.left + 1);
+			expect(rows[dividerRow]?.trim().length).toBeGreaterThan(
+				openai.right - openai.left + 1,
+			);
 
 			expect(rows.slice(footer.row).join("\n").replace(/\s+/g, "")).toContain(
 				"[ctrl+r]refresh",
 			);
+		} finally {
+			await setup.dispose();
+		}
+	});
+});
+
+describe("usage page unavailable note", () => {
+	const NOTE_PREFIX = "Usage unavailable for: ";
+	const UNSUPPORTED_FUTURE: QuotaRead = {
+		state: "unsupported",
+		reason: "no_validated_quota_source",
+		attemptedAt: FIXED_NOW - 30_000,
+	};
+
+	test("mixed inventory: the note is muted, borderless, after the grid and before the footer", async () => {
+		const fixtures = pageFixtures();
+		const setup = await renderPage({
+			width: 120,
+			...fixtures,
+			providers: [OPENAI, ZEN, OLLAMA],
+		});
+		try {
+			const rows = charRows(setup.captureCharFrame());
+			const openai = cardFrame(rows, "OpenAI");
+			const ollama = cardFrame(rows, "Ollama Cloud");
+			const note = textAt(rows, `${NOTE_PREFIX}OpenCode / Zen`);
+			const footer = textAt(rows, "[esc] back");
+
+			expect(note.row).toBeGreaterThan(openai.bottom);
+			expect(note.row).toBeGreaterThan(ollama.bottom);
+			expect(footer.row).toBeGreaterThan(note.row);
+			expect(note.col).toBe(textAt(rows, "Provider usage").col);
+			expect(rows[note.row]).not.toContain("│");
+			expect(rows[note.row]).not.toContain("┌");
+			expect(rows[note.row]).not.toContain("─");
+
+			const spans = setup.captureSpans();
+			expect(spanFor(spans, NOTE_PREFIX).fg.equals(THEME.muted)).toBe(true);
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("all-unavailable inventory shows only the combined note and no empty grid", async () => {
+		const setup = await renderPage({
+			width: 60,
+			providers: [ZEN, FUTURE],
+			quotaByProvider: {
+				zen: pageFixtures().quotaByProvider.zen as QuotaRead,
+				"future-provider": UNSUPPORTED_FUTURE,
+			},
+		});
+		try {
+			const frame = setup.captureCharFrame();
+			const rows = charRows(frame);
+			expect(frame).toContain(`${NOTE_PREFIX}OpenCode / Zen, Future Provider`);
+			expect(frame).not.toContain("No connected providers.");
+			expect(frame).not.toContain("┌");
+			expect(frame).not.toContain("Quota unavailable");
+			expect(frame).not.toContain("Quota not applicable");
+			expect(frame).toContain("Provider usage");
+
+			const note = textAt(rows, NOTE_PREFIX);
+			const footer = textAt(rows, "[esc] back");
+			expect(footer.row).toBeGreaterThan(note.row);
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("none-unavailable inventory renders no note", async () => {
+		const setup = await renderPage({
+			width: 120,
+			...pageFixtures(),
+			providers: [OPENAI, OLLAMA],
+		});
+		try {
+			const frame = setup.captureCharFrame();
+			expect(frame).not.toContain("Usage unavailable");
+			expect(frame).toContain("OpenAI");
+			expect(frame).toContain("Ollama Cloud");
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("empty inventory keeps the disconnected message and no note", async () => {
+		const setup = await renderPage({
+			width: 60,
+			providers: [],
+			quotaByProvider: {},
+		});
+		try {
+			const frame = setup.captureCharFrame();
+			expect(frame).toContain("No connected providers.");
+			expect(frame).not.toContain("Usage unavailable");
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("long custom display names wrap inside the note at narrow width", async () => {
+		const longName = "Quarterly Enterprise Gateway Provider Name";
+		const setup = await renderPage({
+			width: 24,
+			providers: [FUTURE],
+			displayNames: { "future-provider": longName },
+			quotaByProvider: { "future-provider": UNSUPPORTED_FUTURE },
+		});
+		try {
+			const raw = setup
+				.captureCharFrame()
+				.split("\n")
+				.map((line) => line.trimEnd());
+			expect(raw.every((line) => line.length <= 24)).toBe(true);
+			expect(squash(raw.join("\n"))).toContain(
+				squash(`${NOTE_PREFIX}${longName}`),
+			);
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("a transient failure stays a card beside the note", async () => {
+		const setup = await renderPage({
+			width: 120,
+			providers: [FUTURE, ZEN],
+			quotaByProvider: {
+				"future-provider": {
+					state: "unavailable",
+					reason: "transport",
+					attemptedAt: FIXED_NOW - 30_000,
+				},
+				zen: pageFixtures().quotaByProvider.zen as QuotaRead,
+			},
+		});
+		try {
+			const rows = charRows(setup.captureCharFrame());
+			const failed = cardFrame(rows, "Future Provider");
+			expect(frameContent(rows, failed)).toContain(squash("Quota unavailable"));
+			const note = textAt(rows, `${NOTE_PREFIX}OpenCode / Zen`);
+			expect(note.row).toBeGreaterThan(failed.bottom);
+		} finally {
+			await setup.dispose();
+		}
+	});
+
+	test("a Claude Code card keeps its own card alongside the note", async () => {
+		const claude: ClaudeUsage = {
+			session: { usedPercent: 10, resetsAt: FIXED_NOW + 3 * 3_600_000 },
+			week: { usedPercent: 20, resetsAt: FIXED_NOW + 2 * 86_400_000 },
+		};
+		const setup = await renderPage({
+			width: 120,
+			providers: [ZEN],
+			quotaByProvider: { zen: pageFixtures().quotaByProvider.zen as QuotaRead },
+			claudeUsage: claude,
+		});
+		try {
+			const rows = charRows(setup.captureCharFrame());
+			const card = cardFrame(rows, "Claude Code");
+			const note = textAt(rows, `${NOTE_PREFIX}OpenCode / Zen`);
+			expect(note.row).toBeGreaterThan(card.bottom);
 		} finally {
 			await setup.dispose();
 		}
