@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	mkdtempSync,
@@ -109,6 +109,120 @@ describe("commit subject checker", () => {
 			encoding: "utf8",
 		});
 		expect(result.status).toBe(1);
+	});
+});
+
+const git = (cwd: string, args: string[]): string => {
+	const r = spawnSync("git", args, {
+		cwd,
+		encoding: "utf8",
+		env: {
+			PATH: process.env.PATH ?? "",
+			HOME: cwd,
+			GIT_CONFIG_NOSYSTEM: "1",
+			GIT_AUTHOR_NAME: "t",
+			GIT_AUTHOR_EMAIL: "t@example.com",
+			GIT_COMMITTER_NAME: "t",
+			GIT_COMMITTER_EMAIL: "t@example.com",
+		},
+	});
+	if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`);
+	return r.stdout.trim();
+};
+
+describe("commit subject checker with commit identity", () => {
+	const customMerge = "Merge feature/topic into main";
+	let repo = "";
+	let ordinary = "";
+	let merge = "";
+	let otherMerge = "";
+
+	const check = (subject: string, ...rest: string[]) =>
+		spawnSync(
+			"sh",
+			[join(root, "scripts/commit-subject-ok.sh"), subject, ...rest],
+			{ cwd: repo, encoding: "utf8" },
+		);
+
+	beforeAll(() => {
+		repo = mkdtempSync(join(tmpdir(), "subject-fixture-"));
+		git(repo, ["init", "-q", "-b", "main"]);
+		git(repo, ["commit", "-q", "--allow-empty", "-m", "feat: base"]);
+		git(repo, ["checkout", "-q", "-b", "topic"]);
+		git(repo, ["commit", "-q", "--allow-empty", "-m", "feat: topic"]);
+		git(repo, ["checkout", "-q", "main"]);
+		git(repo, ["commit", "-q", "--allow-empty", "-m", "fix: main work"]);
+		ordinary = git(repo, ["rev-parse", "HEAD"]);
+		git(repo, ["merge", "-q", "--no-ff", "topic", "-m", customMerge]);
+		merge = git(repo, ["rev-parse", "HEAD"]);
+		git(repo, ["checkout", "-q", "-b", "other", ordinary]);
+		git(repo, ["commit", "-q", "--allow-empty", "-m", "Merge other into main"]);
+		otherMerge = git(repo, ["rev-parse", "HEAD"]);
+		git(repo, ["checkout", "-q", "main"]);
+	});
+
+	afterAll(() => {
+		rmSync(repo, { recursive: true, force: true });
+	});
+
+	test("accepts a custom merge subject verified as a multi-parent commit", () => {
+		const result = check(customMerge, merge);
+		expect(result.status, result.stderr).toBe(0);
+	});
+
+	test("rejects a custom merge subject without commit identity", () => {
+		expect(check(customMerge).status).toBe(1);
+		expect(check(customMerge, "").status).toBe(1);
+	});
+
+	test("rejects identity for an ordinary single-parent commit", () => {
+		expect(check("Merge other into main", otherMerge).status).toBe(1);
+		expect(check("Merge feature/topic into main", ordinary).status).toBe(1);
+	});
+
+	test("rejects mismatched subject or identity", () => {
+		expect(check("Merge feature/other into main", merge).status).toBe(1);
+		expect(check(`${customMerge} `, merge).status).toBe(1);
+		expect(check(customMerge, ordinary).status).toBe(1);
+		expect(check(customMerge, "0".repeat(40)).status).toBe(1);
+		expect(check(customMerge, merge.slice(0, 12)).status).toBe(1);
+		expect(check(customMerge, "main").status).toBe(1);
+		expect(check(customMerge, "HEAD").status).toBe(1);
+	});
+
+	test("rejects malformed custom merge subjects even for a merge commit", () => {
+		for (const subject of [
+			"Merge  into main",
+			"Merge into main",
+			"Merge a into ",
+			"Merge a into",
+			"Merge something unrelated",
+			"merge a into b",
+		]) {
+			expect(check(subject, merge).status, subject).toBe(1);
+		}
+	});
+
+	test("rejects option injection through the identity argument", () => {
+		for (const id of [
+			"--help",
+			"-n1",
+			"--output=/tmp/x",
+			`--end-of-options ${merge}`,
+			`${merge} --all`,
+			`${merge}\n${merge}`,
+			`${merge}^{commit}`,
+			`${merge}~0`,
+			`${merge}^@`,
+		]) {
+			expect(check(customMerge, id).status, id).toBe(1);
+		}
+	});
+
+	test("rejects extra arguments and still honours conventional subjects", () => {
+		expect(check(customMerge, merge, "extra").status).toBe(1);
+		expect(check("feat: fine", ordinary).status).toBe(0);
+		expect(check("feat: fine", "--bogus").status).toBe(0);
 	});
 });
 

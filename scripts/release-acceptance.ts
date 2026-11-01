@@ -40,6 +40,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path";
+import { inventoryEnv, inventoryForHead } from "./release-inventory";
 
 /** The package this gate accepts. Acceptance refuses any other manifest name. */
 export const EXPECTED_PACKAGE_NAME = "opencode-providers-usage";
@@ -79,7 +80,9 @@ export const EXPECTED_EXPORTS: Readonly<Record<string, string>> = {
 
 /** Desktop supplies the GUI runtime; Bun imports are only meaningful for CLI exports. */
 export const CLI_EXPORTS = Object.fromEntries(
-	Object.entries(EXPECTED_EXPORTS).filter(([key]) => key !== "./gui-experimental"),
+	Object.entries(EXPECTED_EXPORTS).filter(
+		([key]) => key !== "./gui-experimental",
+	),
 );
 
 /** Root JS shims shipped for local discovery. Their exact text is part of the contract. */
@@ -192,6 +195,24 @@ export function bannedArtifactContent(
 	if (BANNED_CONTENT_PATTERNS.some((pattern) => pattern.test(content)))
 		return true;
 	return sourceRoot.length > 0 && content.includes(sourceRoot);
+}
+
+/**
+ * Write the committed-HEAD path inventory next to (never inside) the exported
+ * source and return a child environment that points export-test at it.
+ */
+export function prepareCommittedInventory(input: {
+	root: string;
+	scratch: string;
+	source: string;
+	baseEnv?: Record<string, string | undefined>;
+}): Record<string, string | undefined> {
+	const hash = new Bun.CryptoHasher("sha256")
+		.update(readFileSync(join(input.source, "package.json")))
+		.digest("hex");
+	const file = join(input.scratch, "committed-inventory.json");
+	writeFileSync(file, inventoryForHead(input.root, hash));
+	return inventoryEnv(file, input.baseEnv ?? process.env);
 }
 
 class AcceptanceFailure extends Error {
@@ -420,14 +441,21 @@ const EXACT_BUN_VERSION = /^\d+\.\d+\.\d+$/;
 export function expectedBunVersion(manifest: unknown): string {
 	if (!isRecord(manifest)) throw new Error("package.json is not an object");
 	const packageManager = manifest.packageManager;
-	if (typeof packageManager !== "string" || !packageManager.startsWith("bun@")) {
-		throw new Error("package.json packageManager must be pinned as bun@<exact version>");
+	if (
+		typeof packageManager !== "string" ||
+		!packageManager.startsWith("bun@")
+	) {
+		throw new Error(
+			"package.json packageManager must be pinned as bun@<exact version>",
+		);
 	}
 	const pinned = packageManager.slice("bun@".length);
 	const engines = manifest.engines;
 	const engine = isRecord(engines) ? engines.bun : undefined;
 	if (typeof engine !== "string") {
-		throw new Error("package.json engines.bun must be pinned to an exact version");
+		throw new Error(
+			"package.json engines.bun must be pinned to an exact version",
+		);
 	}
 	if (!EXACT_BUN_VERSION.test(pinned) || !EXACT_BUN_VERSION.test(engine)) {
 		throw new Error(
@@ -490,7 +518,10 @@ export function validateOutputDir(outputDir: string, sourceRoot: string): void {
 	}
 	const realTarget = join(realpathSync(existing), ...rest);
 	const realSource = realpathSync(sourceRoot);
-	if (realTarget === realSource || realTarget.startsWith(`${realSource}${sep}`)) {
+	if (
+		realTarget === realSource ||
+		realTarget.startsWith(`${realSource}${sep}`)
+	) {
 		throw new Error(
 			`output directory must not be the source repository or inside it: ${target}`,
 		);
@@ -1003,7 +1034,9 @@ export function validateBundleImports(
 	}
 	for (const specifier of specifiers) {
 		if (gui && !REQUIRED_EXTERNAL_IMPORTS[file]?.includes(specifier)) {
-			throw new Error(`${file} has an undeclared GUI host import: ${specifier}`);
+			throw new Error(
+				`${file} has an undeclared GUI host import: ${specifier}`,
+			);
 		}
 		if (!gui && specifier.startsWith("@opencode/plugin/gui")) {
 			throw new Error(`${file} must not import the GUI runtime`);
@@ -1507,7 +1540,20 @@ function runAcceptance(
 		);
 		pass("export-install", "bun install --frozen-lockfile --ignore-scripts");
 
-		requireOk("export-test", "bun run test", exec(["bun", "run", "test"], source));
+		let testEnv: Record<string, string | undefined>;
+		try {
+			testEnv = prepareCommittedInventory({ root, scratch, source });
+		} catch (error) {
+			throw new AcceptanceFailure(
+				"export-test",
+				`cannot export committed-path inventory: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		requireOk(
+			"export-test",
+			"bun run test",
+			exec(["bun", "run", "test"], source, testEnv),
+		);
 		pass("export-test", "bun run test (unit and GUI suites)");
 
 		requireOk(
@@ -1805,7 +1851,9 @@ function runAcceptance(
 				.split("\n")
 				.find((line) => line.startsWith("GUI_RESOLUTION_JSON:"));
 			if (!guiLine) throw new Error("GUI export resolution result is missing");
-			const guiResult = JSON.parse(guiLine.slice("GUI_RESOLUTION_JSON:".length));
+			const guiResult = JSON.parse(
+				guiLine.slice("GUI_RESOLUTION_JSON:".length),
+			);
 			if (guiResult.specifier !== "./gui-experimental")
 				throw new Error("wrong GUI resolution specifier");
 			validateConsumerExportResolution(guiResult, {

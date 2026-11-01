@@ -132,8 +132,12 @@ describe("CI quality job", () => {
 			"bun test --conditions browser --preload ./tests/gui/dom-setup.ts ./tests/gui/*.gui.*",
 		);
 		expect(quality).toContain("run: bun run test\n");
-		expect(read("scripts/release-acceptance.ts")).toContain(
-			'exec(["bun", "run", "test"], source)',
+		const acceptance = read("scripts/release-acceptance.ts");
+		expect(acceptance).toContain(
+			"testEnv = prepareCommittedInventory({ root, scratch, source });",
+		);
+		expect(acceptance).toContain(
+			'exec(["bun", "run", "test"], source, testEnv)',
 		);
 	});
 
@@ -184,7 +188,7 @@ describe("CI commit subject job", () => {
 		expect(subjects).toContain(
 			`PR_HEAD: \${{ github.event.pull_request.head.sha }}`,
 		);
-		expect(subjects).toContain("git log --format='%s' \"$base..$head\"");
+		expect(subjects).toContain("git log --format='%H %s' \"$base..$head\"");
 		expect(subjects).not.toContain("github.base_ref");
 	});
 
@@ -193,7 +197,7 @@ describe("CI commit subject job", () => {
 		expect(subjects).toContain("*[!0]*)");
 		expect(subjects).toContain("all reachable history");
 		expect(subjects).toContain("new branch push");
-		expect(subjects).toContain("git log --format='%s' \"$head\"");
+		expect(subjects).toContain("git log --format='%H %s' \"$head\"");
 	});
 
 	test("fails closed on missing SHAs and a mismatched checkout", () => {
@@ -205,7 +209,8 @@ describe("CI commit subject job", () => {
 	});
 
 	test("checks every subject with the shared checker", () => {
-		expect(subjects).toContain("sh scripts/commit-subject-ok.sh");
+		expect(subjects).toContain('sh scripts/commit-subject-ok.sh "$s" "$id"');
+		expect(subjects).toContain("IFS=' ' read -r id s");
 	});
 
 	test("passes event values through env instead of shell interpolation", () => {

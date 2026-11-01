@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { committedPaths, isCommittedPath } from "../scripts/release-inventory";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
@@ -127,17 +127,13 @@ describe("Desktop GUI support statements (Task 8)", () => {
 		});
 
 		test(`${name} relative links point at tracked files`, () => {
-			const tracked = new Set(
-				execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" })
-					.split("\n")
-					.filter(Boolean),
-			);
+			const tracked = committedPaths(root);
 			const base = name === "README.md" ? "" : "docs/";
 			for (const match of doc.matchAll(/\]\(([^)#\s]*)(#[^)\s]*)?\)/g)) {
 				const target = match[1] ?? "";
 				if (target === "" || /^[a-z]+:/i.test(target)) continue;
 				const resolved = join(base, target).replace(/^\.\//, "");
-				expect(tracked.has(resolved)).toBe(true);
+				expect(isCommittedPath(tracked, resolved)).toBe(true);
 			}
 		});
 	}

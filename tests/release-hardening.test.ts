@@ -243,6 +243,13 @@ describe("real entrypoint rejects before any side effect", () => {
 			}),
 		);
 		writeFileSync(join(repo, "scripts", "release-acceptance.ts"), script);
+		writeFileSync(
+			join(repo, "scripts", "release-inventory.ts"),
+			readFileSync(
+				new URL("../scripts/release-inventory.ts", import.meta.url),
+				"utf8",
+			),
+		);
 		const git = (...args: string[]) =>
 			Bun.spawnSync(["git", "-C", repo, ...args], {
 				stdout: "pipe",

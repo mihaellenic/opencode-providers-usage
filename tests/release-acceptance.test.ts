@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -23,6 +25,7 @@ import {
 	lockedVersions,
 	parseAcceptanceArgs,
 	pinnedPeerSpecs,
+	prepareCommittedInventory,
 	preserveArtifact,
 	publishedArtifactProblem,
 	registryGuardDecision,
@@ -42,6 +45,10 @@ import {
 	validateRootShims,
 	verifyPublishedArtifact,
 } from "../scripts/release-acceptance";
+import {
+	COMMITTED_INVENTORY_ENV,
+	committedPaths,
+} from "../scripts/release-inventory";
 
 const PACKAGE = "opencode-providers-usage";
 const VERSION = "0.1.0";
@@ -1693,5 +1700,76 @@ describe("consumer exact saves agree with the override", () => {
 			peers: ["solid-js@1.9.17"],
 		});
 		expect(args).toContain("--save-exact");
+	});
+});
+
+describe("prepareCommittedInventory", () => {
+	const base =
+		process.env.TMPDIR && existsSync(process.env.TMPDIR)
+			? process.env.TMPDIR
+			: tmpdir();
+	const git = (cwd: string, ...args: string[]): void => {
+		execFileSync(
+			"git",
+			["-c", "user.name=t", "-c", "user.email=t@t", ...args],
+			{ cwd, stdio: "ignore" },
+		);
+	};
+
+	test("exports HEAD paths outside the source tree and scopes the env", () => {
+		const dir = mkdtempSync(join(base, "release-inv-"));
+		try {
+			const root = join(dir, "repo");
+			const source = join(dir, "scratch", "source");
+			mkdirSync(root, { recursive: true });
+			mkdirSync(source, { recursive: true });
+			git(root, "init", "-q");
+			writeFileSync(join(root, "package.json"), '{"name":"x"}\n');
+			mkdirSync(join(root, "docs"));
+			writeFileSync(join(root, "docs", "a.md"), "a\n");
+			writeFileSync(join(root, "staged.md"), "s\n");
+			git(root, "add", "package.json", "docs/a.md");
+			git(root, "commit", "-q", "-m", "init");
+			git(root, "add", "staged.md");
+			writeFileSync(join(root, "untracked.md"), "u\n");
+			writeFileSync(join(source, "package.json"), '{"name":"x"}\n');
+
+			const env = prepareCommittedInventory({
+				root,
+				scratch: join(dir, "scratch"),
+				source,
+				baseEnv: { PATH: "/usr/bin", KEEP: "1" },
+			});
+			const file = env[COMMITTED_INVENTORY_ENV];
+			expect(file?.startsWith(`${source}/`)).toBe(false);
+			expect(file?.startsWith(`${join(dir, "scratch")}/`)).toBe(true);
+			expect(env.KEEP).toBe("1");
+			const paths = committedPaths(source, env);
+			expect([...paths].sort()).toEqual(["docs/a.md", "package.json"]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("fails when the exported package.json is missing", () => {
+		const dir = mkdtempSync(join(base, "release-inv-"));
+		try {
+			const root = join(dir, "repo");
+			mkdirSync(root);
+			git(root, "init", "-q");
+			writeFileSync(join(root, "f"), "f\n");
+			git(root, "add", "f");
+			git(root, "commit", "-q", "-m", "init");
+			expect(() =>
+				prepareCommittedInventory({
+					root,
+					scratch: dir,
+					source: join(dir, "none"),
+					baseEnv: {},
+				}),
+			).toThrow();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

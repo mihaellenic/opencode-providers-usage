@@ -79,15 +79,17 @@ jobs:
             if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
               git fetch --no-tags origin "$base"
             fi
-            subjects=$(git log --format='%s' "$base..$head")
+            subjects=$(git log --format='%H %s' "$base..$head")
           else
-            subjects=$(git log --format='%s' "$head")
+            subjects=$(git log --format='%H %s' "$head")
           fi
           if [ -z "$subjects" ]; then
             echo "no commits in range"
             exit 0
           fi
-          while IFS= read -r s; do
+          # Each line is "<full commit id> <subject>"; the id lets the checker
+          # verify genuine custom merge subjects with git.
+          while IFS=' ' read -r id s; do
             echo "checking: $s"
-            sh scripts/commit-subject-ok.sh "$s"
+            sh scripts/commit-subject-ok.sh "$s" "$id"
           done <<< "$subjects"
