@@ -153,12 +153,12 @@ provider behavior.
 
 - [ ] `npx bun@1.4.4 install --frozen-lockfile --ignore-scripts` in a clean
       scratch directory succeeds.
-- [ ] `npx bun@1.4.4 test` exits 0.
+- [ ] `npx bun@1.4.4 run test` exits 0 (unit/integration and browser-conditioned GUI suites).
 - [ ] `npx bun@1.4.4 run typecheck` exits 0.
 - [ ] `npx bun@1.4.4 run lint` exits 0.
 - [ ] `npx bun@1.4.4 run build` exits 0 and writes the deterministic bundles
-      `dist/index.js`, `dist/tui.js`, and `dist/rpc.js`; a second build produces
-      identical bytes.
+      `dist/index.js`, `dist/tui.js`, `dist/rpc.js`, and `dist/gui-experimental.cjs`;
+      a second build produces identical bytes for all four bundles.
 - [ ] The package contract tests (`tests/package.test.ts`) pass: they pin the
       export map, the root shims, and the published file list.
 - [ ] `bun scripts/bun-audit-gate.ts` (the strict `bun audit` gate, run under
@@ -169,6 +169,16 @@ provider behavior.
 - [ ] The support-matrix test passes for every registered adapter capability.
 - [ ] The built artifact loads headlessly with the companion disabled and
       enabled using synthetic inputs.
+- [ ] The accepted tarball installs by package identity and loads on CLI 2.2.0
+      without duplicate plugin registration; all five exports load in their
+      intended terminal/Desktop hosts. Record the source SHA, artifact integrity,
+      bundle hash, host versions/platform, scenario outcomes and limitations.
+- [ ] The current GUI bundle runs the applicable S1-S13 scenarios from
+      [`docs/support.md`](support.md#desktop-gui-smoke-results) on a recorded
+      Desktop host; retain experimental status and synthetic-data limitations.
+- [ ] After owner publication, repeat named-package loading from the registry
+      and verify its integrity against the accepted tarball. Historical host
+      checks and GUI resolution alone do not satisfy these current release gates.
 - [x] Both live quota routes return `200` and the companion app match is unique
       when a consented live run is performed. Record only status/scopes/states.
       (Performed 2026-10-24; see "Integrated live Checkpoint B (2026-10-24)".)

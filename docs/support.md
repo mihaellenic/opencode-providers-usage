@@ -23,6 +23,9 @@ fails CI.
 
 ## Desktop GUI smoke results
 
+Recorded GUI bundle hashes are historical artifacts; a rebuilt candidate needs
+fresh host checks.
+
 Experimental. Run on 2026-10-29 against the actual built package (`npm pack` tarball of the working tree, installed with `--ignore-scripts`, loaded from an isolated global config) on OpenCode Desktop `2.2.1` (macOS arm64) with SDK `@opencode/plugin` `2.2.0`. All data is synthetic data: a stub `claude` that prints parser-supported `/usage` JSON (37% session, 64% week) and dummy providers served by a loopback canned model server. This is not real quota validation and not a real-provider or real-account test. Without authentication the product server reports "Quota unavailable" for the dummy providers. A harness-only GUI plugin created sessions and sent canned prompts. The Desktop rewrites the service PATH and appends the stub directory last, so `/usr/bin/security` and other system tools still exist on it; the product never calls them and no such call was observed, but helpers are not claimed to be excluded. Electron ran with `--use-mock-keychain`, an empty HOME and the Codex companion disabled. S1-S12 ran against the actual product server entry; S13 ran the actual product GUI bundle (byte-identical, SHA-256 `2153d427...b06f`) against a test-only fixture backend.
 
 The earlier full synthetic smoke (S1-S13) ran on Desktop `2.2.1` with the previous GUI bundle. The final GUI bundle (SHA-256 `761e180f...`) was exercised only for the composer-model, new-session default, dashboard and Back flows, on Desktop `2.2.2`. The other scenarios were not rerun on `2.2.2`, and the final bundle did not run the full matrix on `2.2.1`.

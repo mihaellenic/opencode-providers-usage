@@ -223,12 +223,23 @@ describe("docs/releasing.md publication and verification", () => {
 		expect(doc).toContain("[`docs/validation.md`](validation.md)");
 		expect(existsSync(join(root, "docs/validation.md"))).toBe(true);
 		expect(doc).toContain("bun load-check.mjs");
-		expect(doc).toContain("npm pkg set overrides.solid-js=1.9.17");
+		expect(doc).toContain("npm pkg set overrides.solid-js=1.9.12");
 		expect(doc).toContain("exact\n`solid-js@1.9.12` peer");
 		expect(doc).toContain(
 			"npm install --ignore-scripts opencode-providers-usage@0.1.0",
 		);
 		expect(doc).not.toMatch(/NPM_TOKEN|_authToken/);
+	});
+
+	test("documents the current five-export package and separates GUI resolution from host load", () => {
+		expect(doc).toContain("bun run test");
+		expect(doc).toContain("@opencode/theme@2.2.0");
+		expect(doc).not.toContain("@opencode/theme@2.1.4");
+		expect(doc).toContain('"opencode-providers-usage/gui-experimental"');
+		expect(doc).toContain("five export paths");
+		expect(doc).toContain("resolution is not a GUI load test");
+		expect(doc).toContain("accepted tarball");
+		expect(doc).toContain("named-package installation");
 	});
 
 	test("states the bootstrap publish is not OIDC provenance, in that sentence", () => {

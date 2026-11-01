@@ -12,6 +12,9 @@ on macOS arm64 with Claude Code CLI `2.1.308`; the live print-mode `/usage`
 command was independently verified, but the full-page UI/RPC path was not
 live-verified.
 
+Recorded GUI bundle hashes are historical artifacts; a rebuilt candidate needs
+fresh host checks.
+
 Desktop GUI (experimental): the `./gui-experimental` export is an experimental OpenCode Desktop plugin. It is built with SDK `@opencode/plugin` `2.2.0` (Bun `1.4.4`, Vite `7.3.7`) and was smoke-tested only on OpenCode Desktop `2.2.1` on macOS arm64, with a synthetic Claude Code stub and no real provider quota. No minimum Desktop version is recorded; other Desktop versions are untested. The earlier full synthetic smoke (S1-S13) ran on Desktop `2.2.1` with the previous GUI bundle. The final GUI bundle (SHA-256 `761e180f...`) was exercised only for the composer-model, new-session default, dashboard and Back flows, on Desktop `2.2.2`. The other scenarios were not rerun on `2.2.2`, and the final bundle did not run the full matrix on `2.2.1`. See [Desktop GUI smoke results](docs/support.md#desktop-gui-smoke-results): nothing about the Desktop GUI is verified beyond the PASS rows of that table.
 Web, V1, and OpenCode forks are not supported.
 
@@ -41,6 +44,10 @@ live in [`docs/support.md`](docs/support.md).
 ## Installation
 
 ### Install from npm
+
+For an unreleased revision, use the source-checkout instructions below instead.
+Before publishing, the accepted package must pass named-package installation on
+CLI `2.2.0` and the real-host smoke gates in [the release runbook](docs/releasing.md).
 
 ```bash
 npm install opencode-providers-usage

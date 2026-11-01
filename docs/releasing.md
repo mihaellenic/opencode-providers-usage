@@ -4,6 +4,7 @@ This runbook covers the first public release (`0.1.0`) and the manual flow that
 applies to every release until release automation is implemented in Task 5.
 Nothing in this document is performed automatically by the repository. A step
 counts as done only when its evidence is recorded in the release report.
+Task 5 is future automation work, not a prerequisite or part of this manual release.
 
 ## Approval boundary
 
@@ -55,7 +56,7 @@ git status --short   # expect no output: the release source must be committed
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
-bun test
+bun run test
 bun run lint
 bun run typecheck
 bun run build
@@ -83,9 +84,10 @@ bun scripts/release-acceptance.ts --output-dir <absolute-dir>
 Acceptance exports `HEAD` with `git archive` into a fresh directory under
 `SCRATCH_ROOT`, so it validates committed content only. It runs the checks,
 audits the lockfile, packs exactly one tarball, installs that tarball into a
-scratch consumer with the host peers, imports all four export paths, and audits
-the consumer production tree. It never publishes and never modifies the
-repository.
+scratch consumer with the host peers, imports the four terminal export paths,
+resolves the experimental GUI export, and audits the consumer production tree.
+The package has five export paths; resolution is not a GUI load test. Acceptance
+never publishes and never modifies the repository.
 
 Acceptance runs two guards before it makes any network request, install, build,
 or pack, and before it creates or writes anything:
@@ -113,10 +115,32 @@ Record in the release report: the source commit from step 2, the tarball path,
 `integrity`, `sha256`, and the evidence directory. Keep the directory; later
 steps depend on it. If `HEAD` changes for any reason, rerun this whole section.
 
+### Candidate host smoke (required before publication)
+
+Install the accepted tarball into an isolated consumer with its locked host peers,
+using package identity rather than a source-checkout symlink. Test the documented
+named-package installation on OpenCode CLI 2.2.0, including automatic TUI discovery
+without duplicate registration. Load `./gui-experimental` in a real Desktop host;
+record its actual version/platform and the accepted GUI bundle hash.
+
+Follow the terminal scenarios in [`docs/validation.md`](validation.md) and the
+applicable S1-S13 matrix in [`docs/support.md`](support.md#desktop-gui-smoke-results).
+Use isolated synthetic fixtures unless the owner explicitly consents to live
+account/provider reads. Do not alter real sign-ins or send model requests.
+Historical/synthetic results do not establish a current artifact's host behavior.
+An unavailable required host check blocks readiness, even for the experimental GUI.
+Keep the real-older-server S14 scenario NOTRUN unless it is actually exercised;
+no older-server compatibility promise is added by this release.
+
 ## Owner-only: repository bootstrap and hosted CI
 
 Every command and decision in this section belongs to the owner. The agent does
 not perform these actions.
+
+For an existing repository and remote, verify their identity/visibility and skip
+creation/addition in steps 2-3; do not recreate them. The scope limitation below
+records a bootstrap observation, not a current credential audit. Commit/push needs
+separate owner authorization even when release preparation has been approved.
 
 1. Owner approves the boundary in [Approval boundary](#approval-boundary).
 2. Owner creates the public repository `mihaellenic/opencode-providers-usage`
@@ -167,9 +191,9 @@ no credentials and runs outside the repository:
 export CONSUMER_DIR="$SCRATCH_ROOT/post-publish-consumer"
 mkdir -p "$CONSUMER_DIR" && cd "$CONSUMER_DIR"
 npm init -y >/dev/null
-npm pkg set overrides.solid-js=1.9.17
+npm pkg set overrides.solid-js=1.9.12
 npm install --ignore-scripts opencode-providers-usage@0.1.0 \
-  @opencode/theme@2.1.4 @opentui/core@0.6.8 @opentui/solid@0.6.8 solid-js@1.9.17
+  @opencode/theme@2.2.0 @opentui/core@0.6.8 @opentui/solid@0.6.8 solid-js@1.9.12
 cat > load-check.mjs <<'EOF'
 const names = [
   "opencode-providers-usage",
@@ -181,19 +205,23 @@ for (const name of names) {
   await import(Bun.resolveSync(name, process.cwd()));
   console.log("ok", name);
 }
+const gui = "opencode-providers-usage/gui-experimental";
+console.log("resolved only (not loaded)", gui, Bun.resolveSync(gui, process.cwd()));
 EOF
 bun load-check.mjs
 ```
 
 The peer pins and the `solid-js` override match the consumer-install check in
 `scripts/release-acceptance.ts`. `@opentui/solid@0.6.8` declares an exact
-`solid-js@1.9.12` peer, and the override forces the locked `1.9.17`. If npm
+`solid-js@1.9.12` peer, and the override forces the locked `1.9.12`. If npm
 resolves anything differently, stop and report.
 
-This check proves the four export paths load under Bun. It does not replace the
-full OpenCode V2 terminal smoke: follow the headless artifact smoke and manual
-smoke procedure in [`docs/validation.md`](validation.md) before treating the
-release as user-verified.
+This check imports four CLI export paths under Bun and resolves the fifth GUI
+path; resolution is not a GUI load test. Repeat the candidate host smoke above
+using the registry-installed package: all five exports must load in their intended
+hosts, not merely resolve. Follow the headless artifact smoke and manual smoke
+procedure in [`docs/validation.md`](validation.md). Only record successful checks
+as current evidence; unavailable checks remain unverified.
 
 This bootstrap publish uses owner authentication with 2FA. It does **not**
 produce OIDC provenance, and the release report must not claim that it does.
@@ -207,7 +235,8 @@ After step 5 succeeds, the owner:
   tarball, and pushes the tag;
 - creates a **non-draft** GitHub release for `v0.1.0` with accurate initial
   notes: the version, the source commit, the tarball `integrity`, and the fact
-  that this is the first publication.
+  that this is the first publication. Include installation steps, current
+  functionality, the experimental GUI and all support/validation limitations.
 
 Do not reuse a tag; never move an existing tag. Never publish a placeholder
 package, and never fabricate `0.0.0` history or a `0.0.0` tag to make release

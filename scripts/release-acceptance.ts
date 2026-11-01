@@ -10,7 +10,8 @@
  *   - pack exactly one tarball with `npm pack` (its prepack runs the build)
  *   - inspect the tarball paths, manifest, root shims, and dist imports strictly
  *   - install the tarball plus the host peers into a scratch consumer and import
- *     all four export paths from that consumer
+ *     all four terminal export paths from that consumer; resolve the fifth,
+ *     experimental GUI export (real Desktop loading is a separate release gate)
  *   - audit the consumer production tree with `npm audit --omit=dev --json`
  *   - preserve the validated tarball, artifact.json, and raw audit evidence in
  *     the explicit --output-dir
@@ -54,6 +55,7 @@ export const ALLOWED_ARTIFACT_FILES = [
 	"package/dist/index.js",
 	"package/dist/rpc.js",
 	"package/dist/tui.js",
+	"package/dist/gui-experimental.cjs",
 ] as const;
 
 /** Runtime bundles produced by `scripts/build.ts`. */
@@ -61,17 +63,24 @@ export const EXPECTED_BUNDLES = [
 	"dist/index.js",
 	"dist/rpc.js",
 	"dist/tui.js",
+	"dist/gui-experimental.cjs",
 ] as const;
 
 export const EXPECTED_MAIN = "./dist/index.js";
 
-/** The four public export paths, each a plain string target. */
+/** The five public export paths, each a plain string target. */
 export const EXPECTED_EXPORTS: Readonly<Record<string, string>> = {
 	".": "./dist/index.js",
 	"./server": "./dist/index.js",
 	"./tui": "./dist/tui.js",
 	"./rpc": "./dist/rpc.js",
+	"./gui-experimental": "./dist/gui-experimental.cjs",
 };
+
+/** Desktop supplies the GUI runtime; Bun imports are only meaningful for CLI exports. */
+export const CLI_EXPORTS = Object.fromEntries(
+	Object.entries(EXPECTED_EXPORTS).filter(([key]) => key !== "./gui-experimental"),
+);
 
 /** Root JS shims shipped for local discovery. Their exact text is part of the contract. */
 export const ROOT_SHIMS: Readonly<Record<string, string>> = {
@@ -87,20 +96,30 @@ export const ROOT_SHIMS: Readonly<Record<string, string>> = {
 export const REQUIRED_EXTERNAL_IMPORTS: Readonly<
 	Record<string, readonly string[]>
 > = {
-	"dist/index.js": ["@opencode/plugin"],
-	"dist/rpc.js": ["@opencode/plugin"],
+	"dist/index.js": ["@opencode/plugin", "@opencode/plugin/rpc"],
+	"dist/rpc.js": ["@opencode/plugin/rpc"],
 	"dist/tui.js": [
-		"@opencode/plugin",
+		"@opencode/plugin/rpc",
 		"@opencode/plugin/tui",
 		"@opentui/core",
 		"@opentui/solid/jsx-runtime",
 		"solid-js",
+	],
+	"dist/gui-experimental.cjs": [
+		"@opencode/plugin/gui",
+		"@opencode/plugin/rpc",
+		"solid-js",
+		"solid-js/web",
 	],
 };
 
 const BANNED_CONTENT_PATTERNS: readonly RegExp[] = [
 	/task-[0-9]+-report/, // internal task reports
 	/BEGIN [A-Z ]*PRIVATE KEY/, // PEM private key blocks
+	/\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})/,
+	/\bnpm_[A-Za-z0-9]{30,}/,
+	/\bsk-(?:proj-|ant-api[0-9]+-)?[A-Za-z0-9_-]{32,}/,
+	/\beyJ[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}\.[A-Za-z0-9_-]{12,}/,
 ];
 
 const LIFECYCLE_HOOKS = ["preinstall", "install", "postinstall"] as const;
@@ -959,9 +978,9 @@ const packageNameOf = (specifier: string): string => {
 const importedSpecifiers = (code: string): string[] =>
 	[
 		...code.matchAll(
-			/\bfrom\s*["']([^"']+)["']|\bimport\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/g,
+			/\bfrom\s*["']([^"']+)["']|\bimport\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)|\brequire\(\s*["']([^"']+)["']\s*\)/g,
 		),
-	].map((match) => match[1] ?? match[2] ?? match[3] ?? "");
+	].map((match) => match[1] ?? match[2] ?? match[3] ?? match[4] ?? "");
 
 /**
  * A bundle may import only node builtins and declared host packages, never
@@ -974,7 +993,21 @@ export function validateBundleImports(
 	hostPackages: ReadonlySet<string>,
 ): void {
 	const specifiers = importedSpecifiers(code);
+	const gui = file === "dist/gui-experimental.cjs";
+	if (
+		gui &&
+		(!/\b(?:module\.exports|exports\.\w+)\s*=/.test(code) ||
+			/\bexport\s|\bimport\s/.test(code))
+	) {
+		throw new Error(`${file} must be CommonJS, not ESM`);
+	}
 	for (const specifier of specifiers) {
+		if (gui && !REQUIRED_EXTERNAL_IMPORTS[file]?.includes(specifier)) {
+			throw new Error(`${file} has an undeclared GUI host import: ${specifier}`);
+		}
+		if (!gui && specifier.startsWith("@opencode/plugin/gui")) {
+			throw new Error(`${file} must not import the GUI runtime`);
+		}
 		if (specifier.startsWith(".") || specifier.startsWith("/")) {
 			throw new Error(
 				`${file} has a relative or absolute import: ${specifier}`,
@@ -1095,12 +1128,9 @@ export function requireSingleTarball(
 	}
 }
 
-/**
- * Every export must resolve from the installed consumer copy, not from the
- * source checkout, to its approved dist target, and must expose a usable module.
- */
-export function validateConsumerExports(
-	results: readonly ConsumerExportResult[],
+/** Resolution is necessary but does not prove a module loads in its host. */
+export function validateConsumerExportResolution(
+	result: { specifier: string; resolved: string },
 	options: {
 		consumerDir: string;
 		name: string;
@@ -1110,23 +1140,37 @@ export function validateConsumerExports(
 	const installedRoot = normalize(
 		join(options.consumerDir, "node_modules", options.name),
 	);
-	for (const [specifier, target] of Object.entries(options.exports)) {
+	const target = options.exports[result.specifier];
+	if (!target) throw new Error(`unknown export ${result.specifier}`);
+	const resolved = normalize(result.resolved);
+	if (!resolved.startsWith(installedRoot + sep)) {
+		throw new Error(
+			`export ${result.specifier} resolves outside the consumer install: ${result.resolved}`,
+		);
+	}
+	const expectedPath = normalize(join(installedRoot, target));
+	if (resolved !== expectedPath) {
+		throw new Error(
+			`export ${result.specifier} resolved to ${result.resolved}, expected ${expectedPath}`,
+		);
+	}
+}
+
+/** Every imported export must resolve to its installed target and expose a usable module. */
+export function validateConsumerExports(
+	results: readonly ConsumerExportResult[],
+	options: {
+		consumerDir: string;
+		name: string;
+		exports: Readonly<Record<string, string>>;
+	},
+): void {
+	for (const specifier of Object.keys(options.exports)) {
 		const result = results.find((entry) => entry.specifier === specifier);
 		if (!result)
 			throw new Error(`export ${specifier} was not imported in the consumer`);
 
-		const resolved = normalize(result.resolved);
-		if (!resolved.startsWith(installedRoot + sep)) {
-			throw new Error(
-				`export ${specifier} resolves outside the consumer install: ${result.resolved}`,
-			);
-		}
-		const expectedPath = normalize(join(installedRoot, target));
-		if (resolved !== expectedPath) {
-			throw new Error(
-				`export ${specifier} resolved to ${result.resolved}, expected ${expectedPath}`,
-			);
-		}
+		validateConsumerExportResolution(result, options);
 		if (!result.hasDefault && result.keys.length === 0) {
 			throw new Error(`export ${specifier} exposes no usable module`);
 		}
@@ -1318,6 +1362,8 @@ for (const key of keys) {
   results.push({ specifier: key, resolved, hasDefault: mod.default !== undefined, keys: Object.keys(mod).sort() });
 }
 console.log("EXPORT_CHECK_JSON:" + JSON.stringify(results));
+const guiResolved = Bun.resolveSync(name + "/gui-experimental", consumerDir);
+console.log("GUI_RESOLUTION_JSON:" + JSON.stringify({ specifier: "./gui-experimental", resolved: guiResolved }));
 `;
 
 function parseExportCheck(stdout: string): ConsumerExportResult[] {
@@ -1461,8 +1507,8 @@ function runAcceptance(
 		);
 		pass("export-install", "bun install --frozen-lockfile --ignore-scripts");
 
-		requireOk("export-test", "bun test", exec(["bun", "test"], source));
-		pass("export-test", "bun test");
+		requireOk("export-test", "bun run test", exec(["bun", "run", "test"], source));
+		pass("export-test", "bun run test (unit and GUI suites)");
 
 		requireOk(
 			"export-lint",
@@ -1648,7 +1694,7 @@ function runAcceptance(
 			0, "content-scan", `artifact contains internal, secret, or checkout-path material: ${leaks.join(", ")}`);
 		pass(
 			"content-scan",
-			"no internal report, private key, or absolute checkout path",
+			"no internal report, private key, known token shape, or absolute checkout path (bounded scan; source/history review remains separate)",
 		);
 
 		// 11. Consumer install: the tarball, the locked host peers, and an npm override
@@ -1729,12 +1775,13 @@ function runAcceptance(
 			`${name}@${version} with locked host peers (${peers.join(", ")}), solid-js override ${JSON.stringify(overrides)}, peer closure verified, installed with --omit=dev --ignore-scripts`,
 		);
 
-		// 12. Import all four export paths from the consumer, not the checkout.
+		// 12. Import the four CLI exports and resolve the GUI from the consumer.
+		// A real Desktop load remains mandatory; resolution is not host validation.
 		const checks = join(scratch, "checks");
 		mkdirSync(checks, { recursive: true });
 		const checkScript = join(checks, "export-check.mjs");
 		writeFileSync(checkScript, EXPORT_CHECK_SCRIPT);
-		const exportKeys = Object.keys(EXPECTED_EXPORTS);
+		const exportKeys = Object.keys(CLI_EXPORTS);
 		const exportCheck = exec(
 			[
 				"bun",
@@ -1750,6 +1797,18 @@ function runAcceptance(
 		try {
 			exportResults = parseExportCheck(exportCheck.stdout);
 			validateConsumerExports(exportResults, {
+				consumerDir: realpathSync(consumer),
+				name,
+				exports: CLI_EXPORTS,
+			});
+			const guiLine = exportCheck.stdout
+				.split("\n")
+				.find((line) => line.startsWith("GUI_RESOLUTION_JSON:"));
+			if (!guiLine) throw new Error("GUI export resolution result is missing");
+			const guiResult = JSON.parse(guiLine.slice("GUI_RESOLUTION_JSON:".length));
+			if (guiResult.specifier !== "./gui-experimental")
+				throw new Error("wrong GUI resolution specifier");
+			validateConsumerExportResolution(guiResult, {
 				consumerDir: realpathSync(consumer),
 				name,
 				exports: EXPECTED_EXPORTS,
@@ -1768,6 +1827,10 @@ function runAcceptance(
 						`${result.specifier} -> ${result.resolved.slice(realpathSync(consumer).length + 1)}`,
 				)
 				.join("; "),
+		);
+		pass(
+			"consumer-gui-resolution",
+			"./gui-experimental resolves inside consumer; real Desktop load NOT performed by acceptance and remains a release gate",
 		);
 
 		// 13. Advisory audit of the production consumer. Raw evidence is preserved.

@@ -112,7 +112,7 @@ describe("CI quality job", () => {
 	test("runs the release-acceptance command sequence in order", () => {
 		const commands = [
 			"bun install --frozen-lockfile --ignore-scripts",
-			"bun test",
+			"bun run test",
 			"bun run lint",
 			"bun run typecheck",
 			"bun run build",
@@ -123,6 +123,18 @@ describe("CI quality job", () => {
 			expect(position, commands[index]).toBeGreaterThan(-1);
 		}
 		expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+	});
+
+	test("both CI and clean-export acceptance invoke the unit and GUI suites", () => {
+		const manifest = JSON.parse(read("package.json"));
+		expect(manifest.scripts.test).toBe("bun test && bun run test:gui");
+		expect(manifest.scripts["test:gui"]).toBe(
+			"bun test --conditions browser --preload ./tests/gui/dom-setup.ts ./tests/gui/*.gui.*",
+		);
+		expect(quality).toContain("run: bun run test\n");
+		expect(read("scripts/release-acceptance.ts")).toContain(
+			'exec(["bun", "run", "test"], source)',
+		);
 	});
 
 	test("has no shell that interpolates event context", () => {

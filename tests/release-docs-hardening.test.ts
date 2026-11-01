@@ -98,6 +98,12 @@ describe("Desktop GUI support statements (Task 8)", () => {
 			);
 		});
 
+		test(`${name} does not transfer historical GUI hash evidence to a rebuilt candidate`, () => {
+			expect(doc.replace(/\s+/g, " ")).toContain(
+				"Recorded GUI bundle hashes are historical artifacts; a rebuilt candidate needs fresh host checks.",
+			);
+		});
+
 		test(`${name} keeps web, V1 and forks unsupported and drops the blanket desktop exclusion`, () => {
 			expect(doc).toMatch(/web[^\n]*not supported|not supported[^\n]*web/i);
 			expect(doc).toMatch(/V1/);

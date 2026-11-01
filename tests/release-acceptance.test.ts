@@ -35,6 +35,7 @@ import {
 	validateArtifactManifest,
 	validateArtifactMetadata,
 	validateBundleImports,
+	validateConsumerExportResolution,
 	validateConsumerExports,
 	validateInstalledVersions,
 	validatePeerClosure,
@@ -89,10 +90,11 @@ const EXPORTS = {
 	"./server": "./dist/index.js",
 	"./tui": "./dist/tui.js",
 	"./rpc": "./dist/rpc.js",
+	"./gui-experimental": "./dist/gui-experimental.cjs",
 };
 
 const PEERS = {
-	"@opencode/theme": "2.1.4",
+	"@opencode/theme": "2.2.0",
 	"@opentui/core": ">=0.6.8",
 	"@opentui/solid": ">=0.6.8",
 	"solid-js": ">=1.9.0",
@@ -106,14 +108,14 @@ const goodManifest = (): Record<string, unknown> => ({
 	publishConfig: { access: "public" },
 	exports: structuredClone(EXPORTS),
 	scripts: { prepack: "bun run build" },
-	dependencies: { "@opencode/plugin": "2.1.4" },
+	dependencies: { "@opencode/plugin": "2.2.0" },
 	peerDependencies: PEERS,
 });
 
 const expectedIdentity = { name: PACKAGE, version: VERSION };
 
 describe("allowedArtifactFile", () => {
-	test("accepts exactly the nine published artifact paths", () => {
+	test("accepts exactly the ten published artifact paths", () => {
 		for (const path of [
 			"package/package.json",
 			"package/README.md",
@@ -124,6 +126,7 @@ describe("allowedArtifactFile", () => {
 			"package/dist/index.js",
 			"package/dist/rpc.js",
 			"package/dist/tui.js",
+			"package/dist/gui-experimental.cjs",
 		]) {
 			expect(allowedArtifactFile(path)).toBe(true);
 		}
@@ -164,6 +167,7 @@ describe("validateArtifactListing", () => {
 		"package/dist/index.js",
 		"package/dist/rpc.js",
 		"package/dist/tui.js",
+		"package/dist/gui-experimental.cjs",
 	];
 
 	test("accepts the exact listing in any order", () => {
@@ -188,6 +192,14 @@ describe("validateArtifactListing", () => {
 		expect(() =>
 			validateArtifactListing([...allowed, "package/README.md"]),
 		).toThrow("duplicate");
+	});
+
+	test("rejects a missing GUI bundle", () => {
+		expect(() =>
+			validateArtifactListing(
+				allowed.filter((path) => !path.endsWith("gui-experimental.cjs")),
+			),
+		).toThrow("missing artifact path(s): package/dist/gui-experimental.cjs");
 	});
 });
 
@@ -214,6 +226,28 @@ describe("bannedArtifactContent", () => {
 				"/Users/miha",
 			),
 		).toBe(false);
+	});
+
+	test("flags high-confidence token material without printing it", () => {
+		const synthetic = "a".repeat(48);
+		for (const token of [
+			`ghp_${synthetic}`,
+			`github_pat_${synthetic}`,
+			`npm_${synthetic}`,
+			`sk-proj-${synthetic}`,
+			`sk-ant-api03-${synthetic}`,
+			`eyJ${synthetic}.${synthetic}.${synthetic}`,
+		]) {
+			expect(bannedArtifactContent(token, "")).toBe(true);
+		}
+		for (const harmless of [
+			"npm_package_name",
+			"ghp_placeholder",
+			"sk-example",
+			"header.payload.signature",
+		]) {
+			expect(bannedArtifactContent(harmless, "")).toBe(false);
+		}
 	});
 
 	test("flags the absolute source checkout path", () => {
@@ -535,6 +569,24 @@ describe("preserveArtifact", () => {
 });
 
 describe("validateArtifactManifest", () => {
+	test("accepts the current real package manifest, not just a fixture", () => {
+		const manifest = JSON.parse(
+			readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+		);
+		expect(() =>
+			validateArtifactManifest(manifest, expectedIdentity),
+		).not.toThrow();
+	});
+
+	test("rejects removal of the experimental GUI export", () => {
+		const { "./gui-experimental": _gui, ...withoutGui } = EXPORTS;
+		expect(() =>
+			validateArtifactManifest(
+				{ ...goodManifest(), exports: withoutGui },
+				expectedIdentity,
+			),
+		).toThrow("export");
+	});
 	test("accepts the approved manifest contract", () => {
 		expect(() =>
 			validateArtifactManifest(goodManifest(), expectedIdentity),
@@ -620,18 +672,85 @@ describe("validateArtifactManifest", () => {
 });
 
 describe("validateBundleImports", () => {
+	const guiCode = [
+		'var gui = require("@opencode/plugin/gui");',
+		'var rpc = require("@opencode/plugin/rpc");',
+		'var solid = require("solid-js");',
+		'var web = require("solid-js/web");',
+		"module.exports = { default: gui };",
+	].join("\n");
+
+	test("accepts the GUI CommonJS bundle with exactly its host externals", () => {
+		expect(() =>
+			validateBundleImports(
+				"dist/gui-experimental.cjs",
+				guiCode,
+				HOST_PACKAGES,
+			),
+		).not.toThrow();
+	});
+
+	test("rejects missing GUI externals, ESM format, and undeclared requires", () => {
+		for (const host of [
+			"@opencode/plugin/gui",
+			"@opencode/plugin/rpc",
+			"solid-js",
+			"solid-js/web",
+		]) {
+			expect(() =>
+				validateBundleImports(
+					"dist/gui-experimental.cjs",
+					guiCode.replace(`require("${host}")`, "{}"),
+					HOST_PACKAGES,
+				),
+			).toThrow("host runtime is not external");
+		}
+		expect(() =>
+			validateBundleImports(
+				"dist/gui-experimental.cjs",
+				guiCode.replace("module.exports =", "export default"),
+				HOST_PACKAGES,
+			),
+		).toThrow("CommonJS");
+		for (const extra of [
+			"left-pad",
+			"./helper.js",
+			"/absolute.js",
+			"@opencode/plugin/tui",
+			"node:fs",
+		]) {
+			expect(() =>
+				validateBundleImports(
+					"dist/gui-experimental.cjs",
+					`${guiCode}\nrequire("${extra}");`,
+					HOST_PACKAGES,
+				),
+			).toThrow();
+		}
+	});
+
+	test("rejects GUI runtime imports in terminal bundles", () => {
+		expect(() =>
+			validateBundleImports(
+				"dist/index.js",
+				`${indexCode}\nimport "@opencode/plugin/gui";`,
+				HOST_PACKAGES,
+			),
+		).toThrow("GUI");
+	});
 	const tuiCode = [
 		'import { createSignal } from "solid-js";',
 		'import { createTuiApi } from "@opencode/plugin/tui";',
 		'import { Box } from "@opentui/core";',
 		'import { jsx } from "@opentui/solid/jsx-runtime";',
-		'import { plugin } from "@opencode/plugin";',
+		'import { Rpc } from "@opencode/plugin/rpc";',
 		'import { readFile } from "node:fs/promises";',
 		"export default plugin;",
 	].join("\n");
 
 	const indexCode = [
 		'import { plugin } from "@opencode/plugin";',
+		'import { Rpc } from "@opencode/plugin/rpc";',
 		'import { randomUUID } from "node:crypto";',
 	].join("\n");
 
@@ -642,6 +761,23 @@ describe("validateBundleImports", () => {
 		expect(() =>
 			validateBundleImports("dist/index.js", indexCode, HOST_PACKAGES),
 		).not.toThrow();
+	});
+
+	test("RPC-only bundle requires the current SDK RPC subpath, not the root plugin API", () => {
+		expect(() =>
+			validateBundleImports(
+				"dist/rpc.js",
+				'import { Rpc } from "@opencode/plugin/rpc";',
+				HOST_PACKAGES,
+			),
+		).not.toThrow();
+		expect(() =>
+			validateBundleImports(
+				"dist/rpc.js",
+				'import { Plugin } from "@opencode/plugin";',
+				HOST_PACKAGES,
+			),
+		).toThrow("host runtime is not external: @opencode/plugin/rpc");
 	});
 
 	test("fails when a required host runtime is bundled instead of imported", () => {
@@ -722,7 +858,7 @@ describe("validateRootShims", () => {
 const BUN_LOCK_FIXTURE = `{
   "lockfileVersion": 1,
   "packages": {
-    "@opencode/theme": ["@opencode/theme@2.1.4", "", { "dependencies": { "@opentui/core": "0.6.8" } }, "sha512-x"],
+    "@opencode/theme": ["@opencode/theme@2.2.0", "", { "dependencies": { "@opentui/core": "0.7.0" } }, "sha512-x"],
     "@opentui/core": ["@opentui/core@0.6.8", "", {}, "sha512-y"],
     "@opentui/solid": ["@opentui/solid@0.6.8", "", { "peerDependencies": { "solid-js": "1.9.12" } }, "sha512-z"],
     "solid-js": ["solid-js@1.9.17", "", { "dependencies": { "seroval": "~1.6.8" } }, "sha512-w"],
@@ -740,7 +876,7 @@ describe("lockedVersions", () => {
 			]),
 		).toEqual(
 			new Map([
-				["@opencode/theme", "2.1.4"],
+				["@opencode/theme", "2.2.0"],
 				["@opentui/core", "0.6.8"],
 				["solid-js", "1.9.17"],
 			]),
@@ -760,7 +896,7 @@ describe("lockedVersions", () => {
 
 describe("pinnedPeerSpecs", () => {
 	const locked = new Map([
-		["@opencode/theme", "2.1.4"],
+		["@opencode/theme", "2.2.0"],
 		["@opentui/core", "0.6.8"],
 		["@opentui/solid", "0.6.8"],
 		["solid-js", "1.9.17"],
@@ -768,7 +904,7 @@ describe("pinnedPeerSpecs", () => {
 
 	test("pins each host peer to the version the source lockfile resolves", () => {
 		expect(pinnedPeerSpecs(PEERS, locked)).toEqual([
-			"@opencode/theme@2.1.4",
+			"@opencode/theme@2.2.0",
 			"@opentui/core@0.6.8",
 			"@opentui/solid@0.6.8",
 			"solid-js@1.9.17",
@@ -877,9 +1013,42 @@ describe("validateConsumerExports", () => {
 			hasDefault: false,
 			keys: ["QuotaRpc"],
 		},
+		{
+			specifier: "./gui-experimental",
+			resolved: installed("dist/gui-experimental.cjs"),
+			hasDefault: true,
+			keys: ["default"],
+		},
 	];
 
-	test("accepts all four exports resolved from the installed consumer copy", () => {
+	test("GUI resolution is checked independently and is not evidence of a loaded module", () => {
+		const gui = {
+			specifier: "./gui-experimental",
+			resolved: installed("dist/gui-experimental.cjs"),
+		};
+		const options = { consumerDir, name: PACKAGE, exports: EXPORTS };
+		expect(() => validateConsumerExportResolution(gui, options)).not.toThrow();
+		expect(() =>
+			validateConsumerExportResolution(
+				{ ...gui, resolved: installed("dist/tui.js") },
+				options,
+			),
+		).toThrow("expected");
+		expect(() =>
+			validateConsumerExportResolution(
+				{ ...gui, resolved: "/checkout/dist/gui-experimental.cjs" },
+				options,
+			),
+		).toThrow("outside");
+		expect(() =>
+			validateConsumerExports(
+				[...goodResults().slice(0, 4), { ...gui, hasDefault: false, keys: [] }],
+				options,
+			),
+		).toThrow("exposes no usable module");
+	});
+
+	test("accepts all five exports resolved from the installed consumer copy", () => {
 		expect(() =>
 			validateConsumerExports(goodResults(), {
 				consumerDir,

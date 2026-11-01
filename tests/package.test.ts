@@ -9,6 +9,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	bannedArtifactContent,
+	validateBundleImports,
+} from "../scripts/release-acceptance";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
@@ -149,6 +153,16 @@ describe("built artifacts", () => {
 
 	test("dist contains exactly the CLI entry files and the GUI bundle", () => {
 		expect(readdirSync(join(root, "dist")).sort()).toEqual(EXPECTED_DIST_FILES);
+	});
+
+	test("release acceptance validates every actual bundle, not only synthetic fixtures", () => {
+		for (const file of EXPECTED_DIST_FILES) {
+			const code = readFileSync(dist(file), "utf8");
+			expect(() =>
+				validateBundleImports(`dist/${file}`, code, hostPackages),
+			).not.toThrow();
+			expect(bannedArtifactContent(code, root)).toBe(false);
+		}
 	});
 
 	test("each root JS shim loads and re-exports its dist module", async () => {
