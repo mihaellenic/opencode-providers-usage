@@ -191,9 +191,9 @@ no credentials and runs outside the repository:
 export CONSUMER_DIR="$SCRATCH_ROOT/post-publish-consumer"
 mkdir -p "$CONSUMER_DIR" && cd "$CONSUMER_DIR"
 npm init -y >/dev/null
-npm pkg set overrides.solid-js=1.9.12
+npm pkg set overrides.solid-js=1.9.18
 npm install --ignore-scripts opencode-providers-usage@0.1.0 \
-  @opencode/theme@2.2.0 @opentui/core@0.6.8 @opentui/solid@0.6.8 solid-js@1.9.12
+  @opencode/theme@2.2.5 @opentui/core@0.8.0 @opentui/solid@0.8.0 solid-js@1.9.18
 cat > load-check.mjs <<'EOF'
 const names = [
   "opencode-providers-usage",
@@ -212,9 +212,10 @@ bun load-check.mjs
 ```
 
 The peer pins and the `solid-js` override match the consumer-install check in
-`scripts/release-acceptance.ts`. `@opentui/solid@0.6.8` declares an exact
-`solid-js@1.9.12` peer, and the override forces the locked `1.9.12`. If npm
-resolves anything differently, stop and report.
+`scripts/release-acceptance.ts`. The `solid-js` override keeps a
+single locked `solid-js@1.9.18` in the consumer tree; there is no `seroval`
+override, so npm resolves the patched `seroval` range that `solid-js` declares.
+If npm resolves anything differently, stop and report.
 
 This check imports four CLI export paths under Bun and resolves the fifth GUI
 path; resolution is not a GUI load test. Repeat the candidate host smoke above

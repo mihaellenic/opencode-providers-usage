@@ -64,7 +64,7 @@ describe("Desktop GUI support statements (Task 8)", () => {
 		test(`${name} qualifies the Desktop GUI as experimental with exact tested versions`, () => {
 			expect(doc).toMatch(/experimental/i);
 			expect(doc).toContain("@opencode/plugin");
-			expect(doc).toContain("2.2.0");
+			expect(doc).toContain("2.2.5");
 			expect(doc).toContain("Desktop `2.2.1`");
 		});
 
@@ -73,10 +73,17 @@ describe("Desktop GUI support statements (Task 8)", () => {
 				"Historical validation: OpenCode `2.1.4` (V2 plugin, RPC, and terminal APIs)",
 			);
 			expect(doc).toContain(
-				"current package SDK is `@opencode/plugin` `2.2.0`",
+				"current package SDK is `@opencode/plugin` `2.2.5`",
+			);
+			expect(doc).toContain("SDK build version is not host test evidence");
+			expect(doc).toContain(
+				"clean TUI smoke on CLI `2.2.0` under the then-candidate `2.2.0` SDK",
 			);
 			expect(doc).toContain(
-				"clean TUI smoke on CLI `2.2.0` under the candidate SDK",
+				"validation on `2.2.0`, `2.2.1` and `2.2.2` is historical",
+			);
+			expect(doc).toContain(
+				"no real host smoke has been run for the `2.2.5` stack",
 			);
 			expect(doc).toContain("synthetic smoke on the Desktop `2.2.1` server");
 			expect(doc).toContain(
@@ -141,7 +148,7 @@ describe("Desktop GUI support statements (Task 8)", () => {
 	test("README intro counts five entrypoints and names the SDK and toolchain", () => {
 		expect(readme).toContain("exports five entrypoints");
 		expect(readme).not.toContain("exports four entrypoints");
-		expect(readme).toMatch(/SDK[^\n]*`2\.2\.0`/);
+		expect(readme).toMatch(/SDK[^\n]*`2\.2\.5`/);
 	});
 
 	test("support.md inlines the smoke table with provenance, gaps and fixture labels", () => {
@@ -170,12 +177,14 @@ describe("Desktop GUI support details (final fix)", () => {
 		expect(row).toContain("about 300000 ms in total");
 	});
 
-	test("documents why OpenTUI 0.6.8 is retained", () => {
+	test("states the current OpenTUI stack and keeps the old pin reason historical", () => {
 		expect(support).toContain(
-			"`@opentui/solid` `0.6.8` is retained because `0.7.0` changed glyph rounding in the Ollama credit bar",
+			"`@opentui/core` and `@opentui/solid` `0.8.0`, `solid-js` `1.9.18`",
 		);
 		expect(support).toContain(
-			"OpenTUI `0.7.0` peers of SDK `2.2.0` are optional",
+			"Historically, `@opentui/solid` `0.6.8` was retained because `0.7.0` changed glyph rounding in the Ollama credit bar",
 		);
+		expect(support).not.toContain("`0.6.8` is retained");
+		expect(support).not.toContain("peers of SDK `2.2.0` are optional");
 	});
 });

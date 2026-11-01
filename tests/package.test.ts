@@ -129,14 +129,43 @@ describe("package manifest", () => {
 		expect(license).toContain("Copyright (c) 2026 Mihael Lenic");
 	});
 
-	test("declares the host runtime contract without changing peers", () => {
-		expect(manifest.dependencies["@opencode/plugin"]).toBe("2.2.0");
+	test("declares the coordinated host runtime contract", () => {
+		expect(manifest.dependencies["@opencode/plugin"]).toBe("2.2.5");
 		expect(manifest.peerDependencies).toEqual({
-			"@opencode/theme": "2.2.0",
-			"@opentui/core": ">=0.6.8",
-			"@opentui/solid": ">=0.6.8",
-			"solid-js": ">=1.9.0",
+			"@opencode/theme": "2.2.5",
+			"@opentui/core": ">=0.8.0",
+			"@opentui/solid": ">=0.8.0",
+			"solid-js": ">=1.9.18",
 		});
+	});
+
+	test("pins the source dev toolchain to the approved patched stack", () => {
+		expect(manifest.devDependencies["@opentui/solid"]).toBe("0.8.0");
+		expect(manifest.devDependencies["solid-js"]).toBe("1.9.18");
+		expect(manifest.devDependencies["babel-preset-solid"]).toBe("1.9.16");
+	});
+
+	test("lets source resolve seroval through solid-js and never overrides it", () => {
+		// Solid 1.9.18 declares the patched seroval range itself. A source-only
+		// override would not protect downstream consumers, so none may exist.
+		expect(manifest.overrides?.seroval).toBeUndefined();
+		expect(manifest.overrides).toBeUndefined();
+	});
+
+	test("minimum peers exclude the vulnerable pre-0.8.0 and pre-1.9.18 hosts", () => {
+		const min = (range: string) => range.replace(/^>=/, "");
+		const atLeast = (a: string, b: string) => {
+			const x = a.split(".").map(Number);
+			const y = b.split(".").map(Number);
+			for (let i = 0; i < 3; i++) {
+				if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+			}
+			return true;
+		};
+		const peers = manifest.peerDependencies;
+		expect(atLeast(min(peers["@opentui/core"]), "0.8.0")).toBe(true);
+		expect(atLeast(min(peers["@opentui/solid"]), "0.8.0")).toBe(true);
+		expect(atLeast(min(peers["solid-js"]), "1.9.18")).toBe(true);
 	});
 });
 
@@ -391,7 +420,7 @@ describe("README Desktop GUI statement", () => {
 
 	test("is experimental, version-qualified, and keeps web/V1/forks unsupported", () => {
 		expect(readme).toContain("Desktop GUI (experimental)");
-		expect(readme).toContain("`@opencode/plugin` `2.2.0`");
+		expect(readme).toContain("`@opencode/plugin` `2.2.5`");
 		expect(readme).toContain("Desktop `2.2.1`");
 		expect(readme).toContain("Web, V1, and OpenCode forks are not supported.");
 		expect(readme).toContain("exports five entrypoints");

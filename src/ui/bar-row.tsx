@@ -1,3 +1,4 @@
+import type { BoxRenderable, TextRenderable } from "@opentui/core";
 import { jsx } from "@opentui/solid/jsx-runtime";
 import type { SidebarCell, SidebarLine, SidebarTone } from "./sidebar-model";
 import type { SidebarTheme } from "./theme";
@@ -58,6 +59,8 @@ export function barRow(theme: SidebarTheme, line: BarRowInput) {
 			? theme.muted
 			: toneColor(theme, line.percent.tone);
 	const fill = Math.min(1, Math.max(0, line.fill));
+	// Fresh per call, so a disposed tree never shares segment references.
+	const segments: { used?: TextRenderable; remaining?: TextRenderable } = {};
 	return jsx("box", {
 		key: line.id,
 		flexDirection: "row",
@@ -83,12 +86,36 @@ export function barRow(theme: SidebarTheme, line: BarRowInput) {
 				flexGrow: 1,
 				flexBasis: 0,
 				minWidth: 1,
+				overflow: "hidden",
+				// The native flex split rounds each edge to the nearest cell, but the
+				// approved geometry paints floor(track * fill) used glyphs. Once the
+				// track is allocated its integer width is split explicitly; the flex
+				// split above only paints the first frame and is replaced on the
+				// resize that this assignment triggers.
+				onSizeChange(this: BoxRenderable) {
+					const { used, remaining } = segments;
+					const track = this.width;
+					const usedWidth = Math.min(track, Math.floor(track * fill));
+					if (used) {
+						used.flexGrow = 0;
+						used.flexBasis = "auto";
+						used.width = usedWidth;
+					}
+					if (remaining) {
+						remaining.flexGrow = 0;
+						remaining.flexBasis = "auto";
+						remaining.width = track - usedWidth;
+					}
+				},
 				children: [
 					...(fill <= 0
 						? []
 						: [
 								jsx("text", {
 									key: `${line.id}:used`,
+									ref: (node: TextRenderable) => {
+										segments.used = node;
+									},
 									flexGrow: fill,
 									flexBasis: 0,
 									flexShrink: 0,
@@ -103,6 +130,9 @@ export function barRow(theme: SidebarTheme, line: BarRowInput) {
 						: [
 								jsx("text", {
 									key: `${line.id}:remaining`,
+									ref: (node: TextRenderable) => {
+										segments.remaining = node;
+									},
 									flexGrow: 1 - fill,
 									flexBasis: 0,
 									flexShrink: 0,

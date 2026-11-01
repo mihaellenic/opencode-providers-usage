@@ -1237,9 +1237,10 @@ export interface InstalledPackage {
 
 /**
  * Resolve each override name to its locked version. Every occurrence of the
- * package in the consumer tree, including the exact solid-js peer declared by
- * @opentui/solid, is then forced to that version. This is an explicit, reviewed
- * resolution of the tested configuration, not a relaxed install.
+ * package in the consumer tree is forced to that version so the host and plugin
+ * share one Solid runtime. OpenTUI 0.8 accepts the pinned version without a peer
+ * conflict. This singleton pin is not a seroval security override: the patched
+ * transitive dependency must resolve through Solid's declared dependency range.
  */
 export function consumerOverrides(
 	lockedHost: ReadonlyMap<string, string>,

@@ -39,29 +39,26 @@
     "./gui-experimental": "./dist/gui-experimental.cjs"
   },
   "dependencies": {
-    "@opencode/plugin": "2.2.0"
+    "@opencode/plugin": "2.2.5"
   },
   "peerDependencies": {
-    "@opencode/theme": "2.2.0",
-    "@opentui/core": ">=0.6.8",
-    "@opentui/solid": ">=0.6.8",
-    "solid-js": ">=1.9.0"
+    "@opencode/theme": "2.2.5",
+    "@opentui/core": ">=0.8.0",
+    "@opentui/solid": ">=0.8.0",
+    "solid-js": ">=1.9.18"
   },
   "devDependencies": {
     "@babel/core": "7.29.7",
     "@babel/preset-typescript": "7.27.1",
     "@biomejs/biome": "2.6.3",
     "@happy-dom/global-registrator": "21.0.4",
-    "@opentui/solid": "0.6.8",
+    "@opentui/solid": "0.8.0",
     "@types/bun": "1.4.4",
-    "babel-preset-solid": "1.9.12",
+    "babel-preset-solid": "1.9.16",
     "happy-dom": "21.0.4",
-    "solid-js": "1.9.12",
+    "solid-js": "1.9.18",
     "typescript": "7.0.2",
     "vite": "7.3.7",
     "vite-plugin-solid": "2.11.14"
-  },
-  "overrides": {
-    "seroval": "1.6.8"
   }
 }

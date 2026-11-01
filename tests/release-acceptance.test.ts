@@ -101,10 +101,10 @@ const EXPORTS = {
 };
 
 const PEERS = {
-	"@opencode/theme": "2.2.0",
-	"@opentui/core": ">=0.6.8",
-	"@opentui/solid": ">=0.6.8",
-	"solid-js": ">=1.9.0",
+	"@opencode/theme": "2.2.5",
+	"@opentui/core": ">=0.8.0",
+	"@opentui/solid": ">=0.8.0",
+	"solid-js": ">=1.9.18",
 };
 
 const goodManifest = (): Record<string, unknown> => ({
@@ -115,7 +115,7 @@ const goodManifest = (): Record<string, unknown> => ({
 	publishConfig: { access: "public" },
 	exports: structuredClone(EXPORTS),
 	scripts: { prepack: "bun run build" },
-	dependencies: { "@opencode/plugin": "2.2.0" },
+	dependencies: { "@opencode/plugin": "2.2.5" },
 	peerDependencies: PEERS,
 });
 
@@ -865,10 +865,10 @@ describe("validateRootShims", () => {
 const BUN_LOCK_FIXTURE = `{
   "lockfileVersion": 1,
   "packages": {
-    "@opencode/theme": ["@opencode/theme@2.2.0", "", { "dependencies": { "@opentui/core": "0.7.0" } }, "sha512-x"],
-    "@opentui/core": ["@opentui/core@0.6.8", "", {}, "sha512-y"],
-    "@opentui/solid": ["@opentui/solid@0.6.8", "", { "peerDependencies": { "solid-js": "1.9.12" } }, "sha512-z"],
-    "solid-js": ["solid-js@1.9.17", "", { "dependencies": { "seroval": "~1.6.8" } }, "sha512-w"],
+    "@opencode/theme": ["@opencode/theme@2.2.5", "", { "dependencies": { "@opentui/core": "0.8.0" } }, "sha512-x"],
+    "@opentui/core": ["@opentui/core@0.8.0", "", {}, "sha512-y"],
+    "@opentui/solid": ["@opentui/solid@0.8.0", "", { "peerDependencies": { "solid-js": "^1.9.12" } }, "sha512-z"],
+    "solid-js": ["solid-js@1.9.18", "", { "dependencies": { "seroval": "~1.6.11" } }, "sha512-w"],
     "@opencode/theme/@opentui/core": ["@opentui/core@0.7.0", "", {}, "sha512-n"],
   },
 }`;
@@ -883,9 +883,9 @@ describe("lockedVersions", () => {
 			]),
 		).toEqual(
 			new Map([
-				["@opencode/theme", "2.2.0"],
-				["@opentui/core", "0.6.8"],
-				["solid-js", "1.9.17"],
+				["@opencode/theme", "2.2.5"],
+				["@opentui/core", "0.8.0"],
+				["solid-js", "1.9.18"],
 			]),
 		);
 	});
@@ -903,18 +903,18 @@ describe("lockedVersions", () => {
 
 describe("pinnedPeerSpecs", () => {
 	const locked = new Map([
-		["@opencode/theme", "2.2.0"],
-		["@opentui/core", "0.6.8"],
-		["@opentui/solid", "0.6.8"],
-		["solid-js", "1.9.17"],
+		["@opencode/theme", "2.2.5"],
+		["@opentui/core", "0.8.0"],
+		["@opentui/solid", "0.8.0"],
+		["solid-js", "1.9.18"],
 	]);
 
 	test("pins each host peer to the version the source lockfile resolves", () => {
 		expect(pinnedPeerSpecs(PEERS, locked)).toEqual([
-			"@opencode/theme@2.2.0",
-			"@opentui/core@0.6.8",
-			"@opentui/solid@0.6.8",
-			"solid-js@1.9.17",
+			"@opencode/theme@2.2.5",
+			"@opentui/core@0.8.0",
+			"@opentui/solid@0.8.0",
+			"solid-js@1.9.18",
 		]);
 	});
 
@@ -922,7 +922,20 @@ describe("pinnedPeerSpecs", () => {
 		const drift = new Map(locked);
 		drift.set("solid-js", "1.8.0");
 		expect(() => pinnedPeerSpecs(PEERS, drift)).toThrow(
-			"does not satisfy >=1.9.0",
+			"does not satisfy >=1.9.18",
+		);
+	});
+
+	test("refuses the previous vulnerable host stack against the raised minimum peers", () => {
+		const old = new Map(locked);
+		old.set("@opentui/core", "0.6.8");
+		expect(() => pinnedPeerSpecs(PEERS, old)).toThrow(
+			"does not satisfy >=0.8.0",
+		);
+		const oldSolid = new Map(locked);
+		oldSolid.set("solid-js", "1.9.17");
+		expect(() => pinnedPeerSpecs(PEERS, oldSolid)).toThrow(
+			"does not satisfy >=1.9.18",
 		);
 	});
 
