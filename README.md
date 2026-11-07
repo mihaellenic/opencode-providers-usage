@@ -47,7 +47,7 @@ live in [`docs/support.md`](docs/support.md).
 
 For an unreleased revision, use the source-checkout instructions below instead.
 Before publishing, the accepted package must pass named-package installation on
-CLI `2.2.0` and the real-host smoke gates in [the release runbook](docs/releasing.md).
+CLI `2.2.6` (the owner-approved release target) and the real-host smoke gates in [the release runbook](docs/releasing.md).
 
 ```bash
 npm install opencode-providers-usage

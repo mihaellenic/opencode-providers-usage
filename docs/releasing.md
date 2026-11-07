@@ -119,7 +119,8 @@ steps depend on it. If `HEAD` changes for any reason, rerun this whole section.
 
 Install the accepted tarball into an isolated consumer with its locked host peers,
 using package identity rather than a source-checkout symlink. Test the documented
-named-package installation on OpenCode CLI 2.2.0, including automatic TUI discovery
+named-package installation on OpenCode CLI 2.2.6 (owner-approved release target;
+earlier 2.2.0 evidence is historical), including automatic TUI discovery
 without duplicate registration. Load `./gui-experimental` in a real Desktop host;
 record its actual version/platform and the accepted GUI bundle hash.
 

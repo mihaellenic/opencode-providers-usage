@@ -169,7 +169,7 @@ provider behavior.
 - [ ] The support-matrix test passes for every registered adapter capability.
 - [ ] The built artifact loads headlessly with the companion disabled and
       enabled using synthetic inputs.
-- [ ] The accepted tarball installs by package identity and loads on CLI 2.2.0
+- [ ] The accepted tarball installs by package identity and loads on CLI 2.2.6
       without duplicate plugin registration; all five exports load in their
       intended terminal/Desktop hosts. Record the source SHA, artifact integrity,
       bundle hash, host versions/platform, scenario outcomes and limitations.
