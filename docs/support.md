@@ -428,7 +428,13 @@ prompt's currently selected provider. The exception is `claude-agent`: see
 - Clicking the card opens the full usage page, like other sidebar cards.
 - Each collection may run user/home-level Claude Code hooks, as described in
   [Claude Code local CLI source](#claude-code-local-cli-source).
-- The Desktop GUI is unchanged and has no Claude sidebar card.
+- The experimental Desktop GUI shows the same card in its summary for
+  `claude-agent`, under the same header and with the same rows, copy and
+  collection policy. Its triggers are input, focus, model-step events and a
+  model change within `claude-agent`, and the 60-second floor applies to all of
+  them. The summary makes no generic quota read for that ID and never polls
+  while idle. Clicking it opens the dashboard. This is covered by unit tests only;
+  it is not verified on a real Desktop host.
 
 ## Usage page presentation
 

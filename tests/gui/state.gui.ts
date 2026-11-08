@@ -931,4 +931,133 @@ describe("usage controller", () => {
 		h.controller.open("summary");
 		expect(h.views).toEqual(["summary"]);
 	});
+
+	describe("claude-agent summary", () => {
+		const CLAUDE = "claude-agent";
+		const FLOOR = 60_000;
+
+		test("selecting claude-agent collects Claude only, with no quota rpc", async () => {
+			const h = setup({ provider: CLAUDE });
+			h.session.setVisible(true);
+			expect(counts(h)).toEqual({ list: 0, get: 0, refresh: 0, claude: 1 });
+			expect(h.controller.summary()).toEqual({
+				kind: "claude",
+				state: { status: "loading" },
+			});
+			h.rpc.resolve("claudeCodeUsage", usage(5_000_000));
+			await flush();
+			expect(h.controller.summary()).toMatchObject({
+				kind: "claude",
+				state: { status: "ready" },
+			});
+		});
+
+		test("a null collection is failed", async () => {
+			const h = setup({ provider: CLAUDE });
+			h.session.setVisible(true);
+			h.rpc.resolve("claudeCodeUsage", null);
+			await flush();
+			expect(h.controller.summary()).toEqual({
+				kind: "claude",
+				state: { status: "failed" },
+			});
+		});
+
+		test("a hung collection fails at the rpc timeout", async () => {
+			const h = setup({ provider: CLAUDE });
+			h.session.setVisible(true);
+			h.clock.advance(RPC_TIMEOUT_MS);
+			await flush();
+			expect(h.controller.summary()).toEqual({
+				kind: "claude",
+				state: { status: "failed" },
+			});
+		});
+
+		test("triggers are throttled to one per floor from the attempt start", async () => {
+			const h = setup({ provider: CLAUDE });
+			h.session.setVisible(true);
+			h.rpc.resolve("claudeCodeUsage", usage(5_000_000));
+			await flush();
+			h.clock.advance(FLOOR - 1);
+			h.session.emit({ kind: "input" });
+			h.session.emit({ kind: "focus" });
+			h.session.emit({ kind: "step-started", providerID: CLAUDE });
+			h.session.emit({ kind: "step-finished", providerID: CLAUDE });
+			expect(counts(h).claude).toBe(1);
+			h.clock.advance(1);
+			h.session.emit({ kind: "input" });
+			expect(counts(h).claude).toBe(2);
+			h.session.emit({ kind: "step-finished", providerID: CLAUDE });
+			expect(counts(h).claude).toBe(2);
+		});
+
+		test("a model change inside claude-agent is a throttled trigger", async () => {
+			const h = setup({ provider: CLAUDE });
+			h.session.setVisible(true);
+			h.rpc.resolve("claudeCodeUsage", usage(5_000_000));
+			await flush();
+			h.session.setProvider(CLAUDE);
+			expect(counts(h).claude).toBe(1);
+			h.clock.advance(FLOOR);
+			h.session.setProvider(CLAUDE);
+			expect(counts(h).claude).toBe(2);
+		});
+
+		test("never polls while idle", async () => {
+			const h = setup({ provider: CLAUDE });
+			h.session.setVisible(true);
+			h.rpc.resolve("claudeCodeUsage", usage(50_000_000));
+			await flush();
+			h.clock.advance(1_000_000);
+			await flush();
+			expect(counts(h)).toEqual({ list: 0, get: 0, refresh: 0, claude: 1 });
+		});
+
+		test("reselecting claude-agent collects again regardless of the floor", async () => {
+			const h = setup({ provider: CLAUDE });
+			h.session.setVisible(true);
+			h.rpc.resolve("claudeCodeUsage", usage(5_000_000));
+			await flush();
+			h.session.setProvider("a");
+			expect(counts(h).get).toBe(1);
+			h.session.setProvider(CLAUDE);
+			expect(counts(h).claude).toBe(2);
+		});
+
+		test("leaving claude-agent aborts and drops a late result", async () => {
+			const h = setup({ provider: CLAUDE });
+			h.session.setVisible(true);
+			const signal = signalOf(callsOf(h, "claudeCodeUsage")[0]);
+			h.session.setProvider("a");
+			expect(signal.aborted).toBe(true);
+			h.rpc.resolve("claudeCodeUsage", usage(5_000_000));
+			await flush();
+			expect(h.controller.summary().kind).not.toBe("claude");
+			h.session.setProvider(CLAUDE);
+			expect(h.controller.summary()).toEqual({
+				kind: "claude",
+				state: { status: "loading" },
+			});
+		});
+
+		test("hidden panel makes no Claude request and hiding aborts", async () => {
+			const h = setup({ provider: CLAUDE, hidden: true });
+			expect(counts(h).claude).toBe(0);
+			h.session.setVisible(true);
+			const signal = signalOf(callsOf(h, "claudeCodeUsage")[0]);
+			h.session.setVisible(false);
+			expect(signal.aborted).toBe(true);
+			h.session.emit({ kind: "input" });
+			expect(counts(h).claude).toBe(1);
+		});
+
+		test("dashboard view keeps its own Claude collection", async () => {
+			const h = setup({ provider: CLAUDE });
+			h.session.setVisible(true);
+			h.controller.open("dashboard");
+			expect(counts(h).claude).toBe(2);
+			expect(counts(h).list).toBe(1);
+		});
+	});
 });

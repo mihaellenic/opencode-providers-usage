@@ -199,6 +199,29 @@ async function openDashboard(h: ReturnType<typeof setup>, root: HTMLElement) {
 }
 
 describe("SummaryView", () => {
+	test("claude-agent shows the Claude Code card in every state", async () => {
+		const h = setup("claude-agent");
+		const root = mount(h);
+		expect(root.querySelector('[data-state="loading"]')).not.toBeNull();
+		expect(root.textContent).toContain("Claude Code");
+		expect(root.textContent).toContain("Checking quota…");
+		h.rpc.resolve("claudeCodeUsage", claude);
+		await flush();
+		expect(root.querySelector('[data-state="ready"]')).not.toBeNull();
+		expect(root.textContent).toContain("5h");
+		expect(root.textContent).toContain("7d");
+		expect(root.textContent).not.toContain("Quota unavailable");
+
+		const failed = setup("claude-agent");
+		const failedRoot = mount(failed);
+		failed.rpc.resolve("claudeCodeUsage", null);
+		await flush();
+		expect(failedRoot.querySelector('[data-state="failed"]')).not.toBeNull();
+		expect(failedRoot.textContent).toContain("Claude Code");
+		expect(failedRoot.textContent).toContain("Usage unavailable");
+		expect(failedRoot.querySelector(".ou-note")).toBeNull();
+	});
+
 	test("renders distinct text for every state", async () => {
 		const texts = new Set<string>();
 

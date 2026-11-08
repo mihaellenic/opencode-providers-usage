@@ -1,4 +1,5 @@
 import { createMemo, type JSX, onCleanup, onMount, Show } from "solid-js";
+import { claudeSidebarModel } from "../ui/claude-sidebar";
 import { defaultLocaleContext } from "../ui/format";
 import { buildSidebarModel, type SidebarLine } from "../ui/sidebar-model";
 import { UsageLines } from "./ProviderCard";
@@ -39,6 +40,15 @@ export function SummaryView(props: SummaryViewProps): JSX.Element {
 					status: "No model selected",
 					lines: [],
 				};
+			case "claude": {
+				const model = claudeSidebarModel(summary.state, locale, now);
+				return {
+					state: summary.state.status,
+					status: model.provider,
+					name: model.provider,
+					lines: model.lines,
+				};
+			}
 			case "loading":
 				return { state: "loading", status: "Loading usage…", lines: [] };
 			case "ready": {

@@ -172,7 +172,8 @@ has already been imported.
   then `Usage unavailable` (one muted line, no error detail) if collection fails.
   Collection starts on every (re)selection; later input, terminal focus,
   route/session change and model-step completion start one only if 60 seconds
-  have passed since the previous attempt started. See
+  have passed since the previous attempt started. The experimental Desktop GUI
+  summary shows the same card with the same policy. See
   [Claude Code usage](#claude-code-usage).
 - `Show provider usage` (`provider-quota.usage`) opens the full page. The slash
   command is `/usage`; if that name is occupied at setup the plugin registers
@@ -211,9 +212,9 @@ No UI action triggers a model request or an inference call.
   unsupported platform, or a server without the Claude Code usage RPC. Other
   providers keep rendering and no error is shown. The sidebar card instead keeps
   its header and shows `Usage unavailable` on failure.
-- The sidebar card is shown only for `claude-agent` and uses the same rows,
-  collection and collection-floor rules as described in
-  [Terminal UI](#terminal-ui).
+- The sidebar card (and the Desktop GUI summary) is shown only for
+  `claude-agent` and uses the same rows, collection and collection-floor rules
+  as described in [Terminal UI](#terminal-ui).
 - Only the current session and current week percentages and reset times are
   shown. Model-specific windows are ignored, never displayed, and never treated
   as the overall week.

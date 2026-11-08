@@ -5,6 +5,11 @@ import {
 	type ActivityRefreshDriver,
 	createActivityRefreshDriver,
 } from "../ui/activity-refresh";
+import {
+	CLAUDE_AGENT_PROVIDER_ID,
+	type ClaudeSidebarState,
+	createClaudeSidebarController,
+} from "../ui/claude-sidebar";
 import { nextQuotaExpiry, revalidateQuota } from "../ui/format";
 import { sidebarQuotaPresentation } from "../ui/quota-presentation";
 import {
@@ -22,6 +27,7 @@ export const RPC_TIMEOUT_MS = 60_000;
 
 export type SummaryState =
 	| { kind: "no-selection" }
+	| { kind: "claude"; state: ClaudeSidebarState }
 	| { kind: "loading"; providerID: string }
 	| { kind: "ready"; providerID: string; view: QuotaProviderView }
 	| { kind: "failed"; providerID: string; lastKnown?: QuotaProviderView };
@@ -142,6 +148,12 @@ export function createUsageController(deps: {
 				const entry = entries.get(provider.providerID);
 				if (entry !== undefined)
 					consider(nextQuotaExpiry(entry.obs.quota, now));
+			}
+		} else if (selected() === CLAUDE_AGENT_PROVIDER_ID) {
+			const state = claudeSidebar.state();
+			if (state.status === "ready") {
+				const delay = claudeCountdownRefreshMs(state.usage, now);
+				if (delay !== undefined) delays.push(delay);
 			}
 		} else {
 			const id = selected();
@@ -359,7 +371,7 @@ export function createUsageController(deps: {
 	/** Bounded Claude collection: a timeout or abort resolves to null. */
 	const collectClaude = (
 		signal: AbortSignal,
-		seq: number,
+		onSettled?: () => void,
 	): Promise<ClaudeUsage | null> =>
 		new Promise<ClaudeUsage | null>((resolve) => {
 			const inner = new AbortController();
@@ -377,7 +389,7 @@ export function createUsageController(deps: {
 				done = true;
 				deps.clearTimer(timer);
 				signal.removeEventListener("abort", onAbort);
-				if (seq === claudeSeq) claudeInFlight = false;
+				onSettled?.();
 				resolve(value);
 			}
 			signal.addEventListener("abort", onAbort, { once: true });
@@ -390,13 +402,36 @@ export function createUsageController(deps: {
 			void pending.then(finish, () => finish(null));
 		});
 
+	// The summary card for the claude-agent provider has no quota read; this
+	// controller owns its collection with the same policy as the terminal.
+	const claudeSidebar = createClaudeSidebarController({
+		collect: (signal) => collectClaude(signal),
+		now: deps.now,
+		onChange: () => notify(),
+	});
+
+	const claudeSummaryActive = (): boolean =>
+		!disposed &&
+		visible &&
+		view === "summary" &&
+		selected() === CLAUDE_AGENT_PROVIDER_ID;
+
+	let claudeActive = false;
+	const syncClaudeSidebar = (active: boolean): void => {
+		claudeActive = active;
+		claudeSidebar.select(active);
+	};
+
 	const startClaude = (): void => {
 		cancelClaude();
 		const token = tokenFor("claude-code");
 		const seq = claudeSeq;
 		claudeInFlight = true;
 		const request = createClaudeUsageRequest({
-			collect: (signal) => collectClaude(signal, seq),
+			collect: (signal) =>
+				collectClaude(signal, () => {
+					if (seq === claudeSeq) claudeInFlight = false;
+				}),
 			apply: (usage) => {
 				if (seq !== claudeSeq || !isCurrent(token)) return;
 				claude = usage;
@@ -429,7 +464,9 @@ export function createUsageController(deps: {
 	};
 
 	const collect = (): void => {
+		syncClaudeSidebar(claudeSummaryActive());
 		if (view === "summary") {
+			if (selected() === CLAUDE_AGENT_PROVIDER_ID) return;
 			if (inventory !== "ready") startList();
 			const id = selected();
 			if (id !== undefined) startGet(id);
@@ -443,6 +480,7 @@ export function createUsageController(deps: {
 		generation += 1;
 		for (const request of [...active]) request.cancel();
 		cancelClaude();
+		syncClaudeSidebar(false);
 	};
 
 	const idle = createIdleScheduler({
@@ -454,7 +492,9 @@ export function createUsageController(deps: {
 				if (disposed || !visible) return;
 				if (view === "summary") {
 					const id = selected();
-					if (id !== undefined) driver?.completed(id);
+					// Claude Code is never polled while idle.
+					if (id !== undefined && id !== CLAUDE_AGENT_PROVIDER_ID)
+						driver?.completed(id);
 					return;
 				}
 				if (inventory !== "ready") startList();
@@ -509,7 +549,8 @@ export function createUsageController(deps: {
 				case "focus": {
 					if (view === "summary") {
 						const id = selected();
-						if (id !== undefined) driver?.activity(id);
+						if (id === CLAUDE_AGENT_PROVIDER_ID) claudeSidebar.trigger();
+						else if (id !== undefined) driver?.activity(id);
 					} else {
 						for (const id of connectedIDs()) driver?.activity(id);
 					}
@@ -517,12 +558,17 @@ export function createUsageController(deps: {
 					break;
 				}
 				case "step-started":
-					if (relevant(event.providerID)) driver?.activity(event.providerID);
-					break;
 				case "step-finished":
-				case "step-failed":
-					if (relevant(event.providerID)) driver?.completed(event.providerID);
+				case "step-failed": {
+					if (!relevant(event.providerID)) break;
+					if (event.providerID === CLAUDE_AGENT_PROVIDER_ID) {
+						claudeSidebar.trigger();
+						break;
+					}
+					if (event.kind === "step-started") driver?.activity(event.providerID);
+					else driver?.completed(event.providerID);
 					break;
+				}
 			}
 		} catch {
 			// Host callbacks must never throw into the host.
@@ -547,8 +593,12 @@ export function createUsageController(deps: {
 			if (disposed) return;
 			summaryFailedFor = undefined;
 			if (visible) {
-				if (view === "summary") restart();
-				else idle.reschedule();
+				if (view === "summary") {
+					// A model change inside claude-agent is a throttled trigger, not
+					// a fresh selection.
+					if (claudeActive && claudeSummaryActive()) claudeSidebar.trigger();
+					else restart();
+				} else idle.reschedule();
 			}
 			notify();
 		}),
@@ -569,6 +619,8 @@ export function createUsageController(deps: {
 		summary() {
 			const id = selected();
 			if (id === undefined) return { kind: "no-selection" };
+			if (id === CLAUDE_AGENT_PROVIDER_ID)
+				return { kind: "claude", state: claudeSidebar.state() };
 			const entry = entries.get(id);
 			const known = entry === undefined ? undefined : viewOf(entry);
 			if (summaryFailedFor === id) {
@@ -611,7 +663,8 @@ export function createUsageController(deps: {
 			if (disposed || !visible) return;
 			if (view === "summary") {
 				const id = selected();
-				if (id !== undefined) void refreshProvider(id);
+				if (id === CLAUDE_AGENT_PROVIDER_ID) claudeSidebar.trigger();
+				else if (id !== undefined) void refreshProvider(id);
 				return;
 			}
 			if (inventory !== "ready") startList();
@@ -622,6 +675,7 @@ export function createUsageController(deps: {
 			if (disposed || !visible) return;
 			if (view === "summary") {
 				if (providerID !== selected()) return;
+				if (providerID === CLAUDE_AGENT_PROVIDER_ID) return;
 				summaryFailedFor = undefined;
 				startGet(providerID);
 			} else {
@@ -643,6 +697,7 @@ export function createUsageController(deps: {
 		dispose() {
 			if (disposed) return;
 			cancelAll();
+			claudeSidebar.dispose();
 			disposed = true;
 			visible = false;
 			for (const unsubscribe of unsubscribers) unsubscribe();
