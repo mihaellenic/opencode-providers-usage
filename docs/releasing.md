@@ -1,199 +1,166 @@
 # Releasing opencode-providers-usage
 
-This runbook covers the first public release (`0.1.0`) and the manual flow that
-applies to every release until release automation is implemented in Task 5.
-Nothing in this document is performed automatically by the repository. A step
-counts as done only when its evidence is recorded in the release report.
-Task 5 is future automation work, not a prerequisite or part of this manual release.
+Releases are automated with Release Please and npm trusted publishing.
+**Merging the release PR into `main` approves publication of that version.**
+Do not merge it just to update the changelog.
 
-## Approval boundary
+## Setup
 
-The following actions require **explicit owner approval** before anyone runs
-them. Research or inference is never authorization:
+Owner-only, one time:
 
-- public-source review of the repository contents;
-- the MIT license and attribution to Mihael Lenic (`package.json` `license` and
-  `author` fields);
-- the public repository identity `mihaellenic/opencode-providers-usage`,
-  including its owner, name, and visibility. The owner `mihaellenic` is a
-  research finding, not authorization to create a repository;
-- creating the repository, adding a remote, and pushing `main`;
-- the first npm publish of `opencode-providers-usage@0.1.0`;
-- creating the `v0.1.0` tag and the GitHub release.
+- Enable **Settings → Actions → General → Allow GitHub Actions to create and approve
+  pull requests**.
+- On npm, configure the package's **Trusted Publisher** for GitHub repository
+  `mihaellenic/opencode-providers-usage` and workflow filename **`release.yml`**.
+  Publishing uses OIDC; do not add a stored npm token or `NODE_AUTH_TOKEN`.
+- For local development, run `bun install` and `bun run setup` to install the
+  Conventional Commit hook. CI also validates commit subjects.
 
-Do not request, paste, or store token values in chat, in the repository, or in
-CI settings.
+Do not request, paste, or store token values in chat, in the repository, or in CI
+settings.
 
-## Preflight
+Tool versions come from [release.yml](../.github/workflows/release.yml) and
+[validate-release-pr.yml](../.github/workflows/validate-release-pr.yml). Use them when
+reproducing a failure locally:
 
-Use the pinned Bun toolchain and an approved temporary directory for scratch
-work. The examples below use placeholders; the path used on the release machine
-for the 0.1.0 candidate is a local example only and must not be copied to other
-machines.
-
-| Check | Required | Notes |
+| Tool | Version | Notes |
 | --- | --- | --- |
-| Bun | 1.4.4 | pinned by `packageManager`, `engines`, and the CI workflow |
-| Node | 24 | release toolchain observation (see note) |
-| npm | 11.16.0 or later | observed, not pinned: the local machine reported 11.19.1 |
+| Bun | 1.4.4 | pinned by `packageManager`, `engines`, and every workflow |
+| Node | 24 | Node 24 is the release toolchain in both release workflows |
+| npm | 11.16.0 | installed and checked by both release workflows |
 
-Node 24 is the release toolchain observation: `node --version` reported v24.22.1
-on the release machine. `ci.yml` does not pin Node, so Node 24 is not a CI match
-and CI does not verify it.
+## 1. Review and merge the release PR
 
-```sh
-# local example only: a per-user temp dir such as <tmp>/T/opencode
-export SCRATCH_ROOT=<approved-scratch-root>
-bun --version        # expect 1.4.4
-node --version       # release toolchain observation: v24.x
-npm --version        # expect 11.16.0 or later
-git status --short   # expect no output: the release source must be committed
-```
+On pushes to `main`, Release Please creates or updates a `chore(main): release X.Y.Z`
+PR with the package version, `CHANGELOG.md`, and `.release-please-manifest.json`.
+The version policy is in [release-please-config.json](../release-please-config.json):
+while below 1.0, `feat` and breaking changes bump the minor version; `fix` bumps the
+patch version. Preserve existing release tags and manifest history.
 
-## Local acceptance (no public action)
+Before merging:
 
-### 1. Install and check
+1. Review the proposed version, changelog, and full diff, especially workflow and
+   acceptance-script changes. License, copyright, and author changes need owner approval.
+2. Find **Validate release PR / release-pr-validation** for the PR's exact current
+   head. The validator runs for same-repository `release-please--` branches on
+   `opened`, `synchronize`, and `reopened` events. A PR created by a bot may not
+   trigger the workflow automatically. If no run appears, inspect the workflow events
+   and Release Please logs, and do not merge until the PR is validated, for example by
+   approving or re-running the workflow after reviewing the diff.
+3. Require a successful validation and inspect its **Summary** tab and logs for
+   acceptance, consumer audit, and head freshness. An absent, pending, stale, or
+   failed run is not success. This is not an enforced required check unless the live
+   branch rules say so; enforce this review yourself before merging.
+4. Recheck the current base and merge result after validation. Freshness verifies the
+   head and PR state at that check only, not the current base or merge result. A
+   changed head needs new validation; a changed base needs renewed review and, where
+   relevant, updated validation.
 
-```sh
-bun install --frozen-lockfile --ignore-scripts
-bun run test
-bun run lint
-bun run typecheck
-bun run build
-bun scripts/bun-audit-gate.ts
-```
+The PR validator checks out the exact PR head and runs typecheck, lint, tests, build,
+commit-subject checks, and artifact acceptance. It has read-only repository and PR
+permissions and no publishing credentials. Its evidence is unsigned and diagnostic,
+not a publishing attestation. A PR can change its own workflow definition, so review
+that code rather than trusting a green check alone.
 
-### 2. Record the source commit
+## 2. Automated publication
 
-Before acceptance, record the exact commit that will be accepted and tagged:
+Merging the release PR triggers [release.yml](../.github/workflows/release.yml). The
+publish job runs only when Release Please reports a created release (or on a recovery
+dispatch, see [Failure and recovery](#failure-and-recovery)), in this order:
 
-```sh
-git rev-parse HEAD   # copy this value into the release report as the source commit
-```
+1. Release Please creates the release tag and GitHub release.
+2. The publisher resolves the tag, which must look like `vX.Y.Z`, and checks out that
+   exact tag, not floating `main`. It verifies that the checked-out tag agrees with
+   `package.json`.
+3. It sets up Node 24, installs npm 11.16.0, and sets up Bun 1.4.4.
+4. It runs `bun install --frozen-lockfile --ignore-scripts`, tests, lint, typecheck,
+   and build.
+5. It runs fresh artifact acceptance with `scripts/release-acceptance.ts`. It never
+   downloads or trusts the PR validator's artifact.
+6. It uploads the evidence, including after an acceptance failure.
+7. It publishes only the accepted tarball with
+   `npm publish <accepted tarball> --access public`, using OIDC trusted publishing.
+8. It verifies the registry with
+   `bun scripts/release-acceptance.ts --verify-published <artifact.json>`.
 
-`artifact.json` does not contain a commit. The source commit lives in the
-release report, and acceptance also prints it in its summary as `commit:`.
-Check that the two values are identical.
+A GitHub release or a green PR check does not prove npm publication succeeded.
+Confirm that the publish job, including the registry verification step, passed. The
+publisher executes release code, so pre-merge review of that code remains essential.
 
-### 3. Accept the exact commit
+### Acceptance and security gates
 
-```sh
-bun scripts/release-acceptance.ts --output-dir <absolute-dir>
-```
+[scripts/release-acceptance.ts](../scripts/release-acceptance.ts) is shared by PR
+validation and publication. It never publishes and never modifies the repository.
+It runs two guards before it makes any network request, install, build, or pack, and
+before it creates or writes anything:
 
-Acceptance exports `HEAD` with `git archive` into a fresh directory under
-`SCRATCH_ROOT`, so it validates committed content only. It runs the checks,
-audits the lockfile, packs exactly one tarball, installs that tarball into a
-scratch consumer with the host peers, imports the four terminal export paths,
-resolves the experimental GUI export, and audits the consumer production tree.
-The package has five export paths; resolution is not a GUI load test. Acceptance
-never publishes and never modifies the repository.
+- **Runtime.** The running Bun must be exactly Bun 1.4.4. The expected version is read
+  from the committed `packageManager` and `engines.bun` pins; both must be present,
+  exact, and equal, otherwise acceptance stops. The same guard applies to
+  `--verify-published`.
+- **Output directory.** `--output-dir` must be a new or existing-empty directory.
+  Acceptance refuses, and leaves untouched, a directory that holds any file, a regular
+  file, a symlink, and any path that is the source repository or inside it (including
+  through a symlinked alias of the repository). Use a fresh directory for every run.
 
-Acceptance runs two guards before it makes any network request, install, build,
-or pack, and before it creates or writes anything:
+It then:
 
-- **Runtime.** The running Bun must be exactly Bun 1.4.4. The expected version
-  is read from the committed `packageManager` and `engines.bun` pins; both must
-  be present, exact, and equal, otherwise acceptance stops. The same guard
-  applies to `--verify-published`.
-- **Output directory.** `<absolute-dir>` must be a new or existing-empty
-  directory. Acceptance refuses, and leaves untouched, a directory that holds
-  any file (prior artifacts, metadata, audit evidence, or dotfiles), a regular
-  file, a symlink, and any path that is the source repository or inside it
-  (including through a symlinked alias of the repository). Use a fresh
-  directory for every acceptance run.
+- Refuses an already-published version or an inconclusive registry lookup.
+- Exports the committed source with `git archive`, excluding untracked files and local
+  build output, then installs, tests, lints, typechecks, and builds the clean export.
+- Audits the source lockfile with `bun audit`.
+- Packs exactly one tarball and checks the manifest, host-runtime externals, and package
+  contents. The package has five export paths; the tarball may contain only
+  `package.json`, `README.md`, `LICENSE`, `index.js`, `tui.js`, `rpc.js`, and the four
+  `dist/` bundles.
+- Installs the tarball in a scratch production consumer with the host peers and
+  lifecycle scripts disabled, imports the four terminal export paths, and resolves the
+  experimental GUI export. Resolution is not a GUI load test.
+- Audits that consumer's production tree with `npm audit --omit=dev`, not the
+  repository.
+- Preserves the accepted tarball and its hashes in `artifact.json`, whose fields are
+  `name`, `version`, `filename`, `path`, `integrity`, `shasum`, and `sha256`.
+  `artifact.json` does not contain a commit; acceptance prints the source commit in its
+  summary as `commit:`.
 
-`<absolute-dir>` must also not be inside the acceptance scratch directory.
-Acceptance writes these files there:
+High and critical advisories block acceptance. There is no waiver mechanism. Audit
+errors and malformed reports fail closed. Do not bypass peer resolution or suppress
+warnings to get a green release.
 
-- the tarball `opencode-providers-usage-0.1.0.tgz`;
-- `artifact.json`, whose fields are `name`, `version`, `filename`, `path`,
-  `integrity`, `shasum`, and `sha256`;
-- `bun-audit.json` and `npm-audit-omit-dev.json`, the raw audit evidence.
+### Evidence artifacts and retention
 
-Record in the release report: the source commit from step 2, the tarball path,
-`integrity`, `sha256`, and the evidence directory. Keep the directory; later
-steps depend on it. If `HEAD` changes for any reason, rerun this whole section.
+Both workflows upload evidence when files exist, including after acceptance failure.
+An early failure may produce no artifact. Artifacts are retained for 14 days:
 
-### Candidate host smoke (required before publication)
+- PR validation: `release-pr-evidence-<PR>-<attempt>`.
+- Publication: `release-evidence-<tag>`.
 
-Install the accepted tarball into an isolated consumer with its locked host peers,
-using package identity rather than a source-checkout symlink. Test the documented
-named-package installation on OpenCode CLI 2.2.6 (owner-approved release target;
-earlier 2.2.0 evidence is historical), including automatic TUI discovery
-without duplicate registration. Load `./gui-experimental` in a real Desktop host;
-record its actual version/platform and the accepted GUI bundle hash.
+Depending on how far acceptance got, evidence contains the tarball, `artifact.json`,
+`bun-audit.json`, the raw `npm-audit-omit-dev.json`, and optional stderr files. PR
+validation also records `head-status.json` when the freshness step runs. The
+human-readable summary is in the workflow run, not the artifact directory. Identify
+evidence by run URL, attempt, and commit or tag, not by artifact name alone. Keep what
+you need with the release record before it expires, and keep private session data out of
+shared records.
 
-Follow the terminal scenarios in [`docs/validation.md`](validation.md) and the
-applicable S1-S13 matrix in [`docs/support.md`](support.md#desktop-gui-smoke-results).
-Use isolated synthetic fixtures unless the owner explicitly consents to live
-account/provider reads. Do not alter real sign-ins or send model requests.
-Historical/synthetic results do not establish a current artifact's host behavior.
-An unavailable required host check blocks readiness, even for the experimental GUI.
-Keep the real-older-server S14 scenario NOTRUN unless it is actually exercised;
-no older-server compatibility promise is added by this release.
+## 3. Optional owner-run post-publish checks
 
-## Owner-only: repository bootstrap and hosted CI
+These are optional owner checks after automated publication. They are not a publish
+gate: automated acceptance decides publication. Host smoke tests are not a publish
+gate, and they do not widen the support or validation claims in the
+[README](../README.md), [docs/support.md](support.md), or
+[docs/validation.md](validation.md). Only record successful checks as current
+evidence; unavailable checks remain unverified.
 
-Every command and decision in this section belongs to the owner. The agent does
-not perform these actions.
-
-For an existing repository and remote, verify their identity/visibility and skip
-creation/addition in steps 2-3; do not recreate them. The scope limitation below
-records a bootstrap observation, not a current credential audit. Commit/push needs
-separate owner authorization even when release preparation has been approved.
-
-1. Owner approves the boundary in [Approval boundary](#approval-boundary).
-2. Owner creates the public repository `mihaellenic/opencode-providers-usage`
-   with the approved visibility. No placeholder content is pushed first.
-3. Owner adds the remote using SSH, or a credential permitted to push workflow
-   files. The observed `gh` token lacks the `workflow` scope and cannot push
-   `.github/workflows/ci.yml`; do not use it for this push.
-4. Owner pushes the reviewed bootstrap source, including `ci.yml`, to `main`.
-   The pushed commit must be the source commit recorded in step 2.
-5. Owner confirms hosted CI is green on that exact commit. Publication must not
-   begin until hosted CI is green on the source commit.
-
-If the owner needs a different commit on `main`, the local acceptance section
-must be rerun on that commit, and the new commit becomes the source commit.
-
-## Owner-only: publish the accepted tarball
-
-### 4. Publish
-
-The owner publishes **the tarball produced by acceptance**; never repack the
-working tree:
-
-```sh
-npm publish <accepted-tarball> --access public
-```
-
-- Owner authentication is interactive: the owner signs in to npm and completes
-  2FA when prompted, with no stored token. Do not place an npm token in the
-  environment, in a repository `.npmrc`, or in CI secrets for this step.
-- If `npm publish` fails, see [Failure and recovery](#failure-and-recovery).
-
-### 5. Verify the registry
-
-```sh
-bun scripts/release-acceptance.ts --verify-published <artifact.json>
-```
-
-Use the `artifact.json` from the acceptance evidence directory unchanged. The
-command checks that the registry reports version `0.1.0` and a `dist.integrity`
-exactly equal to the accepted `integrity`, with a bounded retry for npm
-propagation. A mismatch in either field is a failure: stop and reconcile before
-any tag is created.
-
-Then run a minimal isolated load check against the registry package. It uses
-no credentials and runs outside the repository:
+A minimal isolated load check against the registry package uses no credentials and
+runs outside the repository. Replace `X.Y.Z` with the released version:
 
 ```sh
 export CONSUMER_DIR="$SCRATCH_ROOT/post-publish-consumer"
 mkdir -p "$CONSUMER_DIR" && cd "$CONSUMER_DIR"
 npm init -y >/dev/null
 npm pkg set overrides.solid-js=1.9.18
-npm install --ignore-scripts opencode-providers-usage@0.1.0 \
+npm install --ignore-scripts opencode-providers-usage@X.Y.Z \
   @opencode/theme@2.2.5 @opentui/core@0.8.0 @opentui/solid@0.8.0 solid-js@1.9.18
 cat > load-check.mjs <<'EOF'
 const names = [
@@ -213,85 +180,63 @@ bun load-check.mjs
 ```
 
 The peer pins and the `solid-js` override match the consumer-install check in
-`scripts/release-acceptance.ts`. The `solid-js` override keeps a
-single locked `solid-js@1.9.18` in the consumer tree; there is no `seroval`
-override, so npm resolves the patched `seroval` range that `solid-js` declares.
-If npm resolves anything differently, stop and report.
+`scripts/release-acceptance.ts`. The override keeps a single locked `solid-js@1.9.18` in
+the consumer tree. If npm resolves anything differently, stop and report. This check
+imports four export paths under Bun and resolves the fifth GUI path; resolution is not
+a GUI load test.
 
-This check imports four CLI export paths under Bun and resolves the fifth GUI
-path; resolution is not a GUI load test. Repeat the candidate host smoke above
-using the registry-installed package: all five exports must load in their intended
-hosts, not merely resolve. Follow the headless artifact smoke and manual smoke
-procedure in [`docs/validation.md`](validation.md). Only record successful checks
-as current evidence; unavailable checks remain unverified.
-
-This bootstrap publish uses owner authentication with 2FA. It does **not**
-produce OIDC provenance, and the release report must not claim that it does.
-
-### 6. Tag and create the GitHub baseline
-
-After step 5 succeeds, the owner:
-
-- creates the annotated tag `v0.1.0` on the source commit recorded in step 2,
-  which is the same commit that was accepted and built into the published
-  tarball, and pushes the tag;
-- creates a **non-draft** GitHub release for `v0.1.0` with accurate initial
-  notes: the version, the source commit, the tarball `integrity`, and the fact
-  that this is the first publication. Include installation steps, current
-  functionality, the experimental GUI and all support/validation limitations.
-
-Do not reuse a tag; never move an existing tag. Never publish a placeholder
-package, and never fabricate `0.0.0` history or a `0.0.0` tag to make release
-automation look continuous.
-
-### 7. Seed release automation
-
-Release automation's manifest is seeded with `{".": "0.1.0"}` only after steps 4
-through 6 are complete and the registry, tag, and source evidence agree. Seeding
-earlier would let automation propose a release on top of an unverified
-baseline. This seeding is part of Task 5; until then, nothing in this repository
-seeds the manifest.
-
-If any part of the baseline already exists when you run this runbook, reconcile
-the registry, tag, and source evidence before changing anything. Do not repeat
-the publication.
+Real-host smoke tests are also optional owner checks. If run, follow
+[docs/validation.md](validation.md) with scratch configuration and isolated synthetic
+fixtures, and install the registry package by name rather than through a
+source-checkout symlink. Do not alter real sign-ins or send model requests.
 
 ## Failure and recovery
 
-- **A publish error is ambiguous.** A failed or interrupted `npm publish` may
-  or may not have reached the registry. Before any retry, run
-  `bun scripts/release-acceptance.ts --verify-published <artifact.json>` with
-  the preserved `artifact.json` from the acceptance evidence directory, then
-  act on the result:
-  - **Match** (version and `dist.integrity` equal the accepted values): the
-    publish succeeded; do not republish. Continue with the verification and tag
-    steps.
+- **A publish error is ambiguous.** A failed or interrupted `npm publish` may or may
+  not have reached the registry. Before any retry, run
+  `bun scripts/release-acceptance.ts --verify-published <artifact.json>` with the
+  preserved `artifact.json` from the acceptance evidence, then act on the result:
+  - **Match** (version and `dist.integrity` equal the accepted values, exactly equal to
+    the accepted `integrity`): the publish succeeded; do not republish. Investigate the
+    remaining failed step.
   - **E404** (version not found): this is only a signal. You must independently confirm
-    that `0.1.0` remains unpublished (for example from the npm package page or
-    a second `npm view` the owner runs), allowing for propagation delay.
-  - **Auth, network, malformed output, or mismatch:** none of these is proof
-    that the version is unpublished. Stop and investigate with the owner; do
-    not retry.
-- **A failed publish remains visible:** do not bump the version and do not move
-  the tag. Retry only when absence is confirmed as above, and then only the
-  same accepted tarball and the same tag, nothing else. If the retry fails,
-  stop and report. Never bump the version, never move the tag, and never
-  automatically unpublish. Never record credential values in the release report.
-- **npm versions are immutable.** Once `0.1.0` is published, that version
-  number cannot be reused for different content.
-- **Rollback is fix-forward or owner-driven.** Ship a new version (fix-forward),
-  or let the owner deprecate the version or move a dist-tag; never automated unpublish.
-- **Acceptance failure stops the release.** Fix the source, commit, and rerun
-  acceptance from the local acceptance section on the new commit, into a new
-  output directory. Earlier evidence is not reused for a new commit.
+    that the version remains unpublished (for example from the npm package page or a
+    second `npm view` the owner runs), allowing for propagation delay.
+  - **Auth, network, malformed output, or mismatch:** none of these is proof that the
+    version is unpublished. Stop and investigate with the owner; do not retry.
+- **Never retry blindly.** Retry only when absence is confirmed as above, and then only
+  the same accepted tarball for the same tag, nothing else. If the retry fails, stop
+  and report.
+- **A failed publish remains visible:** do not bump the version and do not move the
+  tag. Never bump the version, never move the tag, and never automatically unpublish.
+  Never record credential values in a release record.
+- **npm versions are immutable.** Once a version is published, that version number
+  cannot be reused for different content. Do not reuse a tag; never move an existing tag.
+- **Rollback is fix-forward or owner-driven.** Ship a new version (fix-forward), or let
+  the owner deprecate the version or move a dist-tag; never automated unpublish.
+- **Acceptance failure stops the release.** Fix the source in a new commit; the release
+  PR is updated and validated again. Earlier evidence is not reused for a new commit.
+- **Failure before publication:** use **Actions → Release → Re-run failed jobs** on the
+  original run to keep its Release Please outputs and repeat acceptance.
+- **Original run cannot be retried:** use **Actions → Release → Run workflow** with
+  `release_tag` set to an existing `vX.Y.Z`, with **Use workflow from** set to `main`:
+  the publish job is skipped for any other ref, so a branch copy of the workflow
+  cannot publish. Recovery requires a non-draft GitHub
+  release and a matching tag and package version. It repeats acceptance and
+  publication, so run it only after confirming the version is not on the registry.
+  It is not a PR-validation path.
+- **Version already exists on npm:** do not retry publishing or bypass the
+  duplicate-version guard. Compare its registry integrity with the original accepted
+  `artifact.json`. If it matches, publication succeeded; investigate the remaining
+  failed step. If it differs, stop and investigate.
 - **Verification mismatch** (registry version or `dist.integrity` differs from
-  `artifact.json`) blocks tagging. Investigate the registry state with the owner
-  before any further action.
+  `artifact.json`): stop and investigate the registry state with the owner before any
+  further action.
 
-## Later releases
+## History
 
-Release automation is not implemented yet. Until Task 5 is complete, every later
-release uses this manual flow: local acceptance on the exact release commit,
-owner publication of the accepted tarball, registry verification, then tag and
-release. Automated release proposals are merged only after the baseline above
-is in place and Task 5 has landed.
+`0.1.0` was published manually by the owner with interactive 2FA. That bootstrap publish
+did **not** produce OIDC provenance, and the release report must not claim that it did.
+The tag `v0.1.0` and its GitHub release existed first, and
+`.release-please-manifest.json` was seeded at `0.1.0` after that baseline. No `0.0.0`
+history exists; never fabricate `0.0.0` history or a `0.0.0` tag.
