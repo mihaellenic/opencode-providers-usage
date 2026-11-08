@@ -248,7 +248,7 @@ describe("release workflow forbidden constructs", () => {
 
 	test("checks out without persisting credentials", () => {
 		const publish = jobBlock(release, "publish");
-		expect(publish).toContain("uses: actions/checkout@v5");
+		expect(publish).toContain("uses: actions/checkout@v7");
 		expect(publish).toContain("persist-credentials: false");
 	});
 });
@@ -257,7 +257,7 @@ describe("release workflow publish job", () => {
 	const publish = jobBlock(release, "publish");
 
 	test("pins the runtimes used to publish", () => {
-		expect(publish).toContain("uses: actions/setup-node@v5");
+		expect(publish).toContain("uses: actions/setup-node@v7");
 		expect(publish).toContain("node-version: 24");
 		expect(publish).toContain("package-manager-cache: false");
 		expect(publish).toContain("npm install -g npm@11.16.0");
@@ -301,7 +301,7 @@ describe("release workflow publish job", () => {
 			publish.indexOf("- name: Publish", start),
 		);
 		expect(step).toContain("if: always()");
-		expect(step).toContain("uses: actions/upload-artifact@v6");
+		expect(step).toContain("uses: actions/upload-artifact@v7");
 		expect(step).toContain(
 			`name: release-evidence-${OPEN_EXPR} steps.resolve.outputs.tag }}`,
 		);
@@ -312,7 +312,7 @@ describe("release workflow publish job", () => {
 	test("orders every gate before the one-shot publish", () => {
 		const markers = [
 			"name: Resolve release ref",
-			"uses: actions/checkout@v5",
+			"uses: actions/checkout@v7",
 			"name: Verify the checked-out tag and package version",
 			"bun install --frozen-lockfile --ignore-scripts",
 			"run: bun run test\n",
@@ -320,7 +320,7 @@ describe("release workflow publish job", () => {
 			"run: bun run typecheck\n",
 			"run: bun run build\n",
 			"bun scripts/release-acceptance.ts --output-dir",
-			"uses: actions/upload-artifact@v6",
+			"uses: actions/upload-artifact@v7",
 			"npm publish",
 			"bun scripts/release-acceptance.ts --verify-published",
 		];

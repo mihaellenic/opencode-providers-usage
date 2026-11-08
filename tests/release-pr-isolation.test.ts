@@ -344,7 +344,7 @@ describe("release PR workflow static isolation", () => {
 	});
 
 	test("checks out the exact head commit without persisting credentials", () => {
-		expect(validate).toContain("uses: actions/checkout@v5");
+		expect(validate).toContain("uses: actions/checkout@v7");
 		expect(validate).toContain(
 			`ref: ${OPEN_EXPR} github.event.pull_request.head.sha }}`,
 		);
@@ -355,14 +355,14 @@ describe("release PR workflow static isolation", () => {
 	});
 
 	test("pins the runtimes and action majors used by the release workflow", () => {
-		expect(validate).toContain("uses: actions/setup-node@v5");
+		expect(validate).toContain("uses: actions/setup-node@v7");
 		expect(validate).toContain("node-version: 24");
 		expect(validate).toContain("package-manager-cache: false");
 		expect(validate).toContain("npm install -g npm@11.16.0");
 		expect(validate).toContain('test "$(npm --version)" = "11.16.0"');
 		expect(validate).toContain("uses: oven-sh/setup-bun@v2");
 		expect(validate).toContain("bun-version: 1.4.4");
-		expect(validate).toContain("uses: actions/upload-artifact@v6");
+		expect(validate).toContain("uses: actions/upload-artifact@v7");
 	});
 
 	test("runs the repository gate as separately identified steps", () => {
@@ -398,7 +398,7 @@ describe("release PR workflow static isolation", () => {
 	test("orders identity, checkout, gate, acceptance and the final require step", () => {
 		const markers = [
 			"name: Validate PR identity through the GitHub API",
-			"uses: actions/checkout@v5",
+			"uses: actions/checkout@v7",
 			"name: Verify the checked-out commit",
 			"name: Ensure the PR base commit is available",
 			"bun install --frozen-lockfile --ignore-scripts",

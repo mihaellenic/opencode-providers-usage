@@ -70,7 +70,7 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "Release ref: $tag"
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           ref: ${{ steps.resolve.outputs.tag }}
           fetch-depth: 1
@@ -86,7 +86,7 @@ jobs:
           version=$(node -p 'require("./package.json").version')
           test "$version" = "${RELEASE_TAG#v}"
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           package-manager-cache: false
@@ -115,7 +115,7 @@ jobs:
 
       - name: Preserve acceptance evidence
         if: always()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: release-evidence-${{ steps.resolve.outputs.tag }}
           path: ${{ runner.temp }}/providers-usage-release

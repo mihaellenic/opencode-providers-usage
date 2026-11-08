@@ -91,7 +91,7 @@ describe("CI quality job", () => {
 	const quality = jobBlock(ci, "quality");
 
 	test("uses the pinned action majors and the supported Bun runtime", () => {
-		expect(quality).toContain("uses: actions/checkout@v5");
+		expect(quality).toContain("uses: actions/checkout@v7");
 		expect(quality).toContain("uses: oven-sh/setup-bun@v2");
 		expect(quality).toContain("bun-version: 1.4.4");
 		expect(ci).not.toContain("1.1.3");
@@ -177,7 +177,7 @@ describe("CI commit subject job", () => {
 	});
 
 	test("validates the exact pull request head against the exact base SHA", () => {
-		expect(subjects).toContain("uses: actions/checkout@v5");
+		expect(subjects).toContain("uses: actions/checkout@v7");
 		expect(subjects).toContain("fetch-depth: 0");
 		expect(subjects).toContain(
 			`ref: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}`,
