@@ -2,31 +2,31 @@ import { describe, expect, test } from "bun:test";
 import { resolveCompanionOptions } from "../../src/index";
 
 describe("codex companion options", () => {
-	test("companion_is_enabled_without_configuration", () => {
-		expect(resolveCompanionOptions(undefined)).toEqual({ enabled: true });
-		expect(resolveCompanionOptions({})).toEqual({ enabled: true });
-		expect(resolveCompanionOptions({ codexCompanion: "yes" } as never)).toEqual(
+	test.each([
+		["no options", undefined, { enabled: true }],
+		["empty options", {}, { enabled: true }],
+		["non-object companion", { codexCompanion: "yes" }, { enabled: true }],
+		[
+			"explicit false is the opt out",
+			{ codexCompanion: { enabled: false } },
+			{ enabled: false },
+		],
+		[
+			"string false is not an opt out",
+			{ codexCompanion: { enabled: "false" } },
 			{ enabled: true },
-		);
-	});
-
-	test("explicit_false_is_the_only_opt_out", () => {
-		expect(
-			resolveCompanionOptions({ codexCompanion: { enabled: false } }),
-		).toEqual({ enabled: false });
-		expect(
-			resolveCompanionOptions({
-				codexCompanion: { enabled: "false" },
-			} as never),
-		).toEqual({ enabled: true });
-	});
-
-	test("home_alone_still_enables_and_is_preserved", () => {
-		expect(
-			resolveCompanionOptions({ codexCompanion: { home: "/synthetic/home" } }),
-		).toEqual({ enabled: true, home: "/synthetic/home" });
-		expect(
-			resolveCompanionOptions({ codexCompanion: { home: "   " } }),
-		).toEqual({ enabled: true });
+		],
+		[
+			"home alone enables and is preserved",
+			{ codexCompanion: { home: "/synthetic/home" } },
+			{ enabled: true, home: "/synthetic/home" },
+		],
+		[
+			"blank home is dropped",
+			{ codexCompanion: { home: "   " } },
+			{ enabled: true },
+		],
+	])("%s", (_name, options, expected) => {
+		expect(resolveCompanionOptions(options as never)).toEqual(expected);
 	});
 });

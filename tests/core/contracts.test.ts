@@ -51,18 +51,26 @@ describe("limitReached contract", () => {
 		};
 	}
 
-	test("accepts_boolean_limit_reached_and_rejects_other_types", () => {
-		expect(isQuotaRead(planRead({}))).toBe(true);
-		expect(isQuotaRead(planRead({ limitReached: true }))).toBe(true);
-		expect(isQuotaRead(planRead({ limitReached: false }))).toBe(true);
-		expect(isQuotaRead(planRead({ limitReached: "true" }))).toBe(false);
-		expect(isQuotaRead(planRead({ limitReached: 1 }))).toBe(false);
-		expect(isQuotaRead(planRead({ limitReached: null }))).toBe(false);
-		expect(isQuotaRead(planRead({ unknownKey: true }))).toBe(false);
+	test.each([
+		[{}, true],
+		[{ limitReached: true }, true],
+		[{ limitReached: false }, true],
+		[{ limitReached: "true" }, false],
+		[{ limitReached: 1 }, false],
+		[{ limitReached: null }, false],
+		[{ unknownKey: true }, false],
+	])("limit_reached extra %p accepted=%p", (extra, accepted) => {
+		expect(isQuotaRead(planRead(extra))).toBe(accepted);
 	});
 });
 
 describe("quota contracts", () => {
+	test.each(REASON_CODES)("accepts unavailable reason %s", (reason) => {
+		expect(isQuotaRead({ state: "unavailable", reason, attemptedAt: 0 })).toBe(
+			true,
+		);
+	});
+
 	test("rejects_secret_fields_and_accepts_scoped_quota", () => {
 		expect(
 			isQuotaRead({
@@ -121,12 +129,6 @@ describe("quota contracts", () => {
 		};
 
 		expect(isQuotaRead(valid)).toBe(true);
-
-		for (const reason of REASON_CODES) {
-			expect(
-				isQuotaRead({ state: "unavailable", reason, attemptedAt: 0 }),
-			).toBe(true);
-		}
 
 		expect(
 			isQuotaRead({
@@ -292,13 +294,16 @@ describe("quota presentation contract", () => {
 				identityKey: "credential-derived",
 			}),
 		).toBe(false);
+	});
 
-		for (const revision of [-1, 1.5, Number.NaN, "1"]) {
-			expect(isQuotaPresentation({ revision })).toBe(false);
-		}
-		expect(isQuotaPresentation({ revision: 1, failedSince: -1 })).toBe(false);
-		expect(isQuotaPresentation({ revision: 1, failedSince: "now" })).toBe(
-			false,
-		);
+	test.each([
+		[{ revision: -1 }],
+		[{ revision: 1.5 }],
+		[{ revision: Number.NaN }],
+		[{ revision: "1" }],
+		[{ revision: 1, failedSince: -1 }],
+		[{ revision: 1, failedSince: "now" }],
+	])("rejects invalid presentation %p", (value) => {
+		expect(isQuotaPresentation(value)).toBe(false);
 	});
 });

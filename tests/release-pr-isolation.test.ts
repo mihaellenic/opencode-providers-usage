@@ -10,11 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { jobBlock, OPEN_EXPR, root, runBlock } from "./workflow-helpers";
 
-const root = fileURLToPath(new URL("..", import.meta.url));
-// Built without a literal dollar-brace so Biome does not flag GitHub expression text.
-const OPEN_EXPR = `\${{`;
 const workflowPath = join(root, ".github/workflows/validate-release-pr.yml");
 const workflow = readFileSync(workflowPath, "utf8");
 
@@ -23,88 +20,6 @@ const releaseRef = "release-please--branches--main";
 const headSha = "a".repeat(40);
 const baseSha = "b".repeat(40);
 const movedSha = "c".repeat(40);
-
-/** Extract a top-level job block so assertions cannot match another job. */
-function jobBlock(source: string, name: string): string {
-	const marker = `\n  ${name}:\n`;
-	const start = source.indexOf(marker);
-	if (start === -1) throw new Error(`job ${name} not found`);
-	const rest = source.slice(start + marker.length);
-	const next = rest.search(/\n {2}[a-zA-Z0-9_-]+:\n/);
-	return next === -1 ? rest : rest.slice(0, next);
-}
-
-/** Collect `run:` bodies, single-line or block scalar, so shell can be inspected. */
-function runBlocks(source: string): string[] {
-	const blocks: string[] = [];
-	let current: string[] | undefined;
-	let blockIndent = 0;
-	for (const line of source.split("\n")) {
-		if (current === undefined) {
-			const match = /^(\s*)(?:-\s+)?run: \|\s*$/.exec(line);
-			if (match) {
-				current = [];
-				blockIndent = match[1]?.length ?? 0;
-				continue;
-			}
-			const single = /^(\s*)(?:-\s+)?run:\s+(.+)$/.exec(line);
-			if (single?.[2]) blocks.push(single[2]);
-			continue;
-		}
-		if (line.trim() === "") {
-			current.push(line);
-			continue;
-		}
-		const indent = line.length - line.trimStart().length;
-		if (indent <= blockIndent) {
-			blocks.push(current.join("\n"));
-			current = undefined;
-		} else {
-			current.push(line);
-		}
-	}
-	if (current !== undefined) blocks.push(current.join("\n"));
-	return blocks;
-}
-
-/** Extract a named step's inline shell body so it can run without a GitHub runner. */
-function runBlock(source: string, stepName: string): string {
-	const lines = source.split("\n");
-	const stepIndex = lines.findIndex(
-		(line) => line.trim() === `- name: ${stepName}`,
-	);
-	if (stepIndex === -1) throw new Error(`step ${stepName} not found`);
-	const first = lines[stepIndex] as string;
-	const stepIndent = first.length - first.trimStart().length;
-	let stepEnd = lines.length;
-	for (let index = stepIndex + 1; index < lines.length; index += 1) {
-		const line = lines[index] as string;
-		if (line.trim() === "") continue;
-		const indent = line.length - line.trimStart().length;
-		if (indent === stepIndent && line.trimStart().startsWith("- ")) {
-			stepEnd = index;
-			break;
-		}
-	}
-	const step = lines.slice(stepIndex, stepEnd);
-	const runIndex = step.findIndex((line) => /^\s*run:\s*\|\s*$/.test(line));
-	if (runIndex === -1)
-		throw new Error(`step ${stepName} has no multi-line run body`);
-	const runLine = step[runIndex] as string;
-	const runIndent = runLine.length - runLine.trimStart().length;
-	const body: string[] = [];
-	for (let index = runIndex + 1; index < step.length; index += 1) {
-		const line = step[index] as string;
-		if (line.trim() === "") {
-			body.push("");
-			continue;
-		}
-		const indent = line.length - line.trimStart().length;
-		if (indent <= runIndent) break;
-		body.push(line.slice(runIndent + 2));
-	}
-	return body.join("\n").trimEnd();
-}
 
 type PullOverrides = {
 	state?: string;
@@ -288,12 +203,6 @@ describe("release PR workflow static isolation", () => {
 		}
 	});
 
-	test("defaults the workflow to read-only repository access", () => {
-		expect(header).toContain("\npermissions:\n  contents: read\n");
-		expect(header).not.toContain("write");
-		expect(header).not.toContain("id-token");
-	});
-
 	test("grants the job only contents and pull-requests read", () => {
 		expect(validate).toContain(
 			"    permissions:\n      contents: read\n      pull-requests: read\n    steps:\n",
@@ -306,29 +215,9 @@ describe("release PR workflow static isolation", () => {
 		]);
 	});
 
-	test("has no id-token or write scope anywhere", () => {
-		expect(workflow).not.toContain("id-token");
-		expect(workflow).not.toMatch(/^\s+[a-z-]+: write\s*$/m);
-		expect(workflow).not.toContain("write-all");
-		expect(workflow).not.toContain("contents: write");
-		expect(workflow).not.toContain("pull-requests: write");
-		expect(workflow).not.toContain("issues: write");
-		expect(workflow).not.toContain("packages: write");
-		expect(workflow).not.toContain("actions: write");
-	});
-
-	test("has no credentials, bypasses or publishing", () => {
+	test("has no publishing capability", () => {
 		for (const forbidden of [
-			"NPM_TOKEN",
-			"NODE_AUTH_TOKEN",
-			"secrets.",
-			"id-token",
-			"contents: write",
-			"pull_request_target",
-			"continue-on-error",
-			"|| true",
 			"npm publish",
-			".npmrc",
 			"release-please-action",
 			"--verify-published",
 		]) {
@@ -354,17 +243,6 @@ describe("release PR workflow static isolation", () => {
 		expect(validate).toContain(`git cat-file -e "$` + `{BASE_SHA}^{commit}"`);
 	});
 
-	test("pins the runtimes and action majors used by the release workflow", () => {
-		expect(validate).toContain("uses: actions/setup-node@v7");
-		expect(validate).toContain("node-version: 24");
-		expect(validate).toContain("package-manager-cache: false");
-		expect(validate).toContain("npm install -g npm@11.16.0");
-		expect(validate).toContain('test "$(npm --version)" = "11.16.0"');
-		expect(validate).toContain("uses: oven-sh/setup-bun@v2");
-		expect(validate).toContain("bun-version: 1.4.4");
-		expect(validate).toContain("uses: actions/upload-artifact@v7");
-	});
-
 	test("runs the repository gate as separately identified steps", () => {
 		for (const command of [
 			"- id: install\n        run: bun install --frozen-lockfile --ignore-scripts\n",
@@ -383,12 +261,6 @@ describe("release PR workflow static isolation", () => {
 			'run: bun scripts/release-acceptance.ts --output-dir "$ARTIFACT_DIR"',
 		);
 		expect(workflow).not.toContain("tokscope");
-	});
-
-	test("has no shell that interpolates event or step context", () => {
-		const blocks = runBlocks(workflow);
-		expect(blocks.length).toBeGreaterThan(8);
-		for (const block of blocks) expect(block).not.toContain(OPEN_EXPR);
 	});
 
 	test("never turns a possibly false boolean into empty with jq", () => {

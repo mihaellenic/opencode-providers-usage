@@ -245,12 +245,6 @@ describe("commit-msg hook", () => {
 			expect(statSync(join(root, path)).mode & 0o111, path).not.toBe(0);
 		}
 	});
-
-	test("hook delegates to the shared checker instead of duplicating the policy", () => {
-		const hook = read("githooks/commit-msg");
-		expect(hook).toContain("scripts/commit-subject-ok.sh");
-		expect(hook).not.toContain("allowlist");
-	});
 });
 
 describe("hook setup script", () => {

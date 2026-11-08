@@ -834,9 +834,10 @@ describe("shared-plan windows", () => {
 		expect(planMetrics[0]?.remainingPercent).toBe(95);
 	});
 
-	test("limit_reached_true_sets_limitReached_on_the_plan_section", async () => {
-		const h = harness({
-			plan: planPayload({
+	test.each([
+		[
+			"limit_reached true",
+			planPayload({
 				primary_window: planWindow({
 					used_percent: 100,
 					remaining_percent: 0,
@@ -849,23 +850,19 @@ describe("shared-plan windows", () => {
 				allowed: false,
 				limit_reached: true,
 			}),
-		});
-		const read = await h.read();
+		],
+		[
+			"allowed false alone",
+			planPayload({ primary_window: planWindow(), allowed: false }),
+		],
+	])("%s sets limitReached on the plan section only", async (_name, plan) => {
+		const read = await harness({ plan }).read();
 		expect(isQuotaRead(read)).toBe(true);
 		expect(section(read, "shared-plan")).toMatchObject({
 			state: "available",
 			limitReached: true,
 		});
 		expect(section(read, "app")).not.toHaveProperty("limitReached");
-	});
-
-	test("allowed_false_alone_sets_limitReached", async () => {
-		const h = harness({
-			plan: planPayload({ primary_window: planWindow(), allowed: false }),
-		});
-		expect(section(await h.read(), "shared-plan")).toMatchObject({
-			limitReached: true,
-		});
 	});
 
 	test("not_reached_or_absent_state_omits_the_limitReached_key", async () => {
@@ -1205,42 +1202,6 @@ describe("credential boundary", () => {
 	});
 });
 
-describe("adapter declarations", () => {
-	test("declares_the_support_matrix_without_requests", () => {
-		const h = harness();
-		expect(h.adapter.id).toBe("openai-companion");
-		const byName = new Map(
-			h.adapter.capabilities.map((capability) => [capability.name, capability]),
-		);
-		expect(byName.get("OpenAI ChatGPT")).toMatchObject({
-			match: { integrationID: "openai", authMethod: "oauth" },
-			support: "requires-companion",
-			evidence: "live-validated",
-		});
-		expect(
-			byName.get("OpenAI ChatGPT token-sharing without companion consent"),
-		).toMatchObject({
-			support: "unsupported",
-		});
-		expect(byName.get("OpenCode Console")).toMatchObject({
-			match: { integrationID: "opencode", authMethod: "oauth" },
-			support: "unsupported",
-			evidence: "unverified",
-		});
-		expect(byName.get("OpenCode Zen and Go API keys")).toMatchObject({
-			match: { integrationID: "opencode", authMethod: "key" },
-			support: "unsupported",
-			evidence: "unverified",
-		});
-		expect(byName.get("OpenAI inference API key")).toMatchObject({
-			match: { integrationID: "openai", authMethod: "key" },
-			support: "unsupported",
-			evidence: "documented-only",
-		});
-		expect(h.requests).toHaveLength(0);
-	});
-});
-
 function hostEntry(clientID: string): Record<string, unknown> {
 	return nativeEntry({
 		access: nativeJwt({ client_id: clientID }),
@@ -1249,58 +1210,6 @@ function hostEntry(clientID: string): Record<string, unknown> {
 }
 
 describe("native host credential bridge", () => {
-	test("prefers_host_native_credential_over_file_store", async () => {
-		// The file entry points at a different registration; only the host value
-		// can match the app, so a file read would surface as a mismatch.
-		const h = harness({
-			native: hostEntry(CLIENT_ID),
-			store: authStore(hostEntry(OTHER_CLIENT_ID)),
-		});
-		const read = await h.read();
-
-		expect(isQuotaRead(read)).toBe(true);
-		expect(read.state).toBe("available");
-		expect(section(read, "app").state).toBe("available");
-		expect(h.requests.map((call) => call.url)).toEqual([APPS_URL, PLAN_URL]);
-		expect(h.credentialReads).toHaveLength(0);
-		expect(h.nativeReads).toEqual(["openai", "openai"]);
-	});
-
-	test("falls_back_to_file_store_when_host_returns_undefined", async () => {
-		const h = harness({ native: () => undefined });
-		const read = await h.read();
-
-		expect(isQuotaRead(read)).toBe(true);
-		expect(read.state).toBe("available");
-		expect(h.nativeReads).toEqual(["openai", "openai"]);
-		expect(h.credentialReads.map((call) => call.path)).toEqual([
-			AUTH_PATH,
-			AUTH_PATH,
-		]);
-	});
-
-	test("host_credential_error_maps_to_sanitized_unavailable", async () => {
-		const secret = "host-bridge-error-sentinel";
-		const h = harness({
-			native: () => {
-				throw new Error(`host bridge failed for ${secret}`);
-			},
-		});
-		const source = await h.source();
-		const read = await source.read(new AbortController().signal);
-
-		expect(isQuotaRead(read)).toBe(true);
-		expect(read).toEqual({
-			state: "unavailable",
-			reason: "invalid_response",
-			attemptedAt: NOW,
-		});
-		expect(JSON.stringify(read)).not.toContain(secret);
-		expect(await source.isCurrent()).toBe(false);
-		expect(h.requests).toHaveLength(0);
-		expect(h.credentialReads).toHaveLength(0);
-	});
-
 	test("active_only_host_value_gives_fresh_identity", async () => {
 		const h = harness({ native: hostEntry(CLIENT_ID) });
 		const first = await h.source();

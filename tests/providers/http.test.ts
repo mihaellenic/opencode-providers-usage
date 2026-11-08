@@ -251,28 +251,34 @@ describe("quota transport failure classification", () => {
 		expect(quotaError.status).toBeUndefined();
 	});
 
-	test("classifies a body read failure as network_error without leaking its message", async () => {
-		const body = new ReadableStream<Uint8Array>({
-			start(controller) {
-				controller.error(new Error(`stream failed ${SENTINEL}`));
+	test.each([
+		[
+			"a body read failure",
+			(): QuotaFetchResponse =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.error(new Error(`stream failed ${SENTINEL}`));
+						},
+					}),
+					{ status: 200 },
+				),
+		],
+		[
+			"a fetch rejection",
+			(): QuotaFetchResponse => {
+				throw new TypeError(`socket exploded ${SENTINEL}`);
 			},
-		});
-		const { fetchImpl } = syntheticFetch(
-			() => new Response(body, { status: 200 }),
-		);
-		const request = createQuotaTransport(fetchImpl);
-		const error = await captureError(request(OLLAMA_BALANCE, {}, signal()));
-		expectSanitized(error, "network_error");
-	});
-
-	test("classifies a fetch rejection as network_error without leaking its message", async () => {
-		const { fetchImpl } = syntheticFetch(() => {
-			throw new TypeError(`socket exploded ${SENTINEL}`);
-		});
-		const request = createQuotaTransport(fetchImpl);
-		const error = await captureError(request(OLLAMA_BALANCE, {}, signal()));
-		expectSanitized(error, "network_error");
-	});
+		],
+	])(
+		"classifies %s as network_error without leaking its message",
+		async (_name, respond) => {
+			const { fetchImpl } = syntheticFetch(respond);
+			const request = createQuotaTransport(fetchImpl);
+			const error = await captureError(request(OLLAMA_BALANCE, {}, signal()));
+			expectSanitized(error, "network_error");
+		},
+	);
 
 	test("classifies non-429 HTTP failures as invalid_response with the status", async () => {
 		for (const status of [400, 401, 403, 500, 503]) {

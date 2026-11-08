@@ -539,58 +539,85 @@ describe("usage page card layout", () => {
 			const frame = setup.captureCharFrame();
 			expect(frame).toContain("Provider usage");
 			expect(frame).toContain("No connected providers.");
+			expect(frame).not.toContain("Usage unavailable");
 		} finally {
 			await setup.dispose();
 		}
 	});
 
-	test("at 180 columns frames OPENAI and OLLAMA side by side and notes ZEN below the grid when input interleaves ZEN", async () => {
-		const fixtures = pageFixtures();
-		// ZEN is source-less, so the page intentionally groups it last while
-		// preserving the input order within each group. Listing it between the
-		// available providers must not disturb OpenAI-then-Ollama side by side.
-		const setup = await renderPage({
-			width: 180,
-			...fixtures,
-			providers: [OPENAI, ZEN, OLLAMA],
-		});
-		try {
-			const rows = charRows(setup.captureCharFrame());
-			expect(rows.every((line) => line.length <= 180)).toBe(true);
+	test.each([120, 180])(
+		"at %i columns frames OPENAI and OLLAMA side by side and notes ZEN below the grid when input interleaves ZEN",
+		async (width) => {
+			const fixtures = pageFixtures();
+			// ZEN is source-less, so the page intentionally groups it last while
+			// preserving the input order within each group. Listing it between the
+			// available providers must not disturb OpenAI-then-Ollama side by side.
+			const setup = await renderPage({
+				width,
+				...fixtures,
+				providers: [OPENAI, ZEN, OLLAMA],
+			});
+			try {
+				const rows = charRows(setup.captureCharFrame());
+				expect(rows.every((line) => line.length <= width)).toBe(true);
 
-			const openai = cardFrame(rows, "OpenAI");
-			const ollama = cardFrame(rows, "Ollama Cloud");
-			const note = textAt(rows, "Usage unavailable for: OpenCode / Zen");
-			expect(note.row).toBeGreaterThan(openai.bottom);
-			expect(note.row).toBeGreaterThan(ollama.bottom);
-			expect(rows[note.row]).not.toContain("│");
+				const openai = cardFrame(rows, "OpenAI");
+				const ollama = cardFrame(rows, "Ollama Cloud");
+				const note = textAt(rows, "Usage unavailable for: OpenCode / Zen");
+				expect(note.row).toBeGreaterThan(openai.bottom);
+				expect(note.row).toBeGreaterThan(ollama.bottom);
+				expect(rows[note.row]).not.toContain("│");
+				expect(rows.join("\n")).not.toContain("Quota not applicable");
 
-			expect(openai.top).toBe(ollama.top);
-			expect(openai.bottom).toBe(ollama.bottom);
-			expect(openai.right).toBeLessThan(ollama.left);
-			expect(ollama.left).toBeGreaterThan(openai.left);
+				expect(openai.top).toBe(ollama.top);
+				expect(openai.bottom).toBe(ollama.bottom);
+				expect(openai.right).toBeLessThan(ollama.left);
+				expect(ollama.left).toBeGreaterThan(openai.left);
 
-			const openaiWidth = openai.right - openai.left;
-			const ollamaWidth = ollama.right - ollama.left;
-			expect(openaiWidth).toBeGreaterThan(20);
-			expect(Math.abs(openaiWidth - ollamaWidth)).toBeLessThanOrEqual(1);
+				const openaiWidth = openai.right - openai.left;
+				const ollamaWidth = ollama.right - ollama.left;
+				expect(openaiWidth).toBeGreaterThan(20);
+				expect(Math.abs(openaiWidth - ollamaWidth)).toBeLessThanOrEqual(1);
 
-			const openaiName = textInFrame(rows, openai, "OpenAI");
-			const ollamaName = textInFrame(rows, ollama, "Ollama Cloud");
-			expect(openaiName.row).toBe(ollamaName.row);
-			expect(openaiName.row - openai.top).toBe(ollamaName.row - ollama.top);
+				const openaiName = textInFrame(rows, openai, "OpenAI");
+				const ollamaName = textInFrame(rows, ollama, "Ollama Cloud");
+				expect(openaiName.row).toBe(ollamaName.row);
+				expect(openaiName.row - openai.top).toBe(ollamaName.row - ollama.top);
+				expect(openaiName.col + "OpenAI".length).toBeLessThan(openai.right);
+				expect(ollamaName.col + "Ollama Cloud".length).toBeLessThan(
+					ollama.right,
+				);
 
-			// No page-only update row: the first painted body row after padding
-			// is the widget's bar row for both cards.
-			expect(frameContent(rows, openai)).toContain(squash("5h"));
-			expect(frameContent(rows, ollama)).toContain(squash(percent(16.5)));
-			expect(frameContent(rows, openai)).not.toContain("Updated");
-			expect(frameContent(rows, ollama)).not.toContain("Total credits");
-			expect(rows.join("\n")).not.toContain("Quota not applicable");
-		} finally {
-			await setup.dispose();
-		}
-	});
+				// Values may wrap in narrower cards, but every semantic token
+				// remains painted inside its own card, with no page-only update row.
+				const openaiContent = frameContent(rows, openai);
+				for (const token of [
+					"5h",
+					"7d",
+					percent(100),
+					percent(16),
+					"resets 8h",
+					"resets 2d 4h",
+				]) {
+					expect(openaiContent).toContain(squash(token));
+				}
+				expect(openaiContent).not.toContain("Updated");
+
+				const ollamaContent = frameContent(rows, ollama);
+				for (const token of [
+					percent(16.5),
+					`${money(60 - 50.1)} / ${money(60)} used`,
+					`+${money(4.27)} credits`,
+					"resets 25d 15h",
+				]) {
+					expect(ollamaContent).toContain(squash(token));
+				}
+				expect(ollamaContent).not.toContain(squash("Total credits"));
+			} finally {
+				await setup.dispose();
+			}
+		},
+	);
 
 	test("at 240 columns bounds the page at 180 columns and keeps at most two card columns", async () => {
 		const fixtures = pageFixtures();
@@ -627,65 +654,6 @@ describe("usage page card layout", () => {
 			expect(note.row).toBeGreaterThan(future.bottom);
 			expect(note.row).toBeGreaterThan(openai.bottom);
 			expect(note.row).toBeGreaterThan(ollama.bottom);
-		} finally {
-			await setup.dispose();
-		}
-	});
-
-	test("at 120 columns keeps OPENAI and OLLAMA side by side above a full-width ZEN card", async () => {
-		const fixtures = pageFixtures();
-		const setup = await renderPage({ width: 120, ...fixtures });
-		try {
-			const rows = charRows(setup.captureCharFrame());
-			expect(rows.every((line) => line.length <= 120)).toBe(true);
-
-			const openai = cardFrame(rows, "OpenAI");
-			const ollama = cardFrame(rows, "Ollama Cloud");
-			const note = textAt(rows, "Usage unavailable for: OpenCode / Zen");
-
-			// Medium width must still fit a two-column grid: side-by-side cards
-			// share both their top and bottom edge.
-			expect(openai.top).toBe(ollama.top);
-			expect(openai.bottom).toBe(ollama.bottom);
-			expect(openai.right).toBeLessThan(ollama.left);
-			expect(ollama.left).toBeGreaterThan(openai.left);
-
-			const openaiWidth = openai.right - openai.left;
-			const ollamaWidth = ollama.right - ollama.left;
-			expect(Math.abs(openaiWidth - ollamaWidth)).toBeLessThanOrEqual(1);
-
-			// The source-less provider is a muted note below the grid, not a card.
-			expect(note.row).toBeGreaterThan(openai.bottom);
-			expect(note.row).toBeGreaterThan(ollama.bottom);
-			expect(rows[note.row]).not.toContain("│");
-
-			// Provider names stay whole inside the narrower cards.
-			for (const [label, frame] of [
-				["OpenAI", openai],
-				["Ollama Cloud", ollama],
-			] as const) {
-				const name = textInFrame(rows, frame, label);
-				expect(name.col + label.length).toBeLessThan(frame.right);
-			}
-
-			// Values may wrap in the narrower cards, but every semantic token
-			// remains painted inside its own card.
-			const openaiContent = frameContent(rows, openai);
-			expect(openaiContent).toContain(squash("5h"));
-			expect(openaiContent).toContain(squash("7d"));
-			expect(openaiContent).toContain(squash(percent(100)));
-			expect(openaiContent).toContain(squash(percent(16)));
-			expect(openaiContent).toContain(squash("resets 8h"));
-			expect(openaiContent).toContain(squash("resets 2d 4h"));
-
-			const ollamaContent = frameContent(rows, ollama);
-			expect(ollamaContent).toContain(squash(percent(16.5)));
-			expect(ollamaContent).toContain(
-				squash(`${money(60 - 50.1)} / ${money(60)} used`),
-			);
-			expect(ollamaContent).toContain(squash(`+${money(4.27)} credits`));
-			expect(ollamaContent).toContain(squash("resets 25d 15h"));
-			expect(ollamaContent).not.toContain(squash("Total credits"));
 		} finally {
 			await setup.dispose();
 		}
@@ -826,21 +794,6 @@ describe("usage page unavailable note", () => {
 			expect(frame).not.toContain("Usage unavailable");
 			expect(frame).toContain("OpenAI");
 			expect(frame).toContain("Ollama Cloud");
-		} finally {
-			await setup.dispose();
-		}
-	});
-
-	test("empty inventory keeps the disconnected message and no note", async () => {
-		const setup = await renderPage({
-			width: 60,
-			providers: [],
-			quotaByProvider: {},
-		});
-		try {
-			const frame = setup.captureCharFrame();
-			expect(frame).toContain("No connected providers.");
-			expect(frame).not.toContain("Usage unavailable");
 		} finally {
 			await setup.dispose();
 		}

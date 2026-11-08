@@ -249,56 +249,58 @@ describe("partitionUsageCards", () => {
 		expect(out.cards.map((c) => c.id)).toEqual(["a", "b", "t", "c"]);
 	});
 
-	test("returns no note when no card is unavailable", () => {
-		const cards = [card("a"), card("b")];
-		const out = partitionUsageCards(cards, {
-			a: available,
-			b: transient,
-		});
-		expect(out.cards).toEqual(cards);
-		expect(out.unavailableNote).toBeUndefined();
-	});
-
-	test("all-unavailable input yields no cards and a note", () => {
-		const out = partitionUsageCards([card("a", "A"), card("b", "B")], {
-			a: unsupportedRead(),
-			b: notApplicable,
-		});
-		expect(out.cards).toEqual([]);
-		expect(out.unavailableNote).toBe("Usage unavailable for: A, B");
-	});
-
-	test("empty input yields no cards and no note", () => {
-		expect(partitionUsageCards([], {})).toEqual({
-			cards: [],
-			unavailableNote: undefined,
-		});
-	});
-
-	test("missing reads stay visible as cards", () => {
-		const cards = [card("pending", "Pending"), card("ok", "Ok")];
-		const out = partitionUsageCards(cards, { ok: available });
-		expect(out.cards.map((c) => c.id)).toEqual(["pending", "ok"]);
-		expect(out.unavailableNote).toBeUndefined();
-	});
-
-	test("transient failures stay visible as cards", () => {
-		const cards = [card("a"), card("b")];
-		const out = partitionUsageCards(cards, {
-			a: transient,
-			b: { state: "auth-required", reason: "expired", attemptedAt: 0 },
-		});
-		expect(out.cards).toEqual(cards);
-		expect(out.unavailableNote).toBeUndefined();
-	});
-
-	test("a Claude card without a quota-map entry stays a card", () => {
-		const claude = card("claude-code", "Claude Code");
-		const out = partitionUsageCards([card("zen", "OpenCode"), claude], {
-			zen: unsupportedRead(),
-		});
-		expect(out.cards).toEqual([claude]);
-		expect(out.unavailableNote).toBe("Usage unavailable for: OpenCode");
+	const expired: QuotaRead = {
+		state: "auth-required",
+		reason: "expired",
+		attemptedAt: 0,
+	};
+	test.each([
+		["empty input", [], {}, [], undefined],
+		[
+			"all unavailable",
+			[card("a", "A"), card("b", "B")],
+			{ a: unsupportedRead(), b: notApplicable },
+			[],
+			"Usage unavailable for: A, B",
+		],
+		[
+			"none unavailable",
+			[card("a"), card("b")],
+			{ a: available, b: transient },
+			["a", "b"],
+			undefined,
+		],
+		[
+			"missing reads stay visible",
+			[card("pending", "Pending"), card("ok", "Ok")],
+			{ ok: available },
+			["pending", "ok"],
+			undefined,
+		],
+		[
+			"transient and auth failures stay visible",
+			[card("a"), card("b")],
+			{ a: transient, b: expired },
+			["a", "b"],
+			undefined,
+		],
+		[
+			"card without a quota-map entry stays a card",
+			[card("zen", "OpenCode"), card("claude-code", "Claude Code")],
+			{ zen: unsupportedRead() },
+			["claude-code"],
+			"Usage unavailable for: OpenCode",
+		],
+	] as [
+		string,
+		UsagePageCard[],
+		Record<string, QuotaRead>,
+		string[],
+		string | undefined,
+	][])("%s", (_name, cards, quota, ids, note) => {
+		const out = partitionUsageCards(cards, quota);
+		expect(out.cards.map((c) => c.id)).toEqual(ids);
+		expect(out.unavailableNote).toBe(note);
 	});
 
 	test("does not mutate its inputs", () => {

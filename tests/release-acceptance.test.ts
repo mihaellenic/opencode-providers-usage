@@ -121,63 +121,51 @@ const goodManifest = (): Record<string, unknown> => ({
 
 const expectedIdentity = { name: PACKAGE, version: VERSION };
 
+const PUBLISHED_ARTIFACT_PATHS = [
+	"package/package.json",
+	"package/README.md",
+	"package/LICENSE",
+	"package/index.js",
+	"package/tui.js",
+	"package/rpc.js",
+	"package/dist/index.js",
+	"package/dist/rpc.js",
+	"package/dist/tui.js",
+	"package/dist/gui-experimental.cjs",
+];
+
 describe("allowedArtifactFile", () => {
-	test("accepts exactly the ten published artifact paths", () => {
-		for (const path of [
-			"package/package.json",
-			"package/README.md",
-			"package/LICENSE",
-			"package/index.js",
-			"package/tui.js",
-			"package/rpc.js",
-			"package/dist/index.js",
-			"package/dist/rpc.js",
-			"package/dist/tui.js",
-			"package/dist/gui-experimental.cjs",
-		]) {
-			expect(allowedArtifactFile(path)).toBe(true);
-		}
+	test.each(PUBLISHED_ARTIFACT_PATHS)("accepts published path %s", (path) => {
+		expect(allowedArtifactFile(path)).toBe(true);
 	});
 
-	test("rejects undeclared paths, source, docs, tests, and tooling", () => {
-		for (const path of [
-			"package/docs/internal.md",
-			"package/dist/tui.js.map",
-			"package/dist/other.js",
-			"package/src/tui.tsx",
-			"package/index.ts",
-			"package/tui.tsx",
-			"package/tests/package.test.ts",
-			"package/scripts/build.ts",
-			"package/bun.lock",
-			"package/tsconfig.json",
-			"package/.npmrc",
-			"package/.env",
-			"package/package.json.bak",
-			"package/task-4-report.md",
-			"package/dist/",
-			"",
-		]) {
-			expect(allowedArtifactFile(path)).toBe(false);
-		}
+	test.each([
+		"package/docs/internal.md",
+		"package/dist/tui.js.map",
+		"package/dist/other.js",
+		"package/src/tui.tsx",
+		"package/index.ts",
+		"package/tui.tsx",
+		"package/tests/package.test.ts",
+		"package/scripts/build.ts",
+		"package/bun.lock",
+		"package/tsconfig.json",
+		"package/.npmrc",
+		"package/.env",
+		"package/package.json.bak",
+		"package/task-4-report.md",
+		"package/dist/",
+		"",
+	])("rejects undeclared path %p", (path) => {
+		expect(allowedArtifactFile(path)).toBe(false);
 	});
 });
 
 describe("validateArtifactListing", () => {
-	const allowed = [
-		"package/package.json",
-		"package/README.md",
-		"package/LICENSE",
-		"package/index.js",
-		"package/tui.js",
-		"package/rpc.js",
-		"package/dist/index.js",
-		"package/dist/rpc.js",
-		"package/dist/tui.js",
-		"package/dist/gui-experimental.cjs",
-	];
+	const allowed = PUBLISHED_ARTIFACT_PATHS;
 
-	test("accepts the exact listing in any order", () => {
+	test("accepts exactly the ten published paths in any order", () => {
+		expect(allowed).toHaveLength(10);
 		expect(() => validateArtifactListing([...allowed].reverse())).not.toThrow();
 	});
 
@@ -187,26 +175,19 @@ describe("validateArtifactListing", () => {
 		).toThrow("undeclared artifact path(s): package/dist/tui.js.map");
 	});
 
-	test("rejects a missing expected file", () => {
-		expect(() =>
-			validateArtifactListing(
-				allowed.filter((entry) => entry !== "package/rpc.js"),
-			),
-		).toThrow("missing artifact path(s): package/rpc.js");
-	});
+	test.each(["package/rpc.js", "package/dist/gui-experimental.cjs"])(
+		"rejects a missing expected file %s",
+		(missing) => {
+			expect(() =>
+				validateArtifactListing(allowed.filter((entry) => entry !== missing)),
+			).toThrow(`missing artifact path(s): ${missing}`);
+		},
+	);
 
 	test("rejects duplicated entries", () => {
 		expect(() =>
 			validateArtifactListing([...allowed, "package/README.md"]),
 		).toThrow("duplicate");
-	});
-
-	test("rejects a missing GUI bundle", () => {
-		expect(() =>
-			validateArtifactListing(
-				allowed.filter((path) => !path.endsWith("gui-experimental.cjs")),
-			),
-		).toThrow("missing artifact path(s): package/dist/gui-experimental.cjs");
 	});
 });
 
@@ -375,96 +356,70 @@ describe("registryGuardDecision", () => {
 });
 
 describe("parseAcceptanceArgs", () => {
-	test("requires an explicit output directory for acceptance", () => {
-		expect(() => parseAcceptanceArgs([], {})).toThrow(
-			"--output-dir is required",
-		);
-	});
-
-	test("requires an absolute output directory", () => {
-		expect(() => parseAcceptanceArgs(["--output-dir", "artifact"], {})).toThrow(
-			"absolute",
-		);
-		expect(() => parseAcceptanceArgs(["--output-dir=artifact"], {})).toThrow(
-			"absolute",
-		);
-	});
-
-	test("accepts both absolute output-directory forms", () => {
-		expect(parseAcceptanceArgs(["--output-dir", "/tmp/out"], {})).toEqual({
-			mode: "accept",
-			outputDir: "/tmp/out",
-			allowPublished: false,
-		});
-		expect(parseAcceptanceArgs(["--output-dir=/tmp/out"], {})).toEqual({
-			mode: "accept",
-			outputDir: "/tmp/out",
-			allowPublished: false,
-		});
-	});
-
-	test("accepts explicit local duplicate validation", () => {
-		expect(
-			parseAcceptanceArgs(
-				["--output-dir", "/tmp/out", "--allow-published"],
-				{},
-			),
-		).toEqual({
-			mode: "accept",
-			outputDir: "/tmp/out",
-			allowPublished: true,
-		});
-	});
-
-	test("refuses the duplicate bypass in CI", () => {
-		expect(() =>
-			parseAcceptanceArgs(["--output-dir", "/tmp/out", "--allow-published"], {
-				CI: "true",
-			}),
-		).toThrow("CI must always fail");
-		expect(() =>
-			parseAcceptanceArgs(["--output-dir", "/tmp/out", "--allow-published"], {
-				GITHUB_ACTIONS: "true",
-			}),
-		).toThrow("CI must always fail");
-	});
-
-	test("parses verification metadata mode", () => {
-		expect(
-			parseAcceptanceArgs(["--verify-published", "/tmp/artifact.json"], {}),
-		).toEqual({
-			mode: "verify",
-			metadataPath: "/tmp/artifact.json",
-		});
-	});
-
-	test("rejects mixed or unknown modes", () => {
-		expect(() =>
-			parseAcceptanceArgs(
-				[
-					"--verify-published",
-					"/tmp/artifact.json",
-					"--output-dir",
-					"/tmp/out",
-				],
-				{},
-			),
-		).toThrow();
-		expect(() =>
-			parseAcceptanceArgs(
-				["--verify-published", "/tmp/artifact.json", "--allow-published"],
-				{},
-			),
-		).toThrow();
-		expect(() => parseAcceptanceArgs(["--wat"], {})).toThrow(
+	test.each([
+		["no arguments", [], {}, "--output-dir is required"],
+		["relative output dir", ["--output-dir", "artifact"], {}, "absolute"],
+		["relative output dir (=)", ["--output-dir=artifact"], {}, "absolute"],
+		[
+			"duplicate bypass in CI",
+			["--output-dir", "/tmp/out", "--allow-published"],
+			{ CI: "true" },
+			"CI must always fail",
+		],
+		[
+			"duplicate bypass in GitHub Actions",
+			["--output-dir", "/tmp/out", "--allow-published"],
+			{ GITHUB_ACTIONS: "true" },
+			"CI must always fail",
+		],
+		[
+			"verify mixed with output dir",
+			["--verify-published", "/tmp/artifact.json", "--output-dir", "/tmp/out"],
+			{},
+			undefined,
+		],
+		[
+			"verify mixed with allow-published",
+			["--verify-published", "/tmp/artifact.json", "--allow-published"],
+			{},
+			undefined,
+		],
+		["unknown flag", ["--wat"], {}, "unknown argument"],
+		[
+			"publish flag",
+			["--output-dir", "/tmp/out", "--publish"],
+			{},
 			"unknown argument",
-		);
+		],
+	])("rejects %s", (_name, args, env, message) => {
+		expect(() => parseAcceptanceArgs(args, env)).toThrow(message);
 	});
 
-	test("never accepts a publish flag", () => {
-		expect(() =>
-			parseAcceptanceArgs(["--output-dir", "/tmp/out", "--publish"], {}),
-		).toThrow("unknown argument");
+	test.each([
+		[
+			"output dir as separate argument",
+			["--output-dir", "/tmp/out"],
+			{ mode: "accept", outputDir: "/tmp/out", allowPublished: false },
+		],
+		[
+			"output dir with =",
+			["--output-dir=/tmp/out"],
+			{ mode: "accept", outputDir: "/tmp/out", allowPublished: false },
+		],
+		[
+			"explicit local duplicate validation",
+			["--output-dir", "/tmp/out", "--allow-published"],
+			{ mode: "accept", outputDir: "/tmp/out", allowPublished: true },
+		],
+		[
+			"verification metadata mode",
+			["--verify-published", "/tmp/artifact.json"],
+			{ mode: "verify", metadataPath: "/tmp/artifact.json" },
+		],
+	])("parses %s", (_name, args, expected) => {
+		expect(parseAcceptanceArgs(args, {})).toEqual(
+			expected as ReturnType<typeof parseAcceptanceArgs>,
+		);
 	});
 });
 

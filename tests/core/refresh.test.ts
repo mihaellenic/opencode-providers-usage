@@ -39,8 +39,9 @@ type TimerHandle = { at: number; callback: () => void };
 
 /** Resolves after every queued microtask has run. */
 async function settle(): Promise<void> {
-	await new Promise((resolve) => setTimeout(resolve, 0));
-	await new Promise((resolve) => setTimeout(resolve, 0));
+	for (let turn = 0; turn < 100; turn += 1) {
+		await Promise.resolve();
+	}
 }
 
 function fakeClock(start = NOW) {
@@ -357,26 +358,6 @@ describe("quota refresh lifecycle", () => {
 		coordinator.dispose();
 	});
 
-	test("nonretryable failures retain failure timing until success without scheduling retries", async () => {
-		let value = availableRead(NOW);
-		const { coordinator, clock } = harness(() =>
-			source({ identityKey: "a", read: async () => value }),
-		);
-		await coordinator.refresh("alpha");
-		const history = coordinator.presentation("alpha").lastKnown;
-		await clock.advance(15_000);
-		value = unavailableRead(clock.now(), "network_error");
-		await coordinator.refresh("alpha");
-		const failedSince = coordinator.presentation("alpha").failedSince;
-		await clock.advance(60_000);
-		value = unavailableRead(clock.now(), "unsupported_companion_storage");
-		await clock.advance(60_000);
-		expect(coordinator.presentation("alpha").lastKnown).toEqual(history);
-		expect(coordinator.presentation("alpha").failedSince).toBe(failedSince);
-		expect(coordinator.isRecovering("alpha")).toBe(false);
-		expect(clock.pending()).toBe(0);
-		coordinator.dispose();
-	});
 	test("two_views_share_one_request", async () => {
 		let requests = 0;
 		const { coordinator, clock } = harness(() =>
@@ -791,31 +772,36 @@ describe("quota identity isolation and cleanup", () => {
 		coordinator.dispose();
 	});
 
-	test("successful_read_schedules_no_network_timer", async () => {
-		let requests = 0;
-		const { coordinator, clock } = harness(() =>
-			source({
-				identityKey: "identity-a",
-				async read() {
-					requests += 1;
-					return availableRead(NOW);
-				},
-			}),
-		);
+	test.each(["watch", "refresh"] as const)(
+		"successful_read_via_%s_schedules_no_network_timer",
+		async (via) => {
+			let requests = 0;
+			const { coordinator, clock } = harness(() =>
+				source({
+					identityKey: "identity-a",
+					async read() {
+						requests += 1;
+						return availableRead(NOW);
+					},
+				}),
+			);
 
-		const dispose = coordinator.watch("alpha", () => {});
-		await settle();
-		expect(requests).toBe(1);
-		expect(clock.pending()).toBe(0);
-		expect(pollDelays(clock.scheduled)).toEqual([]);
+			const dispose =
+				via === "watch" ? coordinator.watch("alpha", () => {}) : () => {};
+			if (via === "watch") await settle();
+			else await coordinator.refresh("alpha");
+			expect(requests).toBe(1);
+			expect(clock.pending()).toBe(0);
+			expect(pollDelays(clock.scheduled)).toEqual([]);
 
-		await clock.advance(POLL_MS * 10);
-		expect(requests).toBe(1);
-		expect(coordinator.isRecovering("alpha")).toBe(false);
+			await clock.advance(POLL_MS * 10);
+			expect(requests).toBe(1);
+			expect(coordinator.isRecovering("alpha")).toBe(false);
 
-		dispose();
-		coordinator.dispose();
-	});
+			dispose();
+			coordinator.dispose();
+		},
+	);
 
 	test("recovery_success_stops_retries_and_clears_recovery_state", async () => {
 		let failing = true;
@@ -858,91 +844,59 @@ describe("quota identity isolation and cleanup", () => {
 		coordinator.dispose();
 	});
 
-	test("invalidation_cancels_owned_recovery_work", async () => {
-		let requests = 0;
-		const { coordinator, clock } = harness(() =>
-			source({
-				identityKey: "identity-a",
-				async read() {
-					requests += 1;
-					return unavailableRead(NOW, "network_error");
-				},
-			}),
-		);
-
-		await coordinator.refresh("alpha");
-		expect(clock.pending()).toBe(1);
-		expect(coordinator.isRecovering("alpha")).toBe(true);
-
-		coordinator.invalidate("identity-a");
-		expect(clock.pending()).toBe(0);
-		expect(coordinator.isRecovering("alpha")).toBe(false);
-		expect(coordinator.presentation("alpha").failedSince).toBeUndefined();
-
-		await clock.advance(POLL_MS * 10);
-		expect(requests).toBe(1);
-
-		coordinator.dispose();
-	});
-
-	test("partial_results_schedule_recovery_at_the_recovery_interval", async () => {
-		let requests = 0;
-		const { coordinator, clock } = harness(() =>
-			source({
-				identityKey: "identity-a",
-				async read() {
-					requests += 1;
-					return partialRead(NOW);
-				},
-			}),
-		);
-
-		await coordinator.refresh("alpha");
-		expect(requests).toBe(1);
-		expect(coordinator.isRecovering("alpha")).toBe(true);
-		expect(pollDelays(clock.scheduled).at(-1)).toBe(RECOVERY_INTERVAL_MS);
-
-		await clock.advance(RECOVERY_INTERVAL_MS - 1);
-		expect(requests).toBe(1);
-
-		await clock.advance(1);
-		expect(requests).toBe(2);
-		expect(coordinator.isRecovering("alpha")).toBe(true);
-
-		coordinator.dispose();
-	});
-
-	test("partial_retry_after_delays_the_next_poll", async () => {
-		const partial: QuotaRead = {
-			state: "partial",
-			authSource: "codex-companion",
-			sections: [
-				availableSection(NOW, { scope: "app", remaining: 90 }),
-				{
-					scope: "shared-plan",
-					result: {
-						state: "unavailable",
-						reason: "rate_limited",
-						attemptedAt: NOW,
-						retryAfterMs: 180_000,
+	test.each([
+		["the recovery interval", partialRead(NOW), RECOVERY_INTERVAL_MS],
+		[
+			"a longer retry-after",
+			{
+				state: "partial",
+				authSource: "codex-companion",
+				sections: [
+					availableSection(NOW, { scope: "app", remaining: 90 }),
+					{
+						scope: "shared-plan",
+						result: {
+							state: "unavailable",
+							reason: "rate_limited",
+							attemptedAt: NOW,
+							retryAfterMs: 180_000,
+						},
 					},
-				},
-			],
-		};
-		const { coordinator, clock } = harness(() =>
-			source({ identityKey: "identity-a", read: async () => partial }),
-		);
+				],
+			} satisfies QuotaRead,
+			180_000,
+		],
+	])(
+		"partial_results_schedule_the_next_poll_at_%s",
+		async (_name, partial, delay) => {
+			let requests = 0;
+			const { coordinator, clock } = harness(() =>
+				source({
+					identityKey: "identity-a",
+					async read() {
+						requests += 1;
+						return partial;
+					},
+				}),
+			);
 
-		const dispose = coordinator.watch("alpha", () => {});
-		await settle();
-		expect(pollDelays(clock.scheduled).at(-1)).toBe(180_000);
+			const dispose = coordinator.watch("alpha", () => {});
+			await settle();
+			expect(requests).toBe(1);
+			expect(coordinator.isRecovering("alpha")).toBe(true);
+			expect(pollDelays(clock.scheduled).at(-1)).toBe(delay);
 
-		await clock.advance(179_999);
-		expect(pollDelays(clock.scheduled)).toEqual([180_000]);
+			await clock.advance(delay - 1);
+			expect(requests).toBe(1);
 
-		dispose();
-		coordinator.dispose();
-	});
+			await clock.advance(1);
+			expect(requests).toBe(2);
+			expect(coordinator.isRecovering("alpha")).toBe(true);
+
+			dispose();
+			coordinator.dispose();
+		},
+	);
 
 	test("request_timeout_discards_late_value", async () => {
 		let release: (value: QuotaRead) => void = () => {};
@@ -1045,101 +999,33 @@ describe("quota identity isolation and cleanup", () => {
 		dispose();
 	});
 
-	test("invalidate_clears_only_the_matching_identity", async () => {
-		const { coordinator } = harness((providerID) =>
-			source({
-				identityKey: `identity-${providerID}`,
-				async read() {
-					return availableRead(NOW);
-				},
-			}),
-		);
-
-		await coordinator.refresh("alpha");
-		await coordinator.refresh("beta");
-		expect(metrics(coordinator.read("alpha"))).toHaveLength(1);
-
-		coordinator.invalidate("identity-alpha");
-
-		expect(metrics(coordinator.read("alpha"))).toEqual([]);
-		expect(metrics(coordinator.read("beta"))).toHaveLength(1);
-		expect(coordinator.presentation("alpha").lastKnown).toBeUndefined();
-		expect(coordinator.presentation("beta").lastKnown).not.toBeUndefined();
-
-		coordinator.dispose();
-	});
-
-	test("unsupported_connections_are_not_polled", async () => {
-		let requests = 0;
-		const { coordinator, clock } = harness(() =>
-			source({
-				identityKey: "unsupported",
-				async read() {
-					requests += 1;
-					return unavailableRead(NOW, "no_validated_quota_source");
-				},
-			}),
-		);
-
-		const dispose = coordinator.watch("alpha", () => {});
-		await settle();
-		expect(requests).toBe(1);
-		expect(pollDelays(clock.scheduled)).toEqual([]);
-		expect(clock.pending()).toBe(0);
-
-		await clock.advance(300_000);
-		expect(requests).toBe(1);
-
-		dispose();
-		coordinator.dispose();
-	});
-
-	test("auth_required_failures_do_not_auto_retry", async () => {
-		let requests = 0;
-		const { coordinator, clock } = harness(() =>
-			source({
-				identityKey: "companion-a",
-				async read() {
-					requests += 1;
-					return unavailableRead(NOW, "companion_expired");
-				},
-			}),
-		);
-
-		const dispose = coordinator.watch("alpha", (value) => {
-			expect(value).toMatchObject({
-				state: "auth-required",
-				reason: "companion_expired",
-			});
-		});
-		await settle();
-		expect(requests).toBe(1);
-		expect(pollDelays(clock.scheduled)).toEqual([]);
-
-		await clock.advance(300_000);
-		expect(requests).toBe(1);
-
-		dispose();
-		coordinator.dispose();
-	});
-
-	test("unread_provider_has_no_timer", async () => {
+	test.each([
+		["unsupported_connections", "unavailable", "no_validated_quota_source"],
+		["auth_required_failures", "auth-required", "companion_expired"],
+	] as const)("%s_are_not_polled", async (_name, state, reason) => {
 		let requests = 0;
 		const { coordinator, clock } = harness(() =>
 			source({
 				identityKey: "identity-a",
 				async read() {
 					requests += 1;
-					return availableRead(NOW);
+					return unavailableRead(NOW, reason);
 				},
 			}),
 		);
 
-		await coordinator.refresh("alpha");
+		const seen: QuotaRead[] = [];
+		const dispose = coordinator.watch("alpha", (value) => seen.push(value));
+		await settle();
 		expect(requests).toBe(1);
-		expect(clock.pending()).toBe(0);
+		expect(seen.at(-1)).toMatchObject({ state, reason });
 		expect(pollDelays(clock.scheduled)).toEqual([]);
+		expect(clock.pending()).toBe(0);
 
+		await clock.advance(300_000);
+		expect(requests).toBe(1);
+
+		dispose();
 		coordinator.dispose();
 	});
 });
@@ -1491,13 +1377,15 @@ describe("quota presentation history", () => {
 		coordinator.dispose();
 	});
 
-	test("invalidation_clears_history_and_recovery_state", async () => {
+	test("invalidation_clears_only_the_matching_identity_with_history_and_recovery", async () => {
 		let failing = false;
-		const { coordinator, clock } = harness(() =>
+		let requests = 0;
+		const { coordinator, clock } = harness((providerID) =>
 			source({
-				identityKey: "identity-a",
+				identityKey: `identity-${providerID}`,
 				async read() {
-					return failing
+					requests += 1;
+					return failing && providerID === "alpha"
 						? unavailableRead(NOW, "network_error")
 						: availableRead(NOW, { remaining: 42 });
 				},
@@ -1505,6 +1393,7 @@ describe("quota presentation history", () => {
 		);
 
 		await coordinator.refresh("alpha");
+		await coordinator.refresh("beta");
 		failing = true;
 		await clock.advance(FLOOR_MS);
 		await coordinator.refresh("alpha");
@@ -1512,8 +1401,9 @@ describe("quota presentation history", () => {
 		expect(before.lastKnown).not.toBeUndefined();
 		expect(before.failedSince).not.toBeUndefined();
 		expect(clock.pending()).toBe(1);
+		const requestsBefore = requests;
 
-		coordinator.invalidate("identity-a");
+		coordinator.invalidate("identity-alpha");
 		const after = coordinator.presentation("alpha");
 		expect(after.lastKnown).toBeUndefined();
 		expect(after.failedSince).toBeUndefined();
@@ -1521,59 +1411,64 @@ describe("quota presentation history", () => {
 		expect(coordinator.isRecovering("alpha")).toBe(false);
 		expect(clock.pending()).toBe(0);
 		expect(metrics(coordinator.read("alpha"))).toEqual([]);
-
-		coordinator.dispose();
-	});
-
-	test("non_retryable_failure_retains_history_and_ends_recovery", async () => {
-		let mode: "ok" | "transient" | "disabled" = "ok";
-		let requests = 0;
-		const { coordinator, clock } = harness(() =>
-			source({
-				identityKey: "identity-a",
-				async read() {
-					requests += 1;
-					if (mode === "transient") {
-						return unavailableRead(NOW, "network_error");
-					}
-					if (mode === "disabled") {
-						return unavailableRead(NOW, "companion_disabled");
-					}
-					return availableRead(NOW, { remaining: 42 });
-				},
-			}),
-		);
-
-		await coordinator.refresh("alpha");
-		mode = "transient";
-		await clock.advance(FLOOR_MS);
-		await coordinator.refresh("alpha");
-		expect(coordinator.presentation("alpha").failedSince).not.toBeUndefined();
-		expect(clock.pending()).toBe(1);
-
-		mode = "disabled";
-		await clock.advance(RECOVERY_INTERVAL_MS);
-		const failure = await coordinator.refresh("alpha");
-		expect(failure).toMatchObject({
-			state: "unavailable",
-			reason: "companion_disabled",
-		});
-
-		const presentation = coordinator.presentation("alpha");
-		const lastKnown = presentation.lastKnown;
-		if (lastKnown === undefined) {
-			throw new Error("expected history to survive a non-retryable failure");
-		}
-		expect(remainingPercents(lastKnown)).toEqual([42]);
-		expect(presentation.failedSince).toBe(NOW + FLOOR_MS);
-		expect(coordinator.isRecovering("alpha")).toBe(false);
-		expect(clock.pending()).toBe(0);
+		expect(metrics(coordinator.read("beta"))).toHaveLength(1);
+		expect(coordinator.presentation("beta").lastKnown).not.toBeUndefined();
 
 		await clock.advance(POLL_MS * 10);
-		expect(requests).toBe(3);
+		expect(requests).toBe(requestsBefore);
 
 		coordinator.dispose();
 	});
+
+	test.each(["companion_disabled", "unsupported_companion_storage"] as const)(
+		"non_retryable_failure_%s_retains_history_and_ends_recovery",
+		async (reason) => {
+			let mode: "ok" | "transient" | "terminal" = "ok";
+			let requests = 0;
+			const { coordinator, clock } = harness(() =>
+				source({
+					identityKey: "identity-a",
+					async read() {
+						requests += 1;
+						if (mode === "transient") {
+							return unavailableRead(NOW, "network_error");
+						}
+						if (mode === "terminal") {
+							return unavailableRead(NOW, reason);
+						}
+						return availableRead(NOW, { remaining: 42 });
+					},
+				}),
+			);
+
+			await coordinator.refresh("alpha");
+			mode = "transient";
+			await clock.advance(FLOOR_MS);
+			await coordinator.refresh("alpha");
+			expect(coordinator.presentation("alpha").failedSince).not.toBeUndefined();
+			expect(clock.pending()).toBe(1);
+
+			mode = "terminal";
+			await clock.advance(RECOVERY_INTERVAL_MS);
+			const failure = await coordinator.refresh("alpha");
+			expect(failure).toMatchObject({ reason });
+
+			const presentation = coordinator.presentation("alpha");
+			const lastKnown = presentation.lastKnown;
+			if (lastKnown === undefined) {
+				throw new Error("expected history to survive a non-retryable failure");
+			}
+			expect(remainingPercents(lastKnown)).toEqual([42]);
+			expect(presentation.failedSince).toBe(NOW + FLOOR_MS);
+			expect(coordinator.isRecovering("alpha")).toBe(false);
+			expect(clock.pending()).toBe(0);
+
+			await clock.advance(POLL_MS * 10);
+			expect(requests).toBe(3);
+
+			coordinator.dispose();
+		},
+	);
 
 	test("auth_rejection_clears_history_and_never_starts_recovery", async () => {
 		let auth = false;

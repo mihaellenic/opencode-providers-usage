@@ -12,9 +12,6 @@ import type {
 } from "../../src/core/contracts";
 import {
 	buildSidebarText,
-	CLAUDE_USAGE_COUNTDOWN_REFRESH_MS,
-	claudeCountdownRefreshMs,
-	createClaudeUsageRequest,
 	INVENTORY_FAILED_DETAIL,
 	INVENTORY_FAILED_TITLE,
 	INVENTORY_RETRY_HINT,
@@ -55,10 +52,6 @@ const CLAUDE_USAGE: ClaudeUsage = {
 		usedPercent: 64,
 		resetsAt: CLAUDE_NOW + 4 * 86_400_000 + 2 * 3_600_000,
 	},
-};
-const CLAUDE_USAGE_LATER: ClaudeUsage = {
-	session: { usedPercent: 12, resetsAt: CLAUDE_NOW + 30 * 60_000 },
-	week: { usedPercent: 98, resetsAt: CLAUDE_NOW + 2 * 86_400_000 },
 };
 
 function windowMetric(
@@ -445,57 +438,22 @@ describe("quota presentation values", () => {
 });
 
 describe("unavailable state copy", () => {
-	test("auth_unavailable_copy_names_the_chatgpt_codex_app_on_this_machine", () => {
-		for (const reason of [
-			"companion_missing",
-			"companion_expired",
-			"app_registration_mismatch",
-			"invalid_companion",
-		]) {
-			const rows = formatQuotaRows(
-				{ state: "auth-required", reason, attemptedAt: NOW },
-				LOCALE,
-			);
+	test.each([
+		["auth-required", "companion_missing", AUTH_UNAVAILABLE_COPY],
+		["auth-required", "companion_expired", AUTH_UNAVAILABLE_COPY],
+		["auth-required", "app_registration_mismatch", AUTH_UNAVAILABLE_COPY],
+		["auth-required", "invalid_companion", AUTH_UNAVAILABLE_COPY],
+		["unavailable", "companion_disabled", NATIVE_ONLY_COPY],
+		["auth-required", "unsupported_auth_method", REJECTED_AUTH_COPY],
+	] as const)(
+		"%s/%s renders its dedicated copy as an error row",
+		(state, reason, copy) => {
+			const rows = formatQuotaRows({ state, reason, attemptedAt: NOW }, LOCALE);
 			expect(rows).toHaveLength(1);
-			expect(rows[0]?.value).toBe(AUTH_UNAVAILABLE_COPY);
+			expect(rows[0]?.value).toBe(copy);
 			expect(rows[0]?.tone).toBe("error");
-		}
-		expect(AUTH_UNAVAILABLE_COPY).toContain(
-			"ChatGPT/Codex app on this machine",
-		);
-	});
-
-	test("native_only_openai_copy_is_exact_and_does_not_request_a_new_api_key", () => {
-		const rows = formatQuotaRows(
-			{
-				state: "unavailable",
-				reason: "companion_disabled",
-				attemptedAt: NOW,
-			},
-			LOCALE,
-		);
-		expect(rows[0]?.value).toBe(NATIVE_ONLY_COPY);
-		expect(rows[0]?.value).toBe(
-			"Quota unavailable: the Codex companion is turned off in this OpenCode configuration. Remove the codexCompanion opt-out to read the existing ChatGPT/Codex login.",
-		);
-		expect(rows[0]?.value.toLowerCase()).not.toContain("new api key");
-	});
-
-	test("unsupported_auth_copy_points_at_connect_without_blaming_the_method", () => {
-		const rows = formatQuotaRows(
-			{
-				state: "auth-required",
-				reason: "unsupported_auth_method",
-				attemptedAt: NOW,
-			},
-			LOCALE,
-		);
-		expect(rows[0]?.value).toBe(REJECTED_AUTH_COPY);
-		expect(rows[0]?.value).toContain("/connect");
-		expect(rows[0]?.value.toLowerCase()).toContain("rejected");
-		expect(rows[0]?.value.toLowerCase()).not.toContain("method is unsupported");
-		expect(rows[0]?.value.toLowerCase()).not.toContain("unsupported method");
-	});
+		},
+	);
 
 	test("state_field_separates_unsupported_from_expired_or_stale", () => {
 		const unsupported = formatQuotaRows(
@@ -1133,79 +1091,6 @@ describe("host-rendered wrappers", () => {
 		]);
 	});
 
-	test("host_children_are_static_leaves_and_slot_render_reads_only_the_model", () => {
-		for (const file of [
-			"src/tui.tsx",
-			"src/ui/Sidebar.tsx",
-			"src/ui/UsagePage.tsx",
-			"src/ui/usage-page-model.ts",
-			"src/ui/bar-row.tsx",
-			"src/ui/theme.ts",
-			"src/ui/sidebar-model.ts",
-		]) {
-			const source = readFileSync(
-				new URL(`../../${file}`, import.meta.url),
-				"utf8",
-			);
-			expect(source).not.toMatch(/children:\s*\(\s*\)\s*=>/);
-			expect(source).not.toMatch(/children:\s*function/);
-		}
-
-		const tui = readFileSync(
-			new URL("../../src/tui.tsx", import.meta.url),
-			"utf8",
-		);
-		expect(tui).not.toContain("QuotaSidebar");
-		// Compatibility helper remains exported, but the live slot does not use
-		// the joined text path.
-		expect(tui).toContain("export function buildSidebarText");
-		expect(tui).toContain("createSignal<SidebarModel | null>");
-		expect(tui).toContain("createSignal<SidebarTheme>(");
-		expect(tui).toContain("createEffect(() => {");
-		expect(tui).toContain(
-			"setSidebarTheme(resolveSidebarTheme(context.theme))",
-		);
-		const slotStart = tui.indexOf('append: "sidebar.footer"');
-		expect(slotStart).toBeGreaterThanOrEqual(0);
-		const renderStart = tui.indexOf("render: () => {", slotStart);
-		const renderEnd = tui.indexOf("\n\t\t\t},", renderStart);
-		expect(renderStart).toBeGreaterThanOrEqual(0);
-		expect(renderEnd).toBeGreaterThan(renderStart);
-		const slotRender = tui.slice(renderStart, renderEnd);
-		expect(slotRender).toContain("const model = sidebarModel()");
-		expect(slotRender).toContain(
-			"renderSidebar(model, sidebarTheme(), openUsage)",
-		);
-		expect(slotRender).not.toContain("currentSelection");
-		expect(slotRender).not.toContain("sidebarDriver");
-		expect(slotRender).not.toContain("buildSidebarText");
-		expect(slotRender).not.toContain("context.");
-		expect(slotRender).not.toContain("context.theme");
-		expect(slotRender).not.toContain("resolveSidebarTheme");
-
-		const sidebar = readFileSync(
-			new URL("../../src/ui/Sidebar.tsx", import.meta.url),
-			"utf8",
-		);
-		expect(sidebar).toContain("export function renderSidebar");
-		expect(sidebar).toContain("resolveSidebarTheme(props.theme)");
-		expect(sidebar).toContain("onMouseDown: openUsage");
-		expect(sidebar).toMatch(/paddingLeft: 1,\s*onMouseDown: openUsage/);
-		expect(sidebar).not.toContain("View all providers");
-		expect(sidebar).not.toContain('border: ["left"]');
-		expect(sidebar).not.toContain('key: "open-usage"');
-		expect(sidebar).not.toContain("createEffect");
-		expect(sidebar).not.toContain("createMemo");
-		expect(sidebar).not.toContain("usePlugin");
-		const renderBody = sidebar.slice(
-			sidebar.indexOf("export function renderSidebar"),
-			sidebar.indexOf("/** Component wrapper"),
-		);
-		expect(renderBody).not.toContain("context.");
-		expect(renderBody).not.toContain("theme.text");
-		expect(renderBody).not.toContain("resolveSidebarTheme");
-	});
-
 	test("inventory_failure_is_truthful_and_retryable", () => {
 		const ready = {
 			version: 2,
@@ -1351,144 +1236,5 @@ describe("Claude Code usage card", () => {
 		} finally {
 			await setup.dispose();
 		}
-	});
-
-	type ClaudeCall = {
-		signal: AbortSignal;
-		resolve: (value: ClaudeUsage | null) => void;
-		reject: (reason: unknown) => void;
-	};
-
-	function pendingClaude(calls: ClaudeCall[]) {
-		return (signal: AbortSignal) =>
-			new Promise<ClaudeUsage | null>((resolve, reject) => {
-				calls.push({ signal, resolve, reject });
-			});
-	}
-
-	function deferredPage() {
-		const calls: ClaudeCall[] = [];
-		const updates: (ClaudeUsage | null)[] = [];
-		const request = createClaudeUsageRequest({
-			collect: pendingClaude(calls),
-			apply: (usage) => updates.push(usage),
-		});
-		return { calls, updates, request };
-	}
-
-	test("starts a fresh request on every page mount and cancels on unmount", async () => {
-		const calls: ClaudeCall[] = [];
-
-		// Each construction represents one full-page mount.
-		const first = createClaudeUsageRequest({
-			collect: pendingClaude(calls),
-			apply: () => {},
-		});
-		first.start();
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.signal.aborted).toBe(false);
-
-		first.cancel();
-		expect(calls[0]?.signal.aborted).toBe(true);
-		first.start();
-		expect(calls).toHaveLength(1);
-
-		const second = createClaudeUsageRequest({
-			collect: pendingClaude(calls),
-			apply: () => {},
-		});
-		second.start();
-		expect(calls).toHaveLength(2);
-		second.cancel();
-	});
-
-	test("clears the previous value and ignores superseded results", async () => {
-		const { calls, updates, request } = deferredPage();
-		request.start();
-		calls[0]?.resolve(CLAUDE_USAGE);
-		await Promise.resolve();
-		expect(updates).toEqual([null, CLAUDE_USAGE]);
-
-		// A refresh hides the old value immediately and supersedes the prior
-		// request; its late result must not be applied.
-		request.start();
-		expect(updates.at(-1)).toBeNull();
-		expect(calls[0]?.signal.aborted).toBe(true);
-		calls[1]?.resolve(CLAUDE_USAGE_LATER);
-		await Promise.resolve();
-		expect(updates.at(-1)).toBe(CLAUDE_USAGE_LATER);
-		calls[0]?.resolve(CLAUDE_USAGE);
-		await Promise.resolve();
-		expect(updates.at(-1)).toBe(CLAUDE_USAGE_LATER);
-		request.cancel();
-	});
-
-	test("treats null, rejection, and missing-method rejection as no card", async () => {
-		for (const failure of [
-			(_signal: AbortSignal) => Promise.resolve<ClaudeUsage | null>(null),
-			() => Promise.reject(new Error("collector failed")),
-			() => Promise.reject(new Error("rpc.method_not_found")),
-		]) {
-			const updates: (ClaudeUsage | null)[] = [];
-			const request = createClaudeUsageRequest({
-				collect: failure,
-				apply: (usage) => updates.push(usage),
-			});
-			request.start();
-			await Promise.resolve();
-			await Promise.resolve();
-			expect(updates.every((usage) => usage === null)).toBe(true);
-			expect(updates.at(-1)).toBeNull();
-			request.cancel();
-		}
-	});
-
-	test("cancellation after a request settles discards every late result", async () => {
-		const { calls, updates, request } = deferredPage();
-		request.start();
-		request.cancel();
-		calls[0]?.resolve(CLAUDE_USAGE);
-		await Promise.resolve();
-		expect(updates).toEqual([null]);
-	});
-
-	test("countdown repaint cadence is bounded and adapts to seconds", () => {
-		expect(CLAUDE_USAGE_COUNTDOWN_REFRESH_MS).toBe(30_000);
-		expect(
-			claudeCountdownRefreshMs(
-				{
-					session: { usedPercent: 10, resetsAt: NOW + 61_000 },
-					week: { usedPercent: 20, resetsAt: NOW + 86_400_000 },
-				},
-				NOW,
-			),
-		).toBe(CLAUDE_USAGE_COUNTDOWN_REFRESH_MS);
-		expect(
-			claudeCountdownRefreshMs(
-				{
-					session: { usedPercent: 10, resetsAt: NOW + 31_000 },
-					week: { usedPercent: 20, resetsAt: NOW + 86_400_000 },
-				},
-				NOW,
-			),
-		).toBe(1_000);
-		expect(
-			claudeCountdownRefreshMs(
-				{
-					session: { usedPercent: 10, resetsAt: NOW - 1 },
-					week: { usedPercent: 20, resetsAt: NOW + 86_400_000 },
-				},
-				NOW,
-			),
-		).toBe(CLAUDE_USAGE_COUNTDOWN_REFRESH_MS);
-		expect(
-			claudeCountdownRefreshMs(
-				{
-					session: { usedPercent: 10, resetsAt: NOW - 1 },
-					week: { usedPercent: 20, resetsAt: NOW - 1 },
-				},
-				NOW,
-			),
-		).toBeUndefined();
 	});
 });

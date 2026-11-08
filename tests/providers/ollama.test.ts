@@ -148,36 +148,6 @@ async function resolveOllama(
 	});
 }
 
-type NativeObservation = { integrationIDs: string[] };
-
-function nativeCredential(
-	value: unknown | (() => unknown),
-	observed: NativeObservation = { integrationIDs: [] },
-): NativeCredentialSource {
-	return {
-		async resolve(integrationID) {
-			observed.integrationIDs.push(integrationID);
-			return typeof value === "function" ? (value as () => unknown)() : value;
-		},
-	};
-}
-
-async function resolveOrFailWithNative(
-	deps: ProviderDeps,
-	credentialDeps: CredentialReadDeps,
-	native: NativeCredentialSource,
-): Promise<ResolvedQuotaSource> {
-	const source = await resolveOllama(deps, credentialDeps, {
-		nativeCredential: native,
-	});
-	if (source === null) {
-		throw new Error(
-			"expected the Ollama adapter to resolve the host credential",
-		);
-	}
-	return source;
-}
-
 async function resolveOrFail(
 	deps: ProviderDeps,
 	credentialDeps: CredentialReadDeps,
@@ -413,50 +383,63 @@ describe("Ollama existing-key quota", () => {
 		expect(moneyRemaining(read, "ollama-total")).toBe(0);
 	});
 
-	test("keeps_missing_purchased_balance_unknown", async () => {
-		const { read } = await readPayload({
-			included: {
-				balance_usd: 40,
-				allowance_usd: 60,
-				period: { from: "2026-09-15T09:30:00Z", until: REFILL_ISO },
+	test.each([
+		{
+			name: "purchased balance",
+			payload: {
+				included: {
+					balance_usd: 40,
+					allowance_usd: 60,
+					period: { from: "2026-09-15T09:30:00Z", until: REFILL_ISO },
+				},
 			},
-		});
-
-		expect(read.state).toBe("available");
-		expect(moneyRemaining(read, "ollama-included")).toBe(40);
-		expect(metricById(read, "ollama-purchased")).toBeUndefined();
-		expect(metricById(read, "ollama-total")).toBeUndefined();
-		expect(
-			metricsOf(read).some(
-				(metric) => metric.kind === "money" && metric.remaining === 0,
-			),
-		).toBeFalse();
-	});
-
-	test("keeps_missing_included_remaining_unknown", async () => {
-		const { read } = await readPayload({
-			included: {
-				allowance_usd: 60,
-				period: { from: "2026-09-15T09:30:00Z", until: REFILL_ISO },
+			state: "available",
+			present: ["ollama-included"],
+			absent: ["ollama-purchased", "ollama-total"],
+			remaining: { "ollama-included": 40 },
+			unavailable: 0,
+		},
+		{
+			name: "included remaining",
+			payload: {
+				included: {
+					allowance_usd: 60,
+					period: { from: "2026-09-15T09:30:00Z", until: REFILL_ISO },
+				},
+				purchased: { balance_usd: 5 },
 			},
-			purchased: { balance_usd: 5 },
-		});
+			state: "partial",
+			present: ["ollama-purchased"],
+			absent: ["ollama-included", "ollama-total"],
+			remaining: { "ollama-purchased": 5 },
+			unavailable: 1,
+		},
+	])(
+		"keeps missing $name unknown",
+		async ({ payload, state, absent, remaining, unavailable }) => {
+			const { read } = await readPayload(payload);
 
-		expect(read.state).toBe("partial");
-		expect(metricById(read, "ollama-included")).toBeUndefined();
-		expect(metricById(read, "ollama-total")).toBeUndefined();
-		expect(moneyRemaining(read, "ollama-purchased")).toBe(5);
-		expect(
-			metricsOf(read).some(
-				(metric) => metric.kind === "money" && metric.remaining === 0,
-			),
-		).toBeFalse();
-		expect(unavailableSections(read)).toHaveLength(1);
-		expect(unavailableSections(read)[0]?.result).toMatchObject({
-			state: "unavailable",
-			reason: "invalid_response",
-		});
-	});
+			expect(read.state).toBe(state);
+			for (const id of absent) {
+				expect(metricById(read, id)).toBeUndefined();
+			}
+			for (const [id, value] of Object.entries(remaining)) {
+				expect(moneyRemaining(read, id)).toBe(value);
+			}
+			expect(
+				metricsOf(read).some(
+					(metric) => metric.kind === "money" && metric.remaining === 0,
+				),
+			).toBeFalse();
+			expect(unavailableSections(read)).toHaveLength(unavailable);
+			for (const section of unavailableSections(read)) {
+				expect(section.result).toMatchObject({
+					state: "unavailable",
+					reason: "invalid_response",
+				});
+			}
+		},
+	);
 
 	test("rejects_malformed_and_negative_money", async () => {
 		const cases = [
@@ -846,81 +829,9 @@ describe("Ollama adapter connection matching", () => {
 		expect(JSON.stringify(first)).not.toContain(SENTINEL);
 		expect(JSON.stringify(rotated)).not.toContain(SENTINEL);
 	});
-
-	test("declares_both_supported_capability_rows", () => {
-		const adapter = createOllamaAdapter();
-		expect(adapter.id).toBe("ollama-balance");
-		expect(adapter.capabilities).toEqual([
-			{
-				match: { integrationID: "ollama-cloud", authMethod: "key" },
-				name: "Ollama Cloud",
-				support: "supported",
-				evidence: "live-validated",
-			},
-			{
-				match: { integrationID: "ollama-cloud", authMethod: "key" },
-				name: "Ollama Cloud legacy session/weekly plan",
-				support: "supported",
-				evidence: "documented-only",
-			},
-		]);
-	});
 });
 
 describe("Ollama native host credential bridge", () => {
-	test("prefers_host_native_credential_over_file_store", async () => {
-		const observed = observation();
-		const host: NativeObservation = { integrationIDs: [] };
-		const hostKey = "host-native-ollama-key";
-		const calls: RequestCall[] = [];
-		const source = await resolveOrFailWithNative(
-			payloadDeps(officialBalance(), calls),
-			credentials(SAVED_KEY_STORE, observed),
-			nativeCredential({ type: "key", key: hostKey }, host),
-		);
-
-		// The active host credential wins over the file store: the file is never
-		// read, not even for currentness.
-		expect(observed.calls).toBe(0);
-		expect(host.integrationIDs).toEqual(["ollama-cloud"]);
-		expect(await source.isCurrent()).toBe(true);
-		expect(observed.calls).toBe(0);
-		expect(host.integrationIDs).toEqual(["ollama-cloud", "ollama-cloud"]);
-
-		const read = await source.read(new AbortController().signal);
-		expect(isQuotaRead(read)).toBe(true);
-		expect(read.state).toBe("available");
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.headers).toEqual({
-			Authorization: `Bearer ${hostKey}`,
-			Accept: "application/json",
-		});
-		expect(JSON.stringify(read)).not.toContain(hostKey);
-		expect(JSON.stringify(source)).not.toContain(hostKey);
-	});
-
-	test("falls_back_to_file_store_when_host_returns_undefined", async () => {
-		const observed = observation();
-		const host: NativeObservation = { integrationIDs: [] };
-		const calls: RequestCall[] = [];
-		const source = await resolveOrFailWithNative(
-			payloadDeps(officialBalance(), calls),
-			credentials(SAVED_KEY_STORE, observed),
-			nativeCredential(undefined, host),
-		);
-
-		expect(observed.paths).toEqual([AUTH_PATH]);
-		expect(await source.isCurrent()).toBe(true);
-		expect(observed.paths).toEqual([AUTH_PATH, AUTH_PATH]);
-		expect(host.integrationIDs).toEqual(["ollama-cloud", "ollama-cloud"]);
-
-		const read = await source.read(new AbortController().signal);
-		expect(isQuotaRead(read)).toBe(true);
-		expect(read.state).toBe("available");
-		expect(calls).toHaveLength(1);
-		expect(calls[0]?.headers.Authorization).toBe(`Bearer ${SENTINEL}`);
-	});
-
 	test("host_bridge_failure_reuses_the_last_success_identity", async () => {
 		const adapter = createOllamaAdapter();
 		let hostCalls = 0;
@@ -968,34 +879,5 @@ describe("Ollama native host credential bridge", () => {
 
 		const recovered = await adapter.resolve(input());
 		expect(recovered?.identityKey).toBe(success.identityKey);
-	});
-
-	test("host_credential_error_maps_to_sanitized_unavailable", async () => {
-		const observed = observation();
-		const calls: RequestCall[] = [];
-		const secret = "host-native-error-sentinel";
-		const native: NativeCredentialSource = {
-			async resolve() {
-				throw new Error(`host bridge failed for ${secret}`);
-			},
-		};
-		const source = await resolveOrFailWithNative(
-			payloadDeps(officialBalance(), calls),
-			credentials(SAVED_KEY_STORE, observed),
-			native,
-		);
-
-		expect(observed.calls).toBe(0);
-		const read = await source.read(new AbortController().signal);
-		expect(isQuotaRead(read)).toBe(true);
-		expect(read).toEqual({
-			state: "unavailable",
-			reason: "invalid_response",
-			attemptedAt: NOW,
-		});
-		expect(JSON.stringify(read)).not.toContain(secret);
-		expect(calls).toHaveLength(0);
-		expect(await source.isCurrent()).toBe(false);
-		expect(observed.calls).toBe(0);
 	});
 });

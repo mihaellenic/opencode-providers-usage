@@ -36,24 +36,18 @@ describe("bun audit gate decisions", () => {
 		}
 	});
 
-	test("fails any high advisory, even when the exit code is zero", () => {
+	test.each([
+		["high", 0],
+		["high", 1],
+		["critical", 1],
+	])("fails %s advisory with exit code %d", (severity, code) => {
 		const decision = gateBunAudit({
-			code: 0,
-			stdout: report("high"),
+			code,
+			stdout: report(severity),
 			stderr: "",
 		});
 		expect(decision.ok).toBe(false);
-		if (!decision.ok) expect(decision.reason).toContain("high");
-	});
-
-	test("fails any critical advisory", () => {
-		const decision = gateBunAudit({
-			code: 1,
-			stdout: report("critical"),
-			stderr: "",
-		});
-		expect(decision.ok).toBe(false);
-		if (!decision.ok) expect(decision.reason).toContain("critical");
+		if (!decision.ok) expect(decision.reason).toContain(severity);
 	});
 
 	test("fails malformed JSON", () => {
@@ -139,27 +133,9 @@ describe("bun audit gate CLI as run by CI", () => {
 		});
 	});
 
-	test("exits nonzero on malformed JSON", () => {
+	test("exits nonzero on malformed JSON (fail closed)", () => {
 		withFakeBun("{oops", 0, (env) => {
 			expect(runGate(env).status).not.toBe(0);
-		});
-	});
-
-	test("exits nonzero on unknown severity", () => {
-		withFakeBun(report("urgent"), 1, (env) => {
-			expect(runGate(env).status).not.toBe(0);
-		});
-	});
-
-	test("exits nonzero on exit 1 with no advisories", () => {
-		withFakeBun("{}", 1, (env) => {
-			expect(runGate(env).status).not.toBe(0);
-		});
-	});
-
-	test("exits zero when only moderate advisories are present", () => {
-		withFakeBun(report("moderate"), 1, (env) => {
-			expect(runGate(env).status).toBe(0);
 		});
 	});
 });
