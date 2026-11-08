@@ -47,9 +47,9 @@ live in [`docs/support.md`](docs/support.md).
 
 ### Install from npm
 
-For an unreleased revision, use the source-checkout instructions below instead.
-Before publishing, the accepted package must pass named-package installation on
-CLI `2.2.6` (the owner-approved release target) and the real-host smoke gates in [the release runbook](docs/releasing.md).
+Version `0.1.0` is published on npm. To run an unreleased revision, use the
+source-checkout instructions below instead. The release process is in
+[the release runbook](docs/releasing.md).
 
 ```bash
 npm install opencode-providers-usage
