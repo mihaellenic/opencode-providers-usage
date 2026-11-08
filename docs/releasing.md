@@ -13,6 +13,8 @@ Owner-only, one time:
 - On npm, configure the package's **Trusted Publisher** for GitHub repository
   `mihaellenic/opencode-providers-usage` and workflow filename **`release.yml`**.
   Publishing uses OIDC; do not add a stored npm token or `NODE_AUTH_TOKEN`.
+  Check **Allow `npm publish`**; leave **Allow `npm dist-tag`** unchecked and the
+  environment name empty. The workflow runs plain `npm publish`.
 - For local development, run `bun install` and `bun run setup` to install the
   Conventional Commit hook. CI also validates commit subjects.
 
@@ -232,6 +234,10 @@ source-checkout symlink. Do not alter real sign-ins or send model requests.
 - **Verification mismatch** (registry version or `dist.integrity` differs from
   `artifact.json`): stop and investigate the registry state with the owner before any
   further action.
+- **`E403 ... OIDC permission denied for this action` on publish:** the npm Trusted
+  Publisher does not match the run (owner, repository, workflow filename, environment,
+  or allowed actions). Fix it on npm, confirm the version is absent (`npm view
+  <pkg>@<version>` gives E404), then use **Actions → Release → Re-run failed jobs**.
 
 ## History
 
