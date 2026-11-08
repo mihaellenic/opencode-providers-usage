@@ -10,9 +10,6 @@ Owner-only, one time:
 
 - Enable **Settings → Actions → General → Allow GitHub Actions to create and approve
   pull requests**.
-- On npm, configure the package's **Trusted Publisher** for GitHub repository
-  `mihaellenic/opencode-providers-usage` and workflow filename **`release.yml`**.
-  Publishing uses OIDC; do not add a stored npm token or `NODE_AUTH_TOKEN`.
 - For local development, run `bun install` and `bun run setup` to install the
   Conventional Commit hook. CI also validates commit subjects.
 
@@ -232,9 +229,6 @@ source-checkout symlink. Do not alter real sign-ins or send model requests.
 - **Verification mismatch** (registry version or `dist.integrity` differs from
   `artifact.json`): stop and investigate the registry state with the owner before any
   further action.
-- **`E403 ... OIDC permission denied for this action` on publish:** npm rejected the
-  run's identity. Fix it with the package owner, confirm the version is absent (`npm
-  view <pkg>@<version>` gives E404), then use **Actions → Release → Re-run failed jobs**.
 
 ## History
 
