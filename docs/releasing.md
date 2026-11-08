@@ -10,9 +10,6 @@ Owner-only, one time:
 
 - Enable **Settings → Actions → General → Allow GitHub Actions to create and approve
   pull requests**.
-- On npm, configure the package's **Trusted Publisher** for GitHub repository
-  `mihaellenic/opencode-providers-usage` and workflow filename **`release.yml`**.
-  Publishing uses OIDC; do not add a stored npm token or `NODE_AUTH_TOKEN`.
 - For local development, run `bun install` and `bun run setup` to install the
   Conventional Commit hook. CI also validates commit subjects.
 

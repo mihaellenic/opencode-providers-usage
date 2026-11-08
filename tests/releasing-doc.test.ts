@@ -80,26 +80,18 @@ describe("docs/releasing.md automated flow and setup", () => {
 		expect(pkg.scripts?.setup).toContain("core.hooksPath");
 	});
 
-	test("configures npm trusted publishing for this repository and release.yml", () => {
-		const setup = section("## Setup");
-		expect(setup).toContain("**Trusted Publisher**");
-		expect(setup).toContain("`mihaellenic/opencode-providers-usage`");
+	test("the release workflow exists, publishes over OIDC, and the repo URL matches", () => {
 		expect(pkg.repository?.url).toContain(
 			"mihaellenic/opencode-providers-usage",
 		);
-		expect(setup).toContain("workflow filename **`release.yml`**");
 		expect(existsSync(join(root, ".github/workflows/release.yml"))).toBe(true);
 		expect(release).toContain("id-token: write");
 	});
 
 	test("never instructs storing an npm token", () => {
-		expect(flat).toContain(
-			"do not add a stored npm token or `NODE_AUTH_TOKEN`",
-		);
 		expect(doc).toContain("Do not request, paste, or store token values");
 		expect(doc).not.toMatch(/NPM_TOKEN|_authToken/);
-		// the only mention of NODE_AUTH_TOKEN is the prohibition above
-		expect(doc.match(/NODE_AUTH_TOKEN/g)?.length).toBe(1);
+		expect(doc).not.toContain("NODE_AUTH_TOKEN");
 		expect(release).not.toContain("NODE_AUTH_TOKEN");
 		expect(release).not.toContain("secrets.NPM");
 	});
