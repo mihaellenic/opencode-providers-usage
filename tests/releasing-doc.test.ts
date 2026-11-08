@@ -161,10 +161,12 @@ describe("docs/releasing.md automated publication", () => {
 		const order = [
 			"Release Please creates the release tag and GitHub release.",
 			"checks out that exact tag, not floating `main`",
-			"sets up Node 24, installs npm 11.16.0, and sets up Bun 1.4.4",
+			"sets up Node 24 and Bun 1.4.4",
 			"`bun install --frozen-lockfile --ignore-scripts`",
 			"runs fresh artifact acceptance",
 			"uploads the evidence",
+			"recomputes the tarball's sha512 integrity",
+			"installs npm 11.16.0",
 			"npm publish <accepted tarball> --access public",
 			"--verify-published <artifact.json>",
 		].map((phrase) => text.indexOf(phrase));
@@ -178,6 +180,7 @@ describe("docs/releasing.md automated publication", () => {
 			"bun install --frozen-lockfile --ignore-scripts",
 			"scripts/release-acceptance.ts --output-dir",
 			"actions/upload-artifact",
+			"actions/download-artifact",
 			'npm publish "$tarball" --access public',
 			"--verify-published",
 		].map((phrase) => release.indexOf(phrase));
