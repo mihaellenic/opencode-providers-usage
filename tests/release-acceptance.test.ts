@@ -51,7 +51,7 @@ import {
 } from "../scripts/release-inventory";
 
 const PACKAGE = "opencode-providers-usage";
-const VERSION = "0.1.0";
+const VERSION = "7.7.7";
 const HOST_PACKAGES = new Set([
 	"@opencode/plugin",
 	"@opencode/theme",
@@ -320,13 +320,13 @@ describe("classifyRegistryLookup", () => {
 	});
 
 	test("reads a published exact version", () => {
-		expect(classifyRegistryLookup(result(0, '"0.1.0"'))).toEqual({
+		expect(classifyRegistryLookup(result(0, '"7.7.7"'))).toEqual({
 			status: "published",
-			version: "0.1.0",
+			version: "7.7.7",
 		});
-		expect(classifyRegistryLookup(result(0, '["0.1.0"]'))).toEqual({
+		expect(classifyRegistryLookup(result(0, '["7.7.7"]'))).toEqual({
 			status: "published",
-			version: "0.1.0",
+			version: "7.7.7",
 		});
 	});
 
@@ -348,7 +348,7 @@ describe("registryGuardDecision", () => {
 
 	test("hard-fails a duplicate registry version by default", () => {
 		const decision = registryGuardDecision(
-			{ status: "published", version: "0.1.0" },
+			{ status: "published", version: "7.7.7" },
 			{ allowPublished: false },
 		);
 		expect(decision.ok).toBe(false);
@@ -357,7 +357,7 @@ describe("registryGuardDecision", () => {
 
 	test("allows an explicit local duplicate bypass with a warning", () => {
 		const decision = registryGuardDecision(
-			{ status: "published", version: "0.1.0" },
+			{ status: "published", version: "7.7.7" },
 			{ allowPublished: true },
 		);
 		expect(decision.ok).toBe(true);
@@ -580,8 +580,12 @@ describe("validateArtifactManifest", () => {
 		const manifest = JSON.parse(
 			readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 		);
+		// Release PRs bump package.json; version sync is asserted in package.test.ts.
 		expect(() =>
-			validateArtifactManifest(manifest, expectedIdentity),
+			validateArtifactManifest(manifest, {
+				name: expectedIdentity.name,
+				version: manifest.version,
+			}),
 		).not.toThrow();
 	});
 
@@ -609,7 +613,7 @@ describe("validateArtifactManifest", () => {
 		).toThrow("wrong package identity");
 		expect(() =>
 			validateArtifactManifest(
-				{ ...goodManifest(), version: "0.1.1" },
+				{ ...goodManifest(), version: "9.9.8" },
 				expectedIdentity,
 			),
 		).toThrow("wrong package identity");
@@ -1589,13 +1593,13 @@ describe("consumer override and install arguments", () => {
 	test("consumer install args never contain --legacy-peer-deps and keep the strict peer check", () => {
 		const args = consumerInstallArgs({
 			consumer: "/scratch/consumer",
-			tarball: "/scratch/opencode-providers-usage-0.1.0.tgz",
+			tarball: "/scratch/opencode-providers-usage-7.7.7.tgz",
 			peers: ["@opentui/solid@0.6.8", "solid-js@1.9.17"],
 		});
 		expect(args).not.toContain("--legacy-peer-deps");
 		expect(args).toContain("--ignore-scripts");
 		expect(args).toContain("--omit=dev");
-		expect(args).toContain("/scratch/opencode-providers-usage-0.1.0.tgz");
+		expect(args).toContain("/scratch/opencode-providers-usage-7.7.7.tgz");
 		expect(args).toContain("solid-js@1.9.17");
 	});
 });
@@ -1709,7 +1713,7 @@ describe("consumer exact saves agree with the override", () => {
 	test("consumer install saves exact peer specs so the override and the direct dependency match (no EOVERRIDE)", () => {
 		const args = consumerInstallArgs({
 			consumer: "/scratch/consumer",
-			tarball: "/scratch/opencode-providers-usage-0.1.0.tgz",
+			tarball: "/scratch/opencode-providers-usage-7.7.7.tgz",
 			peers: ["solid-js@1.9.17"],
 		});
 		expect(args).toContain("--save-exact");

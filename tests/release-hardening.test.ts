@@ -113,7 +113,7 @@ describe("validateOutputDir", () => {
 			const source = join(dir, "source");
 			mkdirSync(source);
 			for (const name of [
-				"opencode-providers-usage-0.1.0.tgz",
+				"opencode-providers-usage-7.7.7.tgz",
 				"artifact.json",
 				"bun-audit.json",
 				"npm-audit-omit-dev.json",
@@ -237,7 +237,7 @@ describe("real entrypoint rejects before any side effect", () => {
 			join(repo, "package.json"),
 			JSON.stringify({
 				name: "opencode-providers-usage",
-				version: "0.1.0",
+				version: "7.7.7",
 				packageManager: `bun@${pin}`,
 				engines: { bun: pin },
 			}),
