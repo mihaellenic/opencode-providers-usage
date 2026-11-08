@@ -34,8 +34,10 @@ describe("release-please config", () => {
 		expect(config.packages["."]["include-component-in-tag"]).toBe(false);
 	});
 
-	test("starts from the published 0.1.0 baseline", () => {
-		expect(manifest).toEqual({ ".": "0.1.0" });
+	// The release PR bumps the manifest, so pin its shape, not a version.
+	test("tracks a single root package at a 0.x version", () => {
+		expect(Object.keys(manifest)).toEqual(["."]);
+		expect(manifest["."]).toMatch(/^0\.\d+\.\d+$/);
 	});
 });
 

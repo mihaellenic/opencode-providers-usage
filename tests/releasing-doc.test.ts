@@ -431,7 +431,8 @@ describe("docs/releasing.md history", () => {
 			"The tag `v0.1.0` and its GitHub release existed first",
 		);
 		expect(text).toContain("was seeded at `0.1.0` after that baseline");
-		expect(manifest["."]).toBe("0.1.0");
+		// History is fixed text; the live manifest moves with each release PR.
+		expect(manifest["."]).toMatch(/^0\.\d+\.\d+$/);
 		expect(text).toContain("never fabricate `0.0.0` history");
 	});
 });

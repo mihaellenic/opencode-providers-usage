@@ -580,8 +580,12 @@ describe("validateArtifactManifest", () => {
 		const manifest = JSON.parse(
 			readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 		);
+		// Release PRs bump package.json; version sync is asserted in package.test.ts.
 		expect(() =>
-			validateArtifactManifest(manifest, expectedIdentity),
+			validateArtifactManifest(manifest, {
+				name: expectedIdentity.name,
+				version: manifest.version,
+			}),
 		).not.toThrow();
 	});
 
