@@ -36,16 +36,16 @@ const CLAUDE_CARD_ID = "claude-code";
 const CLAUDE_CARD_NAME = "Claude Code";
 
 /**
- * Page-only card from the local Claude Code CLI. It is intentionally not a
- * connected provider: it has its own identity and never enters the provider
- * inventory or sidebar.
+ * Card from the local Claude Code CLI, shared by the usage page and the
+ * `claude-agent` sidebar. It is intentionally not a connected provider: it has
+ * its own identity and never enters the provider inventory.
  *
  * The two verified windows are projected through `buildSidebarModel` so the
  * card gets exactly the OpenAI-style window bars, used-percentage thresholds,
  * compact durations and reset countdowns. The synthetic read is never exposed;
  * only the resulting plain lines leave this function.
  */
-function claudeUsageCard(
+export function claudeUsageCard(
 	usage: ClaudeUsage,
 	locale: LocaleContext,
 	now: number,

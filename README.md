@@ -7,10 +7,11 @@ API-spending substitutions.
 
 Historical validation: OpenCode `2.1.4` (V2 plugin, RPC, and terminal APIs) with Bun `1.4.4` on a macOS local shared server. That is not the current tested version: the current package SDK is `@opencode/plugin` `2.2.5`. The SDK build version is not host test evidence, and no real host smoke has been run for the `2.2.5` stack (`@opentui/core` and `@opentui/solid` `0.8.0`, `solid-js` `1.9.18`). The earlier clean TUI smoke on CLI `2.2.0` under the then-candidate `2.2.0` SDK and the synthetic smoke on the Desktop `2.2.1` server are historical; validation on `2.2.0`, `2.2.1` and `2.2.2` is historical and is not transferred to this build. OpenCode `2.1.4` hosts were not tested with this build.
 
-The page-only Claude Code collector is verified only
-on macOS arm64 with Claude Code CLI `2.1.308`; the live print-mode `/usage`
-command was independently verified, but the full-page UI/RPC path was not
-live-verified.
+The Claude Code collector (used by the full-page card and the `claude-agent`
+sidebar card) is verified only on macOS arm64 with Claude Code CLI `2.1.308`;
+the live print-mode `/usage` command was independently verified, but the
+full-page UI/RPC path and the sidebar card were not live-verified in an OpenCode
+session.
 
 Recorded GUI bundle hashes are historical artifacts; a rebuilt candidate needs
 fresh host checks.
@@ -31,12 +32,13 @@ Web, V1, and OpenCode forks are not supported.
 - **Everything else** — an explicit unsupported, not-applicable, or
   auth-required explanation. There is no generic credential forwarding and no
   advertised support for an unvalidated source.
-- **Claude Code (full page only)** — current session and current week
-  percentages and reset times from the locally authenticated Claude Code CLI's
-  `/usage` command. It is a dedicated page-only source, not a provider: there is
-  no sidebar card, inventory entry, or row in the provider support matrix or
-  machine-checked adapter declarations. See
-  [Claude Code usage](#claude-code-usage-full-page-only).
+- **Claude Code (full page, and sidebar for `claude-agent`)** — current session
+  and current week percentages and reset times from the locally authenticated
+  Claude Code CLI's `/usage` command. It is a dedicated local source, not a
+  provider: there is no inventory entry or row in the provider support matrix or
+  machine-checked adapter declarations. The sidebar shows it only when the
+  selected provider ID is exactly `claude-agent`. See
+  [Claude Code usage](#claude-code-usage).
 
 The exact authentication/storage matrix, evidence levels, and reason-code copy
 live in [`docs/support.md`](docs/support.md).
@@ -164,10 +166,18 @@ has already been imported.
   The structured sidebar card shows the provider name, compact used-quota bars
   with reset countdowns, and dimmed detail rows. Clicking anywhere in the card
   opens the full page.
+- When the selected provider ID is exactly `claude-agent`, the sidebar shows
+  only a "Claude Code" card with the same Session and Week rows as the full
+  page's Claude Code card. It shows `Checking quota…` until the first result,
+  then `Usage unavailable` (one muted line, no error detail) if collection fails.
+  Collection starts on every (re)selection; later input, terminal focus,
+  route/session change and model-step completion start one only if 60 seconds
+  have passed since the previous attempt started. See
+  [Claude Code usage](#claude-code-usage).
 - `Show provider usage` (`provider-quota.usage`) opens the full page. The slash
   command is `/usage`; if that name is occupied at setup the plugin registers
   `/provider-usage` instead. The page renders one framed card per connected
-  provider and, when collection succeeds, a page-only Claude Code card. Each
+  provider and, when collection succeeds, a Claude Code card. Each
   provider card body is exactly the sidebar widget for that provider: same
   compact rows, duration labels, countdown resets, and tones, with no extra rows
   added by the page. The Claude Code card uses the same rows and tones with its
@@ -181,22 +191,29 @@ has already been imported.
 
 No UI action triggers a model request or an inference call.
 
-## Claude Code usage (full page only)
+## Claude Code usage
 
-- The card is backed by a dedicated page-only CLI source outside the provider
-  inventory. It runs the explicit `/usage` local command of the **already
+- The full-page card and the `claude-agent` sidebar card are backed by a
+  dedicated local CLI source outside the provider inventory. It runs the
+  explicit `/usage` local command of the **already
   authenticated local Claude Code CLI** and uses that CLI's existing account.
   It does not ask for or accept a Claude credential, token, account path, or
   endpoint. The `claude` executable must be installed and signed in on the
   machine running the OpenCode server.
 - Every opening of the full page starts a fresh collection, and `ctrl+r` starts
   another. The result is never cached across page opens. Collection is
-  independent of the connected-provider inventory and never changes the
-  sidebar.
-- The card is hidden while collection runs and after any failure: missing CLI,
-  not signed in, timeout, oversized or malformed output, unsupported platform,
-  or a server without the page-only RPC. Other providers keep rendering and no
-  error is shown.
+  independent of the connected-provider inventory and does not affect ordinary
+  provider sidebar cards. The RPC does not cache or coordinate, so the page and
+  the `claude-agent` sidebar may each collect; at most two bounded CLI processes
+  (30 s and 1 MiB each) can overlap briefly.
+- On the full page, the card is hidden while collection runs and after any
+  failure: missing CLI, not signed in, timeout, oversized or malformed output,
+  unsupported platform, or a server without the Claude Code usage RPC. Other
+  providers keep rendering and no error is shown. The sidebar card instead keeps
+  its header and shows `Usage unavailable` on failure.
+- The sidebar card is shown only for `claude-agent` and uses the same rows,
+  collection and collection-floor rules as described in
+  [Terminal UI](#terminal-ui).
 - Only the current session and current week percentages and reset times are
   shown. Model-specific windows are ignored, never displayed, and never treated
   as the overall week.
@@ -208,21 +225,27 @@ No UI action triggers a model request or an inference call.
   prompt is sent.
 - Collector verification is limited to **macOS arm64 with Claude Code CLI
   `2.1.308`**. The live print-mode `/usage` command was independently verified;
-  the full-page UI and RPC integration were not live-verified. Other CLI
+  the full-page UI and RPC integration were not live-verified. The sidebar card
+  was tested only with a fake host and stubbed RPC; it has not been verified in
+  a live OpenCode session with a real `claude-agent` selection. Other CLI
   versions and other POSIX platforms remain unverified. Platforms without POSIX
-  process groups are unsupported and hide the card. So does an unavailable
-  absolute home directory.
+  process groups are unsupported and hide the page card. So does an unavailable
+  absolute home directory. The sidebar card shows `Usage unavailable` in those
+  cases.
 
 ## Freshness and request behavior
 
-- The sidebar loads once on activation. Keyboard input, terminal focus, route/session
-  changes, and model-selection changes refresh when the last full success is at
-  least `60_000` ms old (or missing). Model-step completion refreshes the provider
+- For ordinary providers the sidebar loads once on activation. Keyboard input,
+  terminal focus, route/session changes, and model-selection changes refresh when
+  the last full success is at least `60_000` ms old (or missing). Model-step completion refreshes the provider
   that actually served that step, regardless of age. Bursts coalesce, with a
   trailing refresh for completions inside the request floor.
 - Successful reads do **not** schedule polling. While idle, the sidebar keeps the
   last fully successful figures, even beyond normal expiry or a reported reset.
-  It never estimates a refill. History is server-runtime memory only.
+  It never estimates a refill. History is server-runtime memory only. The
+  `claude-agent` card has its own 60-second collection floor (see
+  [Terminal UI](#terminal-ui)), schedules no polling, and repaints its reset
+  countdowns on a display timer without collecting.
 - Failed/partial refreshes retain that coherent history. `Data might be stale`
   appears only when the oldest figure is **over 30 minutes old** and refreshes
   have failed continuously for **at least 3 minutes**. Time passing alone can

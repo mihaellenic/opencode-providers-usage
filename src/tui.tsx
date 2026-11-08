@@ -30,6 +30,12 @@ import {
 	createActivityRefreshDriver,
 } from "./ui/activity-refresh";
 import {
+	CLAUDE_AGENT_PROVIDER_ID,
+	type ClaudeSidebarState,
+	claudeSidebarModel,
+	createClaudeSidebarController,
+} from "./ui/claude-sidebar";
+import {
 	defaultLocaleContext,
 	formatQuotaRows,
 	formatSidebarText,
@@ -329,9 +335,10 @@ async function fetchProviders(
 }
 
 /**
- * Page-only Claude Code read. A server predating the additive RPC method
- * rejects it; that is indistinguishable from any other collection failure here
- * and must never surface an error or affect other providers.
+ * Claude Code read for the usage page and the `claude-agent` sidebar card. A
+ * server predating the additive RPC method rejects it; that is
+ * indistinguishable from any other collection failure here and must never
+ * surface an error or affect other providers.
  */
 async function fetchClaudeUsage(
 	context: QuotaTuiContext,
@@ -812,7 +819,31 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 			clearTimer: (handle) =>
 				clearTimeout(handle as ReturnType<typeof setTimeout>),
 		});
-		const releaseActivity = subscribeQuotaActivity(context, activityDriver);
+		// Claude Code has no generic quota RPC read; its own controller owns
+		// collection. Every other provider keeps the existing activity driver.
+		const [claudeState, setClaudeState] = createSignal<ClaudeSidebarState>({
+			status: "loading",
+		});
+		const claudeController = createClaudeSidebarController({
+			collect: (signal) => fetchClaudeUsage(context, signal),
+			now: Date.now,
+			onChange: setClaudeState,
+		});
+		const activityRouter: ActivityRefreshDriver = {
+			begin: (id) => activityDriver?.begin(id) ?? (() => {}),
+			activity: (id) =>
+				id === CLAUDE_AGENT_PROVIDER_ID
+					? claudeController.trigger()
+					: activityDriver?.activity(id),
+			completed: (id) =>
+				id === CLAUDE_AGENT_PROVIDER_ID
+					? claudeController.trigger()
+					: activityDriver?.completed(id),
+			observe: (id, fetchedAt, revision) =>
+				activityDriver?.observe(id, fetchedAt, revision),
+			dispose: () => activityDriver?.dispose(),
+		};
+		const releaseActivity = subscribeQuotaActivity(context, activityRouter);
 		const sidebarLocale = defaultLocaleContext();
 		// Snapshot only the semantic tokens the block paints into plugin-owned
 		// plain state. The effect reads the host theme outside the slot render, so
@@ -852,7 +883,7 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 				key !== previousActivityKey &&
 				model !== undefined
 			) {
-				activityDriver?.activity(model.providerID);
+				activityRouter.activity(model.providerID);
 			}
 			previousActivityKey = key;
 		});
@@ -865,7 +896,26 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 			}
 			displayTick();
 			const selected = sidebarSelection();
-			sidebarDriver.sync(selected.providerID);
+			const claudeSelected = selected.providerID === CLAUDE_AGENT_PROVIDER_ID;
+			claudeController.select(claudeSelected);
+			sidebarDriver.sync(claudeSelected ? undefined : selected.providerID);
+			if (claudeSelected) {
+				// Countdown ticks only repaint the stored state; they never collect.
+				const state = claudeState();
+				const now = Date.now();
+				setSidebarModel(claudeSidebarModel(state, sidebarLocale, now));
+				if (state.status === "ready") {
+					const delay = claudeCountdownRefreshMs(state.usage, now);
+					if (delay !== undefined) {
+						const timer = setTimeout(
+							() => setDisplayTick((tick) => tick + 1),
+							delay,
+						);
+						onCleanup(() => clearTimeout(timer));
+					}
+				}
+				return;
+			}
 			if (selected.providerID === undefined) {
 				setSidebarModel(
 					sidebarFallbackModel({ selection: selected, loading: false }),
@@ -928,6 +978,7 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 				// Dispose the reactive owner first so a late host reconciliation
 				// cannot restart the fetch driver, then release the RPC and slots.
 				disposeRoot();
+				claudeController.dispose();
 				activityDriver?.dispose();
 				releaseActivity();
 				sidebarDriver.dispose();

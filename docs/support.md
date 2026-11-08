@@ -17,7 +17,7 @@ fails CI.
 | Not supported | Web is not supported, V1 is not supported, and OpenCode forks are not supported |
 | Development runtime | Bun `1.4.4` (pinned) |
 | Validated platform | macOS, local shared server, file-backed Codex login |
-| Claude Code usage (page only) | Dedicated local CLI source; not a provider or adapter and outside the matrix and machine-checked declarations below. Collector verified on macOS arm64 with Claude Code CLI `2.1.308` only; full-page UI/RPC live integration unverified. |
+| Claude Code usage (page, and sidebar for `claude-agent`) | Dedicated local CLI source; not a provider or adapter and outside the matrix and machine-checked declarations below. Collector verified on macOS arm64 with Claude Code CLI `2.1.308` only; full-page UI/RPC and the sidebar card are not live-verified in an OpenCode session. |
 | Remote server | Not promised for v1; see [No remote or keychain promise](#no-remote-or-keychain-promise) |
 | Quota source | Provider responses only; no local-token estimates, guessed allowances, inferred refills, or API-spending substitution |
 
@@ -77,39 +77,47 @@ or auth method that is not named here.
 | Zen/Go inference API keys | Unsupported/unverified quota reporting; do not infer compatibility from Console OAuth. | No validated source. |
 | Other providers / custom compatible endpoints | Unsupported until an explicit adapter and authentication/endpoint combination are validated. | No generic credential forwarding. |
 
-### Claude Code page-only source
+### Claude Code local CLI source
 
 Claude Code is deliberately outside the provider matrix above and the
-machine-checked adapter declarations below. It is a dedicated page-only local
-CLI source, not a provider: it has no providerID, adapter capability, sidebar
-card, provider inventory entry, or support matrix row. A collection failure
-yields no card and cannot affect provider reads.
+machine-checked adapter declarations below. It is a dedicated local CLI source,
+not a provider: it has no providerID, adapter capability, provider inventory
+entry, or support matrix row. It feeds the full page's Claude Code card and the
+sidebar card shown when the selected provider ID is exactly `claude-agent` (see
+[Sidebar presentation](#sidebar-presentation)). A collection failure cannot
+affect provider reads.
 
 - The collector runs the explicit `/usage` local command of the already
   authenticated Claude Code CLI and uses that CLI's existing account. It does
   not accept a credential, token, account path, or endpoint. The `claude`
   executable must be installed and signed in on the server machine.
-- Collection is fresh on every full-page open and on Ctrl+R, never cached across
-  opens, and independent of the connected-provider inventory.
+- Collection is fresh on every full-page open, on Ctrl+R, and on each
+  `claude-agent` sidebar collection. It is never cached, and it is independent of
+  the connected-provider inventory.
 - Only the current session and current week percentages and reset times are
-  returned. Model-specific windows are ignored. The card is hidden while
-  collecting and after every failure, including a missing or unauthenticated
+  returned. Model-specific windows are ignored. On the page, the card is hidden
+  while collecting and after every failure, including a missing or unauthenticated
   CLI, timeout, oversized or malformed output, unsupported platform, or a server
-  without the page-only RPC.
+  without the Claude Code usage RPC. The sidebar card instead shows
+  `Usage unavailable`.
 - The process launches in the operating system's home directory rather than the
   OpenCode project directory, so project-level Claude settings and hooks are not
   discovered. User/home-level Claude Code settings and hooks may still run. The
   normal command path is used instead of `--bare`, which would skip hooks but
   stop using the CLI's logged-in account. No model prompt is sent.
 - Platform limitations: only platforms with POSIX process-group semantics are
-  supported; other platforms fail closed and hide the card. An unavailable
-  absolute home directory also hides it. Collection is bounded to 30 seconds
-  and 1 MiB of output.
+  supported; other platforms fail closed. The page hides its card, and the
+  sidebar shows `Usage unavailable`. An unavailable absolute home directory has
+  the same effect. Collection is bounded to 30 seconds and 1 MiB of output per
+  process. The page and the sidebar do not coordinate, so at most two processes
+  can overlap briefly.
 - Verification: the collector was verified only on macOS arm64 with Claude Code
   CLI `2.1.308`. The live print-mode `/usage` command was independently
   verified. Other CLI versions and platforms are unverified, and the full-page
   UI/RPC integration was not live-verified; those paths rely on synthetic page,
-  RPC, and parser tests. This source is outside the provider evidence levels
+  RPC, and parser tests. The sidebar card was tested only with a fake host and
+  stubbed RPC and has not been verified in a live OpenCode session with a real
+  `claude-agent` selection. This source is outside the provider evidence levels
   above.
 
 ### Evidence levels
@@ -243,7 +251,7 @@ method itself is unsupported. Re-authenticate through `/connect`, then refresh.
 | `invalid_response` | Quota unavailable: the provider returned an unusable response. Refresh to try again. |
 | unrecognized reason | Quota unavailable: the provider could not be queried. Refresh to try again. |
 
-The sidebar card and the usage-page card never render the `unsupported`
+The sidebar provider card and the usage-page provider card never render the `unsupported`
 explanation as a second line. For that purely informational state both show
 only the plain status line `Quota unavailable`; every other state keeps the copy
 above because it carries actionable guidance.
@@ -260,7 +268,8 @@ the Ollama adapter.
 
 | Behavior | Value |
 | --- | --- |
-| Ordinary activity freshness threshold | `60_000` ms since last full success; initial sidebar activation loads once |
+| Ordinary activity freshness threshold | `60_000` ms since last full success; initial sidebar activation loads once (ordinary providers only) |
+| `claude-agent` sidebar collection | Starts on every (re)selection; later triggers only if `60_000` ms have passed since the previous attempt started (failed attempts count; step completion does not bypass); one at a time; no idle polling |
 | Automatic successful-read polling | None; activity/completion driven |
 | Minimum spacing between request starts for one provider/account | `15_000` ms |
 | Request timeout | `10_000` ms |
@@ -280,6 +289,8 @@ and model selection refresh old/missing data; completed/failed model steps refre
 their actual provider, using public event attribution or the assistant-message
 cache (unattributed completions are skipped). Bursts share a throttle and trailing
 completion request; input is observed without consuming it or reading key contents.
+This paragraph describes ordinary providers. The `claude-agent` card follows its
+own collection rule in [Sidebar presentation](#sidebar-presentation).
 
 The server alone owns recovery retries, including with zero listeners and after
 interaction stops. The idle sweep skips active recovery to keep pushes alive;
@@ -350,7 +361,8 @@ must remain independent capabilities, never guessed quota inputs.
 ## Sidebar presentation
 
 The sidebar appends one compact quota card to the `sidebar.footer` slot for the
-prompt's currently selected provider.
+prompt's currently selected provider. The exception is `claude-agent`: see
+[Claude Code sidebar card](#claude-code-sidebar-card) below.
 
 - The card title is the host provider display name resolved by providerID from
   the host registry (for example `OpenAI` or `Ollama Cloud`) in the base color.
@@ -391,17 +403,46 @@ prompt's currently selected provider.
   one muted `Data might be stale` line at both thresholds.
 - The whole card is a click target for the existing `provider-usage` route.
 
+### Claude Code sidebar card
+
+- Shown only when the selected provider ID is exactly `claude-agent`. While it is
+  selected, the sidebar shows only this card and makes no generic provider quota
+  read for that ID.
+- The card header is `Claude Code`. Its body uses the same Session and Week rows,
+  percentages and reset countdowns as the page's Claude Code card, from the same
+  local-CLI collection (see [Claude Code local CLI source](#claude-code-local-cli-source)).
+  It adds no data and reads no credentials, and it still returns only two
+  percentages and two reset instants.
+- Collection starts whenever `claude-agent` becomes selected, including every
+  re-selection, and the card shows `Checking quota…` under its header until the
+  first result. Later keyboard input, terminal focus, route/session change and
+  model-step completion start a new collection only if at least 60 seconds have
+  passed since the previous attempt started, failed attempts included. Step
+  completion does not bypass this floor. At most one collection runs at a time.
+  Previous figures stay visible while a refresh runs.
+- Nothing polls while idle. Reset countdowns repaint on a display timer without
+  collecting again.
+- On failure (missing or signed-out CLI, timeout, unsupported platform, or a
+  server without the Claude Code usage RPC) the card keeps its header and shows
+  one muted `Usage unavailable` line with no error detail.
+- Clicking the card opens the full usage page, like other sidebar cards.
+- Each collection may run user/home-level Claude Code hooks, as described in
+  [Claude Code local CLI source](#claude-code-local-cli-source).
+- The Desktop GUI is unchanged and has no Claude sidebar card.
+
 ## Usage page presentation
 
 The `/usage` page renders one framed, padded card per connected provider and,
-when its page-only CLI collection succeeds, a separate Claude Code card. Each
+when its CLI collection succeeds, a separate Claude Code card. Each
 provider card body is exactly the sidebar widget for that provider: same header
 name, rows, tones, duration labels, and countdown resets. The page adds no
 rows of its own; configured caps and the derived total pool stay hidden, and
 shared-plan windows (with their `Limit reached` row) show exactly as the compact
 sidebar shows them. The Claude Code
 card is not a provider card: it uses the same rows and tones under its own
-identity, is hidden while collecting and on failure, and Ctrl+R starts a new
+identity. On this page it is hidden while collecting and on failure; the
+`claude-agent` sidebar card is separate and shows `Usage unavailable` instead
+(see [Claude Code sidebar card](#claude-code-sidebar-card)). Ctrl+R starts a new
 collection independently of the provider loop.
 
 Two quota cards share a row when the terminal is wide enough and stack when

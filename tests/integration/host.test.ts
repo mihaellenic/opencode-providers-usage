@@ -435,6 +435,40 @@ describe("TUI selection binding", () => {
 		expect(stdout).toContain("sidebar-slot-live: navigation+disposal");
 	});
 
+	test("claude_agent_sidebar_card_under_browser_solid_conditions", () => {
+		// Same isolated browser-conditions process as the other sidebar probes:
+		// the claude-agent card, its single-flight floor, countdown repaint,
+		// unavailable state, and click-through to the usage page.
+		const result = spawnSync(
+			process.execPath,
+			[
+				"--conditions=browser",
+				fileURLToPath(
+					new URL("../fixtures/claude-sidebar-live.ts", import.meta.url),
+				),
+			],
+			{
+				cwd: fileURLToPath(new URL("../..", import.meta.url)),
+				encoding: "utf8",
+				timeout: 60_000,
+			},
+		);
+		const stdout = result.stdout ?? "";
+		const stderr = result.stderr ?? "";
+		if (result.status !== 0 || !stdout.includes("claude-sidebar-live: PASS")) {
+			throw new Error(
+				[
+					`claude sidebar live probe failed (status ${String(result.status)})`,
+					`stdout:\n${stdout}`,
+					`stderr:\n${stderr}`,
+					result.error === undefined ? "" : `error: ${String(result.error)}`,
+				].join("\n"),
+			);
+		}
+		expect(result.status).toBe(0);
+		expect(stdout).toContain("claude-sidebar-live: PASS");
+	});
+
 	test("claude_usage_page_lifecycle_runs_under_browser_solid_conditions", () => {
 		// Bun's default resolution picks solid-js/dist/server.js, where effects
 		// and resources do not run. Mount the real QuotaUsagePage in an isolated
