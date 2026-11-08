@@ -347,8 +347,7 @@ async function extendedSidebarPhases(
 			const after = setup.captureCharFrame();
 			assert.deepEqual(paintedLines(after), before);
 			assert.ok(!after.includes("Claude Code"));
-			assert.ok(!after.includes("Session"));
-			assert.ok(!after.includes("Week"));
+			assert.ok(!after.includes("5h"));
 			assert.equal(harness.claudeCalls.length, 1);
 			console.log("claude-sidebar-live: switch-away-drops-late-result");
 		} finally {
@@ -419,7 +418,7 @@ async function extendedSidebarPhases(
 					1,
 				);
 				assert.ok(!frame.includes(failure.message));
-				assert.ok(!/\d|%|Session|Week/.test(frame));
+				assert.ok(!/\d|%/.test(frame));
 				harness.setSelected(BETA_SELECTION);
 				await frameWhen(setup, betaReady, ["Claude Code"]);
 			}
@@ -649,9 +648,9 @@ async function main(): Promise<void> {
 		assert.equal(quotaCalls.length, 0);
 		callAt(claudeCalls, 0).resolve(usageAt(37, 47));
 		const ready = await waitForFrame(
-			(frame) => frame.includes("Session") && frame.includes("37%"),
+			(frame) => frame.includes("5h") && frame.includes("37%"),
 		);
-		assert.ok(ready.includes("Week"));
+		assert.ok(ready.includes("7d"));
 		assert.ok(ready.includes("47%"));
 		assert.ok(!ready.includes("Checking quota"));
 		assert.equal(claudeCalls.length, 1);
@@ -676,7 +675,7 @@ async function main(): Promise<void> {
 		assert.equal(claudeCalls.length, 2);
 		assert.equal(callAt(claudeCalls, 1).signal.aborted, false);
 		const inFlight = await waitForFrame((frame) => frame.includes("37%"));
-		assert.ok(inFlight.includes("Week"));
+		assert.ok(inFlight.includes("7d"));
 		callAt(claudeCalls, 1).resolve(usageAt(55, 60));
 		await waitForFrame((frame) => frame.includes("55%"));
 		assert.equal(claudeCalls.length, 2);
@@ -731,7 +730,7 @@ async function main(): Promise<void> {
 		);
 		assert.ok(unavailable.includes("Claude Code"));
 		assert.equal(countOf(unavailable, "Usage unavailable"), 1);
-		assert.ok(!/%|Session|Week|resets/.test(unavailable));
+		assert.ok(!/%|resets/.test(unavailable));
 		assert.equal(quotaCalls.length, 0);
 		console.log("claude-sidebar-live: unavailable");
 

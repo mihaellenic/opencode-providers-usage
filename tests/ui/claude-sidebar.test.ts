@@ -259,7 +259,7 @@ describe("claudeSidebarModel", () => {
 		expect(JSON.stringify(model)).not.toMatch(/[0-9%]/);
 	});
 
-	test("ready model names the provider and carries Session and Week rows", () => {
+	test("ready model names the provider and carries the 5h and 7d rows", () => {
 		const model = claudeSidebarModel(
 			{ status: "ready", usage: CLAUDE_USAGE },
 			LOCALE,
@@ -270,6 +270,6 @@ describe("claudeSidebarModel", () => {
 		);
 
 		expect(model.provider).toBe("Claude Code");
-		expect(labels).toEqual(["5h · Session", "7d · Week"]);
+		expect(labels).toEqual(["5h", "7d"]);
 	});
 });

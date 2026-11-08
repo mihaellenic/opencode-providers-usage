@@ -158,8 +158,8 @@ try {
 	painted = await frame();
 	const card = squashed(painted);
 	assert.ok(card.includes("ClaudeCode"));
-	assert.ok(card.includes("5h·Session"));
-	assert.ok(card.includes("7d·Week"));
+	assert.ok(card.includes("5h"));
+	assert.ok(card.includes("7d"));
 	assert.ok(card.includes("37%"));
 	assert.ok(card.includes("47%"));
 	assert.ok(card.includes("resets2m"));

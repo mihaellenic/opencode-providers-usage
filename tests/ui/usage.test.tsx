@@ -1273,8 +1273,8 @@ describe("Claude Code usage card", () => {
 			const frame = setup.captureCharFrame();
 			const content = frame.replace(/\s+/g, "");
 			expect(content).toContain("ClaudeCode");
-			expect(content).toContain("5h·Session");
-			expect(content).toContain("7d·Week");
+			expect(content).toContain("5h");
+			expect(content).toContain("7d");
 			expect(content).toContain("37%");
 			expect(content).toContain("64%");
 			expect(content).toContain("resets");

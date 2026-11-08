@@ -167,7 +167,7 @@ has already been imported.
   with reset countdowns, and dimmed detail rows. Clicking anywhere in the card
   opens the full page.
 - When the selected provider ID is exactly `claude-agent`, the sidebar shows
-  only a "Claude Code" card with the same Session and Week rows as the full
+  only a "Claude Code" card with the same 5h and 7d rows as the full
   page's Claude Code card. It shows `Checking quota…` until the first result,
   then `Usage unavailable` (one muted line, no error detail) if collection fails.
   Collection starts on every (re)selection; later input, terminal focus,

@@ -332,7 +332,7 @@ describe("buildUsagePageModel Claude Code card", () => {
 					{
 						id: "0:app:session",
 						kind: "window",
-						label: "5h · Session",
+						label: "5h",
 						value: { text: "37%", tone: "normal" },
 						fill: 0.37,
 						reset: "resets 11h 7m",
@@ -340,7 +340,7 @@ describe("buildUsagePageModel Claude Code card", () => {
 					{
 						id: "0:app:week",
 						kind: "window",
-						label: "7d · Week",
+						label: "7d",
 						value: { text: "64%", tone: "normal" },
 						fill: 0.64,
 						reset: "resets 4d 2h",
@@ -364,7 +364,7 @@ describe("buildUsagePageModel Claude Code card", () => {
 			{
 				id: "0:app:session",
 				kind: "window",
-				label: "5h · Session",
+				label: "5h",
 				value: { text: "85%", tone: "warning" },
 				fill: 0.85,
 				reset: "resets 1h",
@@ -372,7 +372,7 @@ describe("buildUsagePageModel Claude Code card", () => {
 			{
 				id: "0:app:week",
 				kind: "window",
-				label: "7d · Week",
+				label: "7d",
 				value: { text: "100%", tone: "error" },
 				fill: 1,
 				reset: "resets 1d",

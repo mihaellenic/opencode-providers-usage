@@ -408,7 +408,7 @@ prompt's currently selected provider. The exception is `claude-agent`: see
 - Shown only when the selected provider ID is exactly `claude-agent`. While it is
   selected, the sidebar shows only this card and makes no generic provider quota
   read for that ID.
-- The card header is `Claude Code`. Its body uses the same Session and Week rows,
+- The card header is `Claude Code`. Its body uses the same 5h and 7d rows (no Session/Week labels),
   percentages and reset countdowns as the page's Claude Code card, from the same
   local-CLI collection (see [Claude Code local CLI source](#claude-code-local-cli-source)).
   It adds no data and reads no credentials, and it still returns only two

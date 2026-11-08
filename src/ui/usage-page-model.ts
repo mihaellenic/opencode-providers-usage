@@ -57,6 +57,8 @@ export function claudeUsageCard(
 		support: "supported",
 		evidence: "live-validated",
 	};
+	// "Primary" and "Secondary" are generic window labels, so the rows read
+	// "5h" and "7d" like the OpenAI card instead of "5h · Session".
 	const read: QuotaRead = {
 		state: "available",
 		// QuotaRead only models OpenCode's two sources. This value is internal
@@ -72,7 +74,7 @@ export function claudeUsageCard(
 							kind: "window",
 							id: "session",
 							scope: "app",
-							label: "Session",
+							label: "Primary",
 							windowSeconds: 18_000,
 							usedPercent: usage.session.usedPercent,
 							remainingPercent: 100 - usage.session.usedPercent,
@@ -82,7 +84,7 @@ export function claudeUsageCard(
 							kind: "window",
 							id: "week",
 							scope: "app",
-							label: "Week",
+							label: "Secondary",
 							windowSeconds: 604_800,
 							usedPercent: usage.week.usedPercent,
 							remainingPercent: 100 - usage.week.usedPercent,
