@@ -59,7 +59,7 @@ describe("commit subject checker", () => {
 			"feat(providers): add quota view",
 			"fix(chart)!: handle empty history",
 			"feat!: drop legacy config",
-			"chore(main): release 0.1.1",
+			"chore(main): release 9.9.9",
 			"refactor(release-acceptance): split audit gate",
 		]) {
 			expect(checkSubject(subject).status, subject).toBe(0);

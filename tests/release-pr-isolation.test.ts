@@ -721,8 +721,8 @@ describe("accepted evidence gate", () => {
 
 const artifactJson = JSON.stringify({
 	name: "opencode-providers-usage",
-	version: "0.1.0",
-	filename: "opencode-providers-usage-0.1.0.tgz",
+	version: "7.7.7",
+	filename: "opencode-providers-usage-7.7.7.tgz",
 	integrity: "sha512-abc",
 });
 
@@ -800,7 +800,7 @@ describe("validation and acceptance summary", () => {
 			},
 		});
 		expect(run.exitCode).toBe(0);
-		expect(run.summary).toContain("accepted opencode-providers-usage@0.1.0");
+		expect(run.summary).toContain("accepted opencode-providers-usage@7.7.7");
 		expect(run.summary).toContain("stale");
 		expect(run.summary).toContain(movedSha);
 		expect(run.summary).toContain("does not verify publication");
@@ -818,7 +818,7 @@ describe("validation and acceptance summary", () => {
 				}),
 			},
 		});
-		expect(run.summary).toContain("accepted opencode-providers-usage@0.1.0");
+		expect(run.summary).toContain("accepted opencode-providers-usage@7.7.7");
 		expect(run.summary).toContain("closed");
 	});
 
@@ -835,7 +835,7 @@ describe("validation and acceptance summary", () => {
 				}),
 			},
 		});
-		expect(run.summary).toContain("accepted opencode-providers-usage@0.1.0");
+		expect(run.summary).toContain("accepted opencode-providers-usage@7.7.7");
 		expect(run.summary).toContain("unverified");
 	});
 
@@ -848,7 +848,7 @@ describe("validation and acceptance summary", () => {
 				"head-status.json": headStatusFile(),
 			},
 		});
-		expect(run.summary).toContain("accepted opencode-providers-usage@0.1.0");
+		expect(run.summary).toContain("accepted opencode-providers-usage@7.7.7");
 		expect(run.summary).toContain("current");
 		expect(outputs(run)).toEqual({
 			acceptance: "success",
