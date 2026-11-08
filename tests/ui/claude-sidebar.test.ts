@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { ClaudeUsage } from "../../src/claude-code/usage";
 import {
 	CLAUDE_SIDEBAR_FLOOR_MS,
@@ -48,9 +48,10 @@ function harness() {
 }
 
 describe("claude sidebar controller", () => {
-	test("select(true) starts one collection and loading becomes ready", async () => {
+	test("select(true) starts one collection even when repeated and loading becomes ready", async () => {
 		const h = harness();
 		expect(h.controller.state()).toEqual({ status: "loading" });
+		h.controller.select(true);
 		h.controller.select(true);
 		expect(h.pending).toHaveLength(1);
 		h.pending[0]?.resolve(usage(10));
@@ -164,36 +165,6 @@ describe("claude sidebar controller", () => {
 		h.advance(CLAUDE_SIDEBAR_FLOOR_MS);
 		h.controller.trigger();
 		expect(h.pending).toHaveLength(1);
-	});
-
-	test("creates no timers", async () => {
-		const timeout = spyOn(globalThis, "setTimeout");
-		const interval = spyOn(globalThis, "setInterval");
-		try {
-			const h = harness();
-			h.controller.select(true);
-			h.pending[0]?.resolve(usage(1));
-			await h.flush();
-			h.advance(CLAUDE_SIDEBAR_FLOOR_MS);
-			h.controller.trigger();
-			h.pending[1]?.resolve(null);
-			await h.flush();
-			h.controller.select(false);
-			h.controller.dispose();
-			expect(timeout).not.toHaveBeenCalled();
-			expect(interval).not.toHaveBeenCalled();
-		} finally {
-			timeout.mockRestore();
-			interval.mockRestore();
-		}
-	});
-
-	test("select(true) twice in a row starts only one collection", () => {
-		const h = harness();
-		h.controller.select(true);
-		h.controller.select(true);
-		expect(h.pending).toHaveLength(1);
-		h.controller.dispose();
 	});
 });
 

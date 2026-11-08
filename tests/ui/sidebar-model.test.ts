@@ -74,6 +74,24 @@ function moneyMetric(
 	};
 }
 
+const DAY = 86_400_000;
+const HOUR = 3_600_000;
+const MINUTE = 60_000;
+const RESET_CASES: [number | undefined, string | undefined][] = [
+	[25 * DAY + 15 * HOUR, "resets 25d 15h"],
+	[25 * DAY + 15 * HOUR + 30 * MINUTE, "resets 25d 16h"],
+	[2 * DAY + 4 * HOUR, "resets 2d 4h"],
+	[2 * DAY, "resets 2d"],
+	[2 * DAY + 4 * HOUR + 30 * MINUTE, "resets 2d 5h"],
+	[15 * HOUR + 30 * MINUTE, "resets 15h 30m"],
+	[8 * HOUR, "resets 8h"],
+	[30 * MINUTE, "resets 30m"],
+	[45_000, "resets 45s"],
+	[0, "resets now"],
+	[-MINUTE, "resets now"],
+	[undefined, undefined],
+];
+
 describe("buildSidebarModel", () => {
 	test("stale status appends one muted line without changing the figure rows", () => {
 		const read: QuotaRead = {
@@ -270,8 +288,14 @@ describe("buildSidebarModel", () => {
 		expect(JSON.stringify(notReached)).not.toContain("Limit reached");
 	});
 
-	test("used-only windows tone by used percent thresholds", () => {
-		const tone = (usedPercent: number) => {
+	test.each([
+		[79, "normal"],
+		[80, "warning"],
+		[99, "warning"],
+		[100, "error"],
+	] as const)(
+		"used-only window at %i%% used has tone %s",
+		(usedPercent, expected) => {
 			const model = buildSidebarModel(
 				provider,
 				partial([
@@ -283,13 +307,11 @@ describe("buildSidebarModel", () => {
 				NOW,
 			);
 			const line = model.lines[0];
-			return line?.kind === "window" ? line.value.tone : undefined;
-		};
-		expect(tone(79)).toBe("normal");
-		expect(tone(80)).toBe("warning");
-		expect(tone(99)).toBe("warning");
-		expect(tone(100)).toBe("error");
-	});
+			expect(line?.kind === "window" ? line.value.tone : undefined).toBe(
+				expected,
+			);
+		},
+	);
 
 	test("live-shaped plan payload renders 100%, 32% and Limit reached but no app values", () => {
 		const plan = available("shared-plan", [
@@ -696,181 +718,91 @@ describe("buildSidebarModel", () => {
 		expect(JSON.stringify(zeroAllowance)).not.toContain("allowance $0.00");
 	});
 
-	test("renders a used-based bar and stat row from a reported allowance", () => {
-		const model = buildSidebarModel(
-			provider,
-			{
-				state: "available",
-				authSource: "opencode",
-				sections: [
-					available("provider-balance", [
-						moneyMetric({
-							id: "included",
-							label: "Included credits",
-							remaining: 5,
-							allowance: 10,
-						}),
-					]),
-				],
-			},
-			LOCALE,
-			NOW,
-		);
-		expect(model.lines).toEqual([
-			{
-				id: "0:provider-balance:included",
-				kind: "bar",
-				fill: 0.5,
-				percent: { text: "50%", tone: "normal" },
-			},
-			{
-				id: "0:provider-balance:included:stats",
-				kind: "pair",
-				left: { text: "$5.00 / $10.00 used", tone: "normal" },
-				metricIDs: ["included"],
-			},
-		]);
-		expect(JSON.stringify(model)).not.toContain("% left");
-	});
-
-	test("tones only the percent at used thresholds", () => {
-		function included(
-			remaining: number,
-			allowance: number,
-			resetsAt?: number,
-		): QuotaRead {
-			return {
-				state: "available",
-				authSource: "opencode",
-				sections: [
-					available("provider-balance", [
-						moneyMetric({
-							id: "included",
-							label: "Included credits",
-							remaining,
-							allowance,
-							...(resetsAt === undefined ? {} : { resetsAt }),
-						}),
-					]),
-				],
-			};
-		}
-
-		const untouched = buildSidebarModel(
-			provider,
-			included(10, 10),
-			LOCALE,
-			NOW,
-		);
-		expect(untouched.lines[0]).toEqual({
-			id: "0:provider-balance:included",
-			kind: "bar",
-			fill: 0,
-			percent: { text: "0%", tone: "normal" },
-		});
-		expect(untouched.lines[1]).toMatchObject({
-			left: { text: "$0.00 / $10.00 used", tone: "normal" },
-			metricIDs: ["included"],
-		});
-
-		const belowThreshold = buildSidebarModel(
-			provider,
-			included(2.1, 10),
-			LOCALE,
-			NOW,
-		);
-		expect(belowThreshold.lines[0]).toMatchObject({
-			percent: { text: "79%", tone: "normal" },
-		});
-		expect(belowThreshold.lines[1]).toMatchObject({
-			left: { text: "$7.90 / $10.00 used", tone: "normal" },
-		});
-
-		const warning = buildSidebarModel(provider, included(2, 10), LOCALE, NOW);
-		expect(warning.lines[0]).toMatchObject({
-			fill: 0.8,
-			percent: { text: "80%", tone: "warning" },
-		});
-		expect(warning.lines[1]).toMatchObject({
-			left: { text: "$8.00 / $10.00 used", tone: "normal" },
-		});
-
-		const exhausted = buildSidebarModel(provider, included(0, 10), LOCALE, NOW);
-		expect(exhausted.lines[0]).toMatchObject({
-			fill: 1,
-			percent: { text: "100%", tone: "error" },
-		});
-		expect(exhausted.lines[1]).toMatchObject({
-			left: { text: "$10.00 / $10.00 used", tone: "normal" },
-		});
-
-		const withReset = buildSidebarModel(
-			provider,
-			included(2, 10, NOW + 2 * 86_400_000),
-			LOCALE,
-			NOW,
-		);
-		expect(withReset.lines[0]).toMatchObject({
+	test.each([
+		{ remaining: 5, percent: "50%", tone: "normal", used: "$5.00", fill: 0.5 },
+		{ remaining: 10, percent: "0%", tone: "normal", used: "$0.00", fill: 0 },
+		{ remaining: 2.1, percent: "79%", tone: "normal", used: "$7.90" },
+		{ remaining: 2, percent: "80%", tone: "warning", used: "$8.00", fill: 0.8 },
+		{ remaining: 0, percent: "100%", tone: "error", used: "$10.00", fill: 1 },
+		{
+			remaining: 2,
+			percent: "80%",
+			tone: "warning",
+			used: "$8.00",
 			reset: "resets 2d",
-			percent: { tone: "warning" },
-		});
-	});
-
-	test("formats the bar reset countdown with two-unit precision", () => {
-		function resetAt(offsetMs: number | undefined): QuotaRead {
-			return {
-				state: "available",
-				authSource: "opencode",
-				sections: [
-					available("provider-balance", [
-						moneyMetric({
-							id: "included",
-							label: "Included credits",
-							remaining: 5,
-							allowance: 10,
-							...(offsetMs === undefined ? {} : { resetsAt: NOW + offsetMs }),
-						}),
-					]),
-				],
-			};
-		}
-
-		const day = 86_400_000;
-		const hour = 3_600_000;
-		const minute = 60_000;
-
-		expect(
-			buildSidebarModel(provider, resetAt(25 * day + 15 * hour), LOCALE, NOW)
-				.lines[0],
-		).toMatchObject({ reset: "resets 25d 15h" });
-		expect(
-			buildSidebarModel(
+		},
+	])(
+		"allowance bar of $remaining remaining shows $percent as $tone with a used stat row",
+		({ remaining, percent, tone, used, fill, reset }) => {
+			const model = buildSidebarModel(
 				provider,
-				resetAt(25 * day + 15 * hour + 30 * minute),
+				{
+					state: "available",
+					authSource: "opencode",
+					sections: [
+						available("provider-balance", [
+							moneyMetric({
+								id: "included",
+								label: "Included credits",
+								remaining,
+								allowance: 10,
+								...(reset === undefined
+									? {}
+									: { resetsAt: NOW + 2 * 86_400_000 }),
+							}),
+						]),
+					],
+				},
 				LOCALE,
 				NOW,
-			).lines[0],
-		).toMatchObject({ reset: "resets 25d 16h" });
-		expect(
-			buildSidebarModel(provider, resetAt(15 * hour + 30 * minute), LOCALE, NOW)
-				.lines[0],
-		).toMatchObject({ reset: "resets 15h 30m" });
-		expect(
-			buildSidebarModel(provider, resetAt(30 * minute), LOCALE, NOW).lines[0],
-		).toMatchObject({ reset: "resets 30m" });
-		expect(
-			buildSidebarModel(provider, resetAt(45_000), LOCALE, NOW).lines[0],
-		).toMatchObject({ reset: "resets 45s" });
-		expect(
-			buildSidebarModel(provider, resetAt(0), LOCALE, NOW).lines[0],
-		).toMatchObject({ reset: "resets now" });
-		expect(
-			buildSidebarModel(provider, resetAt(-minute), LOCALE, NOW).lines[0],
-		).toMatchObject({ reset: "resets now" });
-		expect(
-			buildSidebarModel(provider, resetAt(undefined), LOCALE, NOW).lines[0],
-		).not.toHaveProperty("reset");
-	});
+			);
+			expect(model.lines[0]).toMatchObject({
+				id: "0:provider-balance:included",
+				kind: "bar",
+				percent: { text: percent, tone },
+				...(fill === undefined ? {} : { fill }),
+				...(reset === undefined ? {} : { reset }),
+			});
+			expect(model.lines[1]).toMatchObject({
+				kind: "pair",
+				left: { text: `${used} / $10.00 used`, tone: "normal" },
+				metricIDs: ["included"],
+			});
+			expect(model.lines[1]).not.toHaveProperty("right");
+			expect(JSON.stringify(model)).not.toContain("% left");
+		},
+	);
+
+	test.each(RESET_CASES)(
+		"bar reset countdown at offset %s is %s",
+		(offsetMs, expected) => {
+			const model = buildSidebarModel(
+				provider,
+				{
+					state: "available",
+					authSource: "opencode",
+					sections: [
+						available("provider-balance", [
+							moneyMetric({
+								id: "included",
+								label: "Included credits",
+								remaining: 5,
+								allowance: 10,
+								...(offsetMs === undefined ? {} : { resetsAt: NOW + offsetMs }),
+							}),
+						]),
+					],
+				},
+				LOCALE,
+				NOW,
+			);
+			if (expected === undefined) {
+				expect(model.lines[0]).not.toHaveProperty("reset");
+			} else {
+				expect(model.lines[0]).toMatchObject({ reset: expected });
+			}
+		},
+	);
 
 	test("keeps reset-bearing and non-adjacent money metrics on their own ordered rows", () => {
 		const resetBearing = buildSidebarModel(
@@ -1283,12 +1215,9 @@ describe("buildSidebarModel", () => {
 		]);
 	});
 
-	test("formats window reset countdowns with two-unit precision", () => {
-		const day = 86_400_000;
-		const hour = 3_600_000;
-		const minute = 60_000;
-
-		function windowAt(offsetMs: number | undefined) {
+	test.each(RESET_CASES)(
+		"window reset countdown at offset %s is %s",
+		(offsetMs, expected) => {
 			const model = buildSidebarModel(
 				provider,
 				{
@@ -1308,24 +1237,11 @@ describe("buildSidebarModel", () => {
 				LOCALE,
 				NOW,
 			);
-			return model.lines[0];
-		}
-
-		expect(windowAt(2 * day + 4 * hour)).toMatchObject({
-			reset: "resets 2d 4h",
-		});
-		expect(windowAt(2 * day)).toMatchObject({ reset: "resets 2d" });
-		expect(windowAt(2 * day + 4 * hour + 30 * minute)).toMatchObject({
-			reset: "resets 2d 5h",
-		});
-		expect(windowAt(8 * hour)).toMatchObject({ reset: "resets 8h" });
-		expect(windowAt(8 * hour + 30 * minute)).toMatchObject({
-			reset: "resets 8h 30m",
-		});
-		expect(windowAt(45 * minute)).toMatchObject({ reset: "resets 45m" });
-		expect(windowAt(30_000)).toMatchObject({ reset: "resets 30s" });
-		expect(windowAt(0)).toMatchObject({ reset: "resets now" });
-		expect(windowAt(-minute)).toMatchObject({ reset: "resets now" });
-		expect(windowAt(undefined)).not.toHaveProperty("reset");
-	});
+			if (expected === undefined) {
+				expect(model.lines[0]).not.toHaveProperty("reset");
+			} else {
+				expect(model.lines[0]).toMatchObject({ reset: expected });
+			}
+		},
+	);
 });

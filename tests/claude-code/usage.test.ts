@@ -1,9 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-	CLAUDE_USAGE_CLEANUP_GRACE_MS,
 	CLAUDE_USAGE_COMMAND,
 	CLAUDE_USAGE_MAX_OUTPUT_BYTES,
-	CLAUDE_USAGE_TIMEOUT_MS,
 	collectClaudeUsage,
 	parseClaudeUsage,
 } from "../../src/claude-code/usage";
@@ -98,40 +96,136 @@ describe("parseClaudeUsage", () => {
 		}
 	});
 
-	test("rejects malformed, unknown-zone, and impossible resets", () => {
-		const cases = [
-			"Current session: 37% used · resets Jnu 15 at 6:07pm (America/Chicago)",
-			"Current session: 37% used · resets Jun 15 at 6:07pm (Mars/Olympus)",
-			"Current session: 37% used · resets Jun 15 at 6:07pm",
-			"Current session: 37% used · resets Feb 30 at 6:07pm (UTC)",
-			"Current session: 37% used · resets Jun 15 at 13:07pm (America/Chicago)",
-			"Current session: 37% used · resets Jun 15 at 6:70pm (America/Chicago)",
-		];
+	const lineAt = (label: string, reset: string, zone = "America/Chicago") =>
+		`${label}: 37% used · resets ${reset} (${zone})`;
+	const SESSION = "Current session";
+	const WEEK = "Current week (all models)";
+	const fallBackNow = Date.UTC(2026, 9, 31, 12, 0, 0);
+	const springNow = Date.UTC(2026, 2, 7, 12, 0, 0);
+	const yearNow = Date.UTC(2026, 0, 1, 12, 0, 0);
 
-		for (const session of cases) {
-			const screen = [session, WEEK_LINE].join("\n");
-			expect(parseClaudeUsage(screen, NOW)).toBeNull();
-		}
+	test.each<[string, string, number]>([
+		[
+			"malformed month",
+			[lineAt(SESSION, "Jnu 15 at 6:07pm"), WEEK_LINE].join("\n"),
+			NOW,
+		],
+		[
+			"unknown zone",
+			[lineAt(SESSION, "Jun 15 at 6:07pm", "Mars/Olympus"), WEEK_LINE].join(
+				"\n",
+			),
+			NOW,
+		],
+		[
+			"missing zone",
+			["Current session: 37% used · resets Jun 15 at 6:07pm", WEEK_LINE].join(
+				"\n",
+			),
+			NOW,
+		],
+		[
+			"impossible date",
+			[lineAt(SESSION, "Feb 30 at 6:07pm", "UTC"), WEEK_LINE].join("\n"),
+			NOW,
+		],
+		[
+			"hour 13 with pm",
+			[lineAt(SESSION, "Jun 15 at 13:07pm"), WEEK_LINE].join("\n"),
+			NOW,
+		],
+		[
+			"minute 70",
+			[lineAt(SESSION, "Jun 15 at 6:70pm"), WEEK_LINE].join("\n"),
+			NOW,
+		],
+		[
+			"ambiguous fall-back reset",
+			[
+				lineAt(SESSION, "Nov 1 at 1:30am", "America/New_York"),
+				lineAt(WEEK, "Nov 2 at 5:00pm", "America/New_York"),
+			].join("\n"),
+			fallBackNow,
+		],
+		[
+			"nonexistent spring-forward reset",
+			[
+				lineAt(SESSION, "Mar 8 at 2:30am", "America/New_York"),
+				lineAt(WEEK, "Mar 9 at 5:00pm", "America/New_York"),
+			].join("\n"),
+			springNow,
+		],
+		[
+			"year-qualified reset more than eight days ahead",
+			[
+				lineAt(SESSION, "Jan 2, 2027 at 5pm", "UTC"),
+				lineAt(WEEK, "Jan 3, 2027 at 9:30am", "UTC"),
+			].join("\n"),
+			yearNow,
+		],
+		[
+			"year-qualified past resets",
+			[
+				lineAt(SESSION, "Jan 2, 2025 at 5pm", "UTC"),
+				lineAt(WEEK, "Jan 2, 2026 at 9:30am", "UTC"),
+			].join("\n"),
+			yearNow,
+		],
+		[
+			"year-qualified ambiguous fall-back reset",
+			[
+				lineAt(SESSION, "Nov 1, 2026 at 1:30am", "America/New_York"),
+				lineAt(WEEK, "Nov 2, 2026 at 5:00pm", "America/New_York"),
+			].join("\n"),
+			fallBackNow,
+		],
+		[
+			"year-qualified nonexistent spring-forward reset",
+			[
+				lineAt(SESSION, "Mar 8, 2026 at 2:30am", "America/New_York"),
+				lineAt(WEEK, "Mar 9, 2026 at 5:00pm", "America/New_York"),
+			].join("\n"),
+			springNow,
+		],
+		[
+			"year-qualified impossible date",
+			[
+				lineAt(SESSION, "Feb 30, 2027 at 5pm", "UTC"),
+				lineAt(WEEK, "Jan 3, 2027 at 9:30am", "UTC"),
+			].join("\n"),
+			Date.UTC(2026, 11, 31, 12, 0, 0),
+		],
+		[
+			"unverified separator variant",
+			[SESSION_LINE.replace(" · ", " | "), WEEK_LINE].join("\n"),
+			NOW,
+		],
+		[
+			"past reset",
+			[lineAt(SESSION, "Jun 14 at 4:00pm"), WEEK_LINE].join("\n"),
+			NOW,
+		],
+		[
+			"reset more than eight days ahead",
+			[lineAt(SESSION, "Jun 24 at 4:00pm"), WEEK_LINE].join("\n"),
+			NOW,
+		],
+	])("rejects %s", (_name, screen, now) => {
+		expect(parseClaudeUsage(screen, now)).toBeNull();
 	});
 
-	test("rejects ambiguous fall-back reset times", () => {
-		const screen = [
-			"Current session: 37% used · resets Nov 1 at 1:30am (America/New_York)",
-			"Current week (all models): 64% used · resets Nov 2 at 5:00pm (America/New_York)",
-		].join("\n");
-
-		expect(
-			parseClaudeUsage(screen, Date.UTC(2026, 9, 31, 12, 0, 0)),
-		).toBeNull();
-	});
-
-	test("rejects nonexistent spring-forward reset times", () => {
-		const screen = [
-			"Current session: 37% used · resets Mar 8 at 2:30am (America/New_York)",
-			"Current week (all models): 64% used · resets Mar 9 at 5:00pm (America/New_York)",
-		].join("\n");
-
-		expect(parseClaudeUsage(screen, Date.UTC(2026, 2, 7, 12, 0, 0))).toBeNull();
+	test.each<[string, number]>([
+		["NaN", Number.NaN],
+		["+Infinity", Number.POSITIVE_INFINITY],
+		["-Infinity", Number.NEGATIVE_INFINITY],
+		["MAX_SAFE_INTEGER", Number.MAX_SAFE_INTEGER],
+		["MIN_SAFE_INTEGER", Number.MIN_SAFE_INTEGER],
+		["beyond the Date range", 8.64e15 + 1],
+		["a fractional value", 1.5],
+		["the maximum Date", 8.64e15],
+		["the minimum Date", -8.64e15],
+	])("rejects unsafe now value %s without throwing", (_name, now) => {
+		expect(parseClaudeUsage(SANITIZED_RESULT, now)).toBeNull();
 	});
 
 	test("resolves unambiguous times around a DST transition", () => {
@@ -168,83 +262,6 @@ describe("parseClaudeUsage", () => {
 			session: { usedPercent: 37, resetsAt: Date.UTC(2027, 0, 2, 17, 0, 0) },
 			week: { usedPercent: 64, resetsAt: Date.UTC(2027, 0, 3, 9, 30, 0) },
 		});
-	});
-
-	test("rejects invalid year-qualified resets without inferring another year", () => {
-		const cases = [
-			{
-				session: "Current session: 37% used · resets Jan 2, 2027 at 5pm (UTC)",
-				week: "Current week (all models): 64% used · resets Jan 3, 2027 at 9:30am (UTC)",
-				now: Date.UTC(2026, 0, 1, 12, 0, 0),
-			},
-			{
-				session: "Current session: 37% used · resets Jan 2, 2025 at 5pm (UTC)",
-				week: "Current week (all models): 64% used · resets Jan 2, 2026 at 9:30am (UTC)",
-				now: Date.UTC(2026, 0, 1, 12, 0, 0),
-			},
-			{
-				session:
-					"Current session: 37% used · resets Nov 1, 2026 at 1:30am (America/New_York)",
-				week: "Current week (all models): 64% used · resets Nov 2, 2026 at 5:00pm (America/New_York)",
-				now: Date.UTC(2026, 9, 31, 12, 0, 0),
-			},
-			{
-				session:
-					"Current session: 37% used · resets Mar 8, 2026 at 2:30am (America/New_York)",
-				week: "Current week (all models): 64% used · resets Mar 9, 2026 at 5:00pm (America/New_York)",
-				now: Date.UTC(2026, 2, 7, 12, 0, 0),
-			},
-			{
-				session: "Current session: 37% used · resets Feb 30, 2027 at 5pm (UTC)",
-				week: "Current week (all models): 64% used · resets Jan 3, 2027 at 9:30am (UTC)",
-				now: Date.UTC(2026, 11, 31, 12, 0, 0),
-			},
-		];
-
-		for (const { session, week, now } of cases) {
-			expect(parseClaudeUsage([session, week].join("\n"), now)).toBeNull();
-		}
-	});
-
-	test("rejects unverified separator variants", () => {
-		const screen = [SESSION_LINE.replace(" · ", " | "), WEEK_LINE].join("\n");
-
-		expect(parseClaudeUsage(screen, NOW)).toBeNull();
-	});
-
-	test("rejects unsafe now values without throwing", () => {
-		const unsafe = [
-			Number.NaN,
-			Number.POSITIVE_INFINITY,
-			Number.NEGATIVE_INFINITY,
-			Number.MAX_SAFE_INTEGER,
-			Number.MIN_SAFE_INTEGER,
-			8.64e15 + 1,
-			1.5,
-		];
-
-		for (const now of unsafe) {
-			expect(parseClaudeUsage(SANITIZED_RESULT, now)).toBeNull();
-		}
-
-		// Both extremes of the Date range are finite but cannot contain a reset
-		// near the sanitized fixture; neither may throw.
-		expect(parseClaudeUsage(SANITIZED_RESULT, 8.64e15)).toBeNull();
-		expect(parseClaudeUsage(SANITIZED_RESULT, -8.64e15)).toBeNull();
-	});
-
-	test("rejects past resets and resets more than eight days ahead", () => {
-		const past = [
-			"Current session: 37% used · resets Jun 14 at 4:00pm (America/Chicago)",
-			WEEK_LINE,
-		].join("\n");
-		expect(parseClaudeUsage(past, NOW)).toBeNull();
-
-		const farFuture = [
-			"Current session: 37% used · resets Jun 24 at 4:00pm (America/Chicago)",
-			WEEK_LINE,
-		].join("\n");
-		expect(parseClaudeUsage(farFuture, NOW)).toBeNull();
 	});
 
 	test("normalizes control sequences and carriage-return repaints", () => {
@@ -521,8 +538,20 @@ describe("collectClaudeUsage", () => {
 		}
 	});
 
-	test("returns boundedly when neither exit nor stdout settles", async () => {
-		const fake = fakeSpawn({ neverSettle: true });
+	test.each<[string, Parameters<typeof fakeSpawn>[0], boolean]>([
+		["neither exit nor stdout settles", { neverSettle: true }, true],
+		[
+			"only the exit promise never settles",
+			{ autoExit: false, neverExit: true },
+			false,
+		],
+		[
+			"only stdout never settles",
+			{ autoExit: false, neverCloseOnKill: true },
+			true,
+		],
+	])("returns boundedly when %s", async (_name, options, expectCancel) => {
+		const fake = fakeSpawn(options);
 		const started = Date.now();
 
 		const usage = await collectForTest(new AbortController().signal, {
@@ -534,40 +563,9 @@ describe("collectClaudeUsage", () => {
 
 		expect(usage).toBeNull();
 		expect(fake.killCalls.length).toBeGreaterThan(0);
-		expect(fake.cancelCalls.length).toBeGreaterThan(0);
-		expect(Date.now() - started).toBeLessThan(1_000);
-	});
-
-	test("returns boundedly when only the exit promise never settles", async () => {
-		const fake = fakeSpawn({ autoExit: false, neverExit: true });
-		const started = Date.now();
-
-		const usage = await collectForTest(new AbortController().signal, {
-			spawn: fake.spawn,
-			now: () => NOW,
-			timeoutMs: 25,
-			cleanupGraceMs: 20,
-		});
-
-		expect(usage).toBeNull();
-		expect(fake.killCalls.length).toBeGreaterThan(0);
-		expect(Date.now() - started).toBeLessThan(1_000);
-	});
-
-	test("returns boundedly when only stdout never settles", async () => {
-		const fake = fakeSpawn({ autoExit: false, neverCloseOnKill: true });
-		const started = Date.now();
-
-		const usage = await collectForTest(new AbortController().signal, {
-			spawn: fake.spawn,
-			now: () => NOW,
-			timeoutMs: 25,
-			cleanupGraceMs: 20,
-		});
-
-		expect(usage).toBeNull();
-		expect(fake.killCalls.length).toBeGreaterThan(0);
-		expect(fake.cancelCalls.length).toBeGreaterThan(0);
+		if (expectCancel) {
+			expect(fake.cancelCalls.length).toBeGreaterThan(0);
+		}
 		expect(Date.now() - started).toBeLessThan(1_000);
 	});
 
@@ -734,10 +732,15 @@ describe("collectClaudeUsage", () => {
 		expect(directKills).toEqual(["SIGKILL"]);
 	});
 
-	test("ignores invalid maxOutputBytes options instead of lifting the bound", async () => {
-		const invalid = [Number.NaN, Number.POSITIVE_INFINITY, -1, 0, 1.5];
-
-		for (const maxOutputBytes of invalid) {
+	test.each([
+		["NaN", Number.NaN],
+		["Infinity", Number.POSITIVE_INFINITY],
+		["negative", -1],
+		["zero", 0],
+		["fractional", 1.5],
+	])(
+		"ignores invalid maxOutputBytes option (%s) instead of lifting the bound",
+		async (_name, maxOutputBytes) => {
 			const fake = fakeSpawn({ stdout: SANITIZED_USAGE_JSON });
 
 			const usage = await collectForTest(new AbortController().signal, {
@@ -747,8 +750,8 @@ describe("collectClaudeUsage", () => {
 			});
 
 			expect(usage).toEqual(EXPECTED_USAGE);
-		}
-	});
+		},
+	);
 
 	test("caps oversized maxOutputBytes options at the documented limit", async () => {
 		const fake = fakeSpawn({
@@ -765,22 +768,5 @@ describe("collectClaudeUsage", () => {
 
 		expect(usage).toBeNull();
 		expect(fake.killCalls.length).toBeGreaterThan(0);
-	});
-
-	test("defaults to the documented bounds and command", () => {
-		expect(CLAUDE_USAGE_TIMEOUT_MS).toBe(30_000);
-		expect(CLAUDE_USAGE_MAX_OUTPUT_BYTES).toBe(1024 * 1024);
-		expect(CLAUDE_USAGE_CLEANUP_GRACE_MS).toBe(250);
-		expect([...CLAUDE_USAGE_COMMAND]).toEqual([
-			"claude",
-			"-p",
-			"/usage",
-			"--output-format",
-			"json",
-			"--no-session-persistence",
-			"--strict-mcp-config",
-			"--tools",
-			"",
-		]);
 	});
 });

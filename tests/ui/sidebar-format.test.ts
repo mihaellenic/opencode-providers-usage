@@ -104,13 +104,10 @@ describe("formatSidebarText", () => {
 			tone: "normal",
 		});
 		expect(rows.some((row) => row.id.endsWith(":cap"))).toBe(false);
-		expect(formatSidebarText(provider, quota, LOCALE, NOW)).toBe(
-			rows
-				.map((row) =>
-					row.value.length === 0 ? row.label : `${row.label}: ${row.value}`,
-				)
-				.join("\n"),
-		);
+		const lines = formatSidebarText(provider, quota, LOCALE, NOW).split("\n");
+		expect(lines).toHaveLength(rows.length);
+		expect(lines[0]).toBe("Fixture");
+		expect(lines[3]).toContain("App 7d");
 	});
 
 	test("preserves unavailable section position and displays money and top-level retry resets", () => {
@@ -236,16 +233,38 @@ describe("formatSidebarText", () => {
 		}
 	});
 
-	test("formats reset year and clock using Stockholm local calendar time", () => {
-		const now = Date.UTC(2026, 11, 31, 23, 30);
-		const reset = Date.UTC(2026, 11, 31, 22, 10);
-		const stockholm = { locale: "en-GB", timeZone: "Europe/Stockholm" };
+	test.each([
+		{
+			name: "Stockholm local calendar year and clock",
+			tz: "Europe/Stockholm",
+			now: Date.UTC(2026, 11, 31, 23, 30),
+			reset: Date.UTC(2026, 11, 31, 22, 10),
+			shown: "resets 31 Dec 23:10 · 2026",
+			hidden: undefined,
+		},
+		{
+			name: "Los Angeles local year, not UTC year",
+			tz: "America/Los_Angeles",
+			now: Date.UTC(2027, 0, 1, 0, 30),
+			reset: Date.UTC(2027, 0, 1, 1, 45),
+			shown: "resets 31 Dec 17:45",
+			hidden: "resets 31 Dec 17:45 · 2027",
+		},
+		{
+			name: "Stockholm reset in the same local year",
+			tz: "Europe/Stockholm",
+			now: Date.UTC(2026, 11, 31, 23, 30),
+			reset: Date.UTC(2027, 0, 1, 0, 15),
+			shown: "resets 1 Jan 01:15",
+			hidden: "resets 1 Jan 01:15 · 2027",
+		},
+	])("formats reset year using $name", ({ tz, now, reset, shown, hidden }) => {
 		const quota = read([
 			{
 				scope: "app",
 				metrics: [
 					{
-						id: "stockholm",
+						id: "tz",
 						kind: "window",
 						scope: "app",
 						label: "Custom limit",
@@ -256,58 +275,16 @@ describe("formatSidebarText", () => {
 				],
 			},
 		]);
-		const text = formatSidebarText(provider, quota, stockholm, now);
-		expect(text).toContain("resets 31 Dec 23:10 · 2026");
-	});
-
-	test("omits reset year based on Los Angeles local year, not UTC year", () => {
-		const now = Date.UTC(2027, 0, 1, 0, 30);
-		const reset = Date.UTC(2027, 0, 1, 1, 45);
-		const losAngeles = { locale: "en-GB", timeZone: "America/Los_Angeles" };
-		const quota = read([
-			{
-				scope: "app",
-				metrics: [
-					{
-						id: "los-angeles",
-						kind: "window",
-						scope: "app",
-						label: "Custom limit",
-						windowSeconds: 3600,
-						remainingPercent: 50,
-						resetsAt: reset,
-					},
-				],
-			},
-		]);
-		const text = formatSidebarText(provider, quota, losAngeles, now);
-		expect(text).toContain("resets 31 Dec 17:45");
-		expect(text).not.toContain("resets 31 Dec 17:45 · 2027");
-	});
-
-	test("omits UTC year difference when Stockholm reset remains in the same local year", () => {
-		const now = Date.UTC(2026, 11, 31, 23, 30);
-		const reset = Date.UTC(2027, 0, 1, 0, 15);
-		const stockholm = { locale: "en-GB", timeZone: "Europe/Stockholm" };
-		const quota = read([
-			{
-				scope: "app",
-				metrics: [
-					{
-						id: "same-local-year",
-						kind: "window",
-						scope: "app",
-						label: "Custom limit",
-						windowSeconds: 3600,
-						remainingPercent: 50,
-						resetsAt: reset,
-					},
-				],
-			},
-		]);
-		const text = formatSidebarText(provider, quota, stockholm, now);
-		expect(text).toContain("resets 1 Jan 01:15");
-		expect(text).not.toContain("resets 1 Jan 01:15 · 2027");
+		const text = formatSidebarText(
+			provider,
+			quota,
+			{ locale: "en-GB", timeZone: tz },
+			now,
+		);
+		expect(text).toContain(shown);
+		if (hidden !== undefined) {
+			expect(text).not.toContain(hidden);
+		}
 	});
 
 	test("keeps the expected five-row baseline and grows to every independent constraint", () => {

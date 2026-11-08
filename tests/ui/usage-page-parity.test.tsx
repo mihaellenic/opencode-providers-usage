@@ -263,92 +263,68 @@ async function sidebarLines(model: ReturnType<typeof buildSidebarModel>) {
 }
 
 describe("usage page cards match the sidebar widgets exactly", () => {
-	test("OpenAI card body equals its sidebar widget", async () => {
-		const setup = await testRender(
-			() =>
-				jsx(ProviderHost, {
-					value: mockHostContext() as never,
-					get children() {
-						return jsx(UsagePageHost, {
-							providers: [OPENAI, OLLAMA],
-							quotaByProvider: {
-								openai: openaiRead(),
-								ollama: ollamaRead(),
-							},
-							displayNames: DISPLAY_NAMES,
-							refresh: () => {},
-							back: () => {},
-						});
-					},
-				}),
-			{ width: 120, height: 40 },
-		);
-		try {
-			await setup.renderOnce();
-			const rows = rowsOf(setup.captureCharFrame());
-			const page = cardBody(rows, "OpenAI");
-
-			const widget = await sidebarLines(
-				buildSidebarModel(OPENAI, openaiRead(), LOCALE, NOW, "OpenAI"),
+	test.each([
+		{
+			label: "OpenAI",
+			provider: OPENAI,
+			read: openaiRead,
+			displayName: "OpenAI",
+			absent: [
+				"Updated",
+				"Configured app cap",
+				"Shared plan",
+				"resets Oct",
+				"59%",
+				"25%",
+			],
+			present: ["5h", "7d", "100%", "32%", "Limit reached"],
+		},
+		{
+			label: "Ollama Cloud",
+			provider: OLLAMA,
+			read: ollamaRead,
+			displayName: undefined,
+			absent: ["Updated", "Total credits", "resets Oct"],
+			present: ["41.6%", "$24.97 / $60.00 used", "+$4.27 credits"],
+		},
+	])(
+		"$label card body equals its sidebar widget",
+		async ({ label, provider, read, displayName, absent, present }) => {
+			const setup = await testRender(
+				() =>
+					jsx(ProviderHost, {
+						value: mockHostContext() as never,
+						get children() {
+							return jsx(UsagePageHost, {
+								providers: [OPENAI, OLLAMA],
+								quotaByProvider: {
+									openai: openaiRead(),
+									ollama: ollamaRead(),
+								},
+								displayNames: DISPLAY_NAMES,
+								refresh: () => {},
+								back: () => {},
+							});
+						},
+					}),
+				{ width: 120, height: 40 },
 			);
-			expect(page).toEqual(widget);
+			try {
+				await setup.renderOnce();
+				const rows = rowsOf(setup.captureCharFrame());
+				const page = cardBody(rows, label);
 
-			const all = page.join("\n");
-			expect(all).not.toContain("Updated");
-			expect(all).not.toContain("Configured app cap");
-			expect(all).not.toContain("Shared plan");
-			expect(all).not.toContain("resets Oct");
-			expect(all).toContain("5h");
-			expect(all).toContain("7d");
-			expect(all).toContain("100%");
-			expect(all).toContain("32%");
-			expect(all).toContain("Limit reached");
-			expect(all).not.toContain("59%");
-			expect(all).not.toContain("25%");
-		} finally {
-			await setup.dispose();
-		}
-	});
+				const widget = await sidebarLines(
+					buildSidebarModel(provider, read(), LOCALE, NOW, displayName),
+				);
+				expect(page).toEqual(widget);
 
-	test("Ollama card body equals its sidebar widget", async () => {
-		const setup = await testRender(
-			() =>
-				jsx(ProviderHost, {
-					value: mockHostContext() as never,
-					get children() {
-						return jsx(UsagePageHost, {
-							providers: [OPENAI, OLLAMA],
-							quotaByProvider: {
-								openai: openaiRead(),
-								ollama: ollamaRead(),
-							},
-							displayNames: DISPLAY_NAMES,
-							refresh: () => {},
-							back: () => {},
-						});
-					},
-				}),
-			{ width: 120, height: 40 },
-		);
-		try {
-			await setup.renderOnce();
-			const rows = rowsOf(setup.captureCharFrame());
-			const page = cardBody(rows, "Ollama Cloud");
-
-			const widget = await sidebarLines(
-				buildSidebarModel(OLLAMA, ollamaRead(), LOCALE, NOW),
-			);
-			expect(page).toEqual(widget);
-
-			const all = page.join("\n");
-			expect(all).not.toContain("Updated");
-			expect(all).not.toContain("Total credits");
-			expect(all).not.toContain("resets Oct");
-			expect(all).toContain("41.6%");
-			expect(all).toContain("$24.97 / $60.00 used");
-			expect(all).toContain("+$4.27 credits");
-		} finally {
-			await setup.dispose();
-		}
-	});
+				const all = page.join("\n");
+				for (const text of absent) expect(all).not.toContain(text);
+				for (const text of present) expect(all).toContain(text);
+			} finally {
+				await setup.dispose();
+			}
+		},
+	);
 });

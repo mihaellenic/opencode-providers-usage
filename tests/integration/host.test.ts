@@ -396,19 +396,35 @@ describe("TUI selection binding", () => {
 		dispose();
 	});
 
-	test("registered_sidebar_slot_updates_under_browser_solid_conditions", () => {
-		// Bun's default resolution picks solid-js/dist/server.js, where memos do
-		// not recompute. Run the live slot probe in an isolated browser
-		// conditions process instead of weakening production memo placement.
-		// The probe is a plain script under tests/fixtures, so the default suite
-		// discovers no skipped test from it.
+	// Bun's default resolution picks solid-js/dist/server.js, where memos,
+	// effects and resources do not run. Each live probe is a plain script under
+	// tests/fixtures run in an isolated browser-conditions process, so the
+	// default suite discovers no skipped test and production memo placement is
+	// not weakened.
+	test.each([
+		[
+			"registered_sidebar_slot_updates",
+			"sidebar-slot-live",
+			["PASS", "static-tree", "theme-updates", "navigation+disposal"],
+		],
+		["claude_agent_sidebar_card", "claude-sidebar-live", ["PASS"]],
+		[
+			"claude_usage_page_lifecycle",
+			"claude-usage-page-live",
+			[
+				"PASS",
+				"mount+empty-inventory",
+				"ctrl+r-hidden+stale-abort",
+				"countdown+no-collect",
+				"unmount-abort+cleanup",
+			],
+		],
+	])("%s_under_browser_solid_conditions", (_name, probe, markers) => {
 		const result = spawnSync(
 			process.execPath,
 			[
 				"--conditions=browser",
-				fileURLToPath(
-					new URL("../fixtures/sidebar-slot-live.ts", import.meta.url),
-				),
+				fileURLToPath(new URL(`../fixtures/${probe}.ts`, import.meta.url)),
 			],
 			{
 				cwd: fileURLToPath(new URL("../..", import.meta.url)),
@@ -418,10 +434,10 @@ describe("TUI selection binding", () => {
 		);
 		const stdout = result.stdout ?? "";
 		const stderr = result.stderr ?? "";
-		if (result.status !== 0 || !stdout.includes("sidebar-slot-live: PASS")) {
+		if (result.status !== 0 || !stdout.includes(`${probe}: PASS`)) {
 			throw new Error(
 				[
-					`sidebar live slot probe failed (status ${String(result.status)})`,
+					`${probe} probe failed (status ${String(result.status)})`,
 					`stdout:\n${stdout}`,
 					`stderr:\n${stderr}`,
 					result.error === undefined ? "" : `error: ${String(result.error)}`,
@@ -429,86 +445,9 @@ describe("TUI selection binding", () => {
 			);
 		}
 		expect(result.status).toBe(0);
-		expect(stdout).toContain("sidebar-slot-live: PASS");
-		expect(stdout).toContain("sidebar-slot-live: static-tree");
-		expect(stdout).toContain("sidebar-slot-live: theme-updates");
-		expect(stdout).toContain("sidebar-slot-live: navigation+disposal");
-	});
-
-	test("claude_agent_sidebar_card_under_browser_solid_conditions", () => {
-		// Same isolated browser-conditions process as the other sidebar probes:
-		// the claude-agent card, its single-flight floor, countdown repaint,
-		// unavailable state, and click-through to the usage page.
-		const result = spawnSync(
-			process.execPath,
-			[
-				"--conditions=browser",
-				fileURLToPath(
-					new URL("../fixtures/claude-sidebar-live.ts", import.meta.url),
-				),
-			],
-			{
-				cwd: fileURLToPath(new URL("../..", import.meta.url)),
-				encoding: "utf8",
-				timeout: 60_000,
-			},
-		);
-		const stdout = result.stdout ?? "";
-		const stderr = result.stderr ?? "";
-		if (result.status !== 0 || !stdout.includes("claude-sidebar-live: PASS")) {
-			throw new Error(
-				[
-					`claude sidebar live probe failed (status ${String(result.status)})`,
-					`stdout:\n${stdout}`,
-					`stderr:\n${stderr}`,
-					result.error === undefined ? "" : `error: ${String(result.error)}`,
-				].join("\n"),
-			);
+		for (const marker of markers) {
+			expect(stdout).toContain(`${probe}: ${marker}`);
 		}
-		expect(result.status).toBe(0);
-		expect(stdout).toContain("claude-sidebar-live: PASS");
-	});
-
-	test("claude_usage_page_lifecycle_runs_under_browser_solid_conditions", () => {
-		// Bun's default resolution picks solid-js/dist/server.js, where effects
-		// and resources do not run. Mount the real QuotaUsagePage in an isolated
-		// browser-conditions process, matching the existing live probes.
-		const result = spawnSync(
-			process.execPath,
-			[
-				"--conditions=browser",
-				fileURLToPath(
-					new URL("../fixtures/claude-usage-page-live.ts", import.meta.url),
-				),
-			],
-			{
-				cwd: fileURLToPath(new URL("../..", import.meta.url)),
-				encoding: "utf8",
-				timeout: 60_000,
-			},
-		);
-		const stdout = result.stdout ?? "";
-		const stderr = result.stderr ?? "";
-		if (
-			result.status !== 0 ||
-			!stdout.includes("claude-usage-page-live: PASS")
-		) {
-			throw new Error(
-				[
-					`claude usage page probe failed (status ${String(result.status)})`,
-					`stdout:\n${stdout}`,
-					`stderr:\n${stderr}`,
-					result.error === undefined ? "" : `error: ${String(result.error)}`,
-				].join("\n"),
-			);
-		}
-		expect(result.status).toBe(0);
-		expect(stdout).toContain("claude-usage-page-live: mount+empty-inventory");
-		expect(stdout).toContain(
-			"claude-usage-page-live: ctrl+r-hidden+stale-abort",
-		);
-		expect(stdout).toContain("claude-usage-page-live: countdown+no-collect");
-		expect(stdout).toContain("claude-usage-page-live: unmount-abort+cleanup");
 	});
 });
 
@@ -1111,21 +1050,19 @@ describe("Claude Code usage RPC", () => {
 		expect(harness.signals).toHaveLength(0);
 	});
 
-	test("claude_usage_rejects_input_fields_before_collecting", async () => {
+	test.each([
+		[{ providerID: "alpha" }],
+		[{ prompt: "/usage" }],
+		["usage"],
+		[1],
+	])("claude_usage_rejects_input_%p_before_collecting", async (input) => {
 		const harness = claudeHarness(async () => usage);
-		for (const input of [
-			{ providerID: "alpha" },
-			{ prompt: "/usage" },
-			"usage",
-			1,
-		]) {
-			const got = await harness.handlers.claudeCodeUsage(
-				input as never,
-				emptyRpcContext() as never,
-			);
-			expect(got).toMatchObject({ type: "invalid_input" });
-			expect(JSON.stringify(got)).not.toContain("usage");
-		}
+		const got = await harness.handlers.claudeCodeUsage(
+			input as never,
+			emptyRpcContext() as never,
+		);
+		expect(got).toMatchObject({ type: "invalid_input" });
+		expect(JSON.stringify(got)).not.toContain("usage");
 		expect(harness.signals).toHaveLength(0);
 	});
 
@@ -1162,56 +1099,41 @@ describe("Claude Code usage RPC", () => {
 		}
 	});
 
-	test("server_disposal_aborts_in_flight_claude_collection", async () => {
-		const harness = serverHarness();
-		const signals: AbortSignal[] = [];
-		let markStarted: (() => void) | undefined;
-		const started = new Promise<void>((resolve) => {
-			markStarted = resolve;
-		});
-		const dispose = await setupQuotaServer(harness.context, {
-			claudeUsage: collectUntilAbort(signals, () => markStarted?.()),
-		});
-		const registered = harness.registered();
-		const pending = registered?.handlers.claudeCodeUsage?.(
-			{},
-			emptyRpcContext(),
-		);
-		await started;
-		const collected = signals[0];
-		expect(collected?.aborted).toBe(false);
+	test.each([
+		["server_disposal", "dispose"],
+		["rpc_cancellation", "cancel"],
+	] as const)(
+		"%s_aborts_in_flight_claude_collection",
+		async (_name, trigger) => {
+			const harness = serverHarness();
+			const signals: AbortSignal[] = [];
+			let markStarted: (() => void) | undefined;
+			const started = new Promise<void>((resolve) => {
+				markStarted = resolve;
+			});
+			const dispose = await setupQuotaServer(harness.context, {
+				claudeUsage: collectUntilAbort(signals, () => markStarted?.()),
+			});
+			try {
+				const controller = new AbortController();
+				const pending = harness
+					.registered()
+					?.handlers.claudeCodeUsage?.({}, emptyRpcContext(controller.signal));
+				await started;
+				const collected = signals[0];
+				expect(collected?.aborted).toBe(false);
 
-		await dispose();
+				if (trigger === "dispose") {
+					await dispose();
+				} else {
+					controller.abort();
+				}
 
-		expect(collected?.aborted).toBe(true);
-		expect(await pending).toBeNull();
-	});
-
-	test("server_combines_rpc_cancellation_with_its_lifecycle_signal", async () => {
-		const harness = serverHarness();
-		const signals: AbortSignal[] = [];
-		let markStarted: (() => void) | undefined;
-		const started = new Promise<void>((resolve) => {
-			markStarted = resolve;
-		});
-		const dispose = await setupQuotaServer(harness.context, {
-			claudeUsage: collectUntilAbort(signals, () => markStarted?.()),
-		});
-		try {
-			const controller = new AbortController();
-			const pending = harness
-				.registered()
-				?.handlers.claudeCodeUsage?.({}, emptyRpcContext(controller.signal));
-			await started;
-			const collected = signals[0];
-			expect(collected?.aborted).toBe(false);
-
-			controller.abort();
-
-			expect(collected?.aborted).toBe(true);
-			expect(await pending).toBeNull();
-		} finally {
-			await dispose();
-		}
-	});
+				expect(collected?.aborted).toBe(true);
+				expect(await pending).toBeNull();
+			} finally {
+				await dispose();
+			}
+		},
+	);
 });

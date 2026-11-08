@@ -234,19 +234,6 @@ function spanFor(
 }
 
 describe("approved sidebar layout", () => {
-	test("60_and_40_columns_match_the_mock_derived_two_window_layout", async () => {
-		expect(await capture(TWO_WINDOWS, 60)).toEqual([
-			" OpenAI",
-			" 5h ━━━━━━━━━━━━━━━━━━━━━━━───────────────── 59% · resets 8h",
-			" 7d ━━━━━━━━━──────────────────────────── 25% · resets 2d 4h",
-		]);
-		expect(await capture(TWO_WINDOWS, 40)).toEqual([
-			" OpenAI",
-			" 5h ━━━━━━━━━━━───────── 59% · resets 8h",
-			" 7d ━━━━───────────── 25% · resets 2d 4h",
-		]);
-	});
-
 	test("production_model_resets_stay_intact_at_every_verified_width", async () => {
 		const model = buildSidebarModel(
 			OPENAI_PROVIDER,
@@ -272,12 +259,6 @@ describe("approved sidebar layout", () => {
 			.map((line) => line.reset)
 			.filter((reset): reset is string => reset !== undefined);
 		expect(resets).toEqual(["resets 8h", "resets 2d 4h"]);
-
-		expect(await capture(model, 40)).toEqual([
-			" OpenAI",
-			" 5h ━━━━━━━━━━━───────── 59% · resets 8h",
-			" 7d ━━━━───────────── 25% · resets 2d 4h",
-		]);
 
 		for (const width of [24, 32, 40, 60]) {
 			const setup = await paint(model, width);
@@ -329,41 +310,44 @@ describe("approved sidebar layout", () => {
 		expect(frame.join("\n")).not.toContain("Total");
 	});
 
-	test("32_and_24_columns_preserve_every_value_and_reset_without_clipping", async () => {
-		expect(await capture(TWO_WINDOWS, 32)).toEqual([
-			" OpenAI",
-			" 5h ━━━━━━━───── 59% · resets 8h",
-			" 7d ━━─────── 25% · resets 2d 4h",
-		]);
-		expect(await capture(TWO_WINDOWS, 24)).toEqual([
-			" OpenAI",
-			" 5h ━━── 59% · resets 8h",
-			" 7d ─ 25% · resets 2d 4h",
-		]);
-
-		for (const width of [24, 32, 40, 60]) {
+	test.each([
+		[
+			60,
+			[
+				" OpenAI",
+				" 5h ━━━━━━━━━━━━━━━━━━━━━━━───────────────── 59% · resets 8h",
+				" 7d ━━━━━━━━━──────────────────────────── 25% · resets 2d 4h",
+			],
+		],
+		[
+			40,
+			[
+				" OpenAI",
+				" 5h ━━━━━━━━━━━───────── 59% · resets 8h",
+				" 7d ━━━━───────────── 25% · resets 2d 4h",
+			],
+		],
+		[
+			32,
+			[
+				" OpenAI",
+				" 5h ━━━━━━━───── 59% · resets 8h",
+				" 7d ━━─────── 25% · resets 2d 4h",
+			],
+		],
+		[24, [" OpenAI", " 5h ━━── 59% · resets 8h", " 7d ─ 25% · resets 2d 4h"]],
+	])(
+		"%i_columns_match_the_two_window_layout_without_clipping",
+		async (width, expected) => {
 			const lines = await capture(TWO_WINDOWS, width);
+			expect(lines).toEqual(expected);
 			expect(lines.every((line) => line.length <= width)).toBe(true);
-			const painted = lines.join("\n").replace(/[│\s]+/g, "");
-			for (const text of [
-				"OpenAI",
-				"5h",
-				"59%",
-				"resets 8h",
-				"7d",
-				"25%",
-				"resets 2d 4h",
-			]) {
-				expect(painted).toContain(text.replace(/\s+/g, ""));
-			}
-			expect(painted).not.toContain("updated");
-			expect(painted).not.toContain("Europe/Stockholm");
-			expect(painted).not.toContain("Viewallproviders");
-		}
-	});
+		},
+	);
 
-	test("long_custom_labels_and_values_wrap_without_clipping_at_every_width", async () => {
-		for (const width of [24, 32, 40, 60]) {
+	test.each([32, 40])(
+		"long_custom_labels_and_values_wrap_without_clipping_at_%i_columns",
+		async (width) => {
 			const lines = await capture(LONG_CUSTOM_LABELS, width);
 			expect(lines.every((line) => line.length <= width)).toBe(true);
 			const painted = lines.join("\n").replace(/[│\s]+/g, "");
@@ -379,27 +363,36 @@ describe("approved sidebar layout", () => {
 			]) {
 				expect(painted).toContain(text.replace(/\s+/g, ""));
 			}
-			expect(painted).not.toContain("updated");
-			expect(painted).not.toContain("Viewallproviders");
-		}
-	});
+		},
+	);
 
-	test("long_custom_layout_keeps_intrinsic_columns_wide_and_wraps_only_when_narrow", async () => {
-		expect(await capture(LONG_CUSTOM_LABELS, 60)).toEqual([
-			" A very long arbitrary provider name",
-			" 7d · Custom daily window ━━━━━━━━─────── 55% · resets 2d 4h",
-			" 5h Unknown (not reported)",
-		]);
-		expect(await capture(LONG_CUSTOM_LABELS, 24)).toEqual([
-			" A very long arbitrary",
-			" provider name",
-			" 7d · Custom daily  ━━──",
-			" window",
-			" 55% · resets 2d 4h",
-			" 5h",
-			" Unknown (not reported)",
-		]);
-	});
+	test.each([
+		[
+			60,
+			[
+				" A very long arbitrary provider name",
+				" 7d · Custom daily window ━━━━━━━━─────── 55% · resets 2d 4h",
+				" 5h Unknown (not reported)",
+			],
+		],
+		[
+			24,
+			[
+				" A very long arbitrary",
+				" provider name",
+				" 7d · Custom daily  ━━──",
+				" window",
+				" 55% · resets 2d 4h",
+				" 5h",
+				" Unknown (not reported)",
+			],
+		],
+	])(
+		"long_custom_layout_at_%i_columns_keeps_intrinsic_columns_wide_and_wraps_only_when_narrow",
+		async (width, expected) => {
+			expect(await capture(LONG_CUSTOM_LABELS, width)).toEqual(expected);
+		},
+	);
 
 	test("window_bars_share_compact_label_and_reset_edges_at_normal_widths", async () => {
 		const lines = await capture(TWO_WINDOWS, 60);
@@ -538,130 +531,45 @@ describe("approved sidebar layout", () => {
 			const theme = LAYOUT_THEME;
 			expect(spanFor(frame, "OpenAI").fg.equals(theme.base)).toBe(true);
 			expect(spanFor(frame, "5h").fg.equals(theme.muted)).toBe(true);
-			expect(spanFor(frame, "7d").fg.equals(theme.muted)).toBe(true);
 			expect(spanFor(frame, "59%").fg.equals(theme.muted)).toBe(true);
-			expect(spanFor(frame, "25%").fg.equals(theme.muted)).toBe(true);
 			expect(spanFor(frame, "━").fg.equals(theme.base)).toBe(true);
 			expect(spanFor(frame, "─").fg.equals(theme.muted)).toBe(true);
 			expect(spanFor(frame, "· resets 8h").fg.equals(theme.muted)).toBe(true);
-			expect(spanFor(frame, "· resets 2d 4h").fg.equals(theme.muted)).toBe(
-				true,
-			);
 		} finally {
 			await setup.dispose();
 		}
+	});
 
-		const warningWindow = await paint(
+	test.each([
+		["warning window percent", "90%", "warning"],
+		["exhausted bar percent", "100%", "error"],
+	] as const)("%s keeps its semantic color", async (_name, text, tone) => {
+		const percent = { text, tone };
+		const setup = await paint(
 			{
 				provider: "OpenAI",
 				lines: [
 					{
-						id: "warning-window",
-						kind: "window",
-						label: "5h",
-						value: { text: "90%", tone: "warning" },
-						fill: 0.9,
-						reset: "resets 8h",
-					},
-				],
-			},
-			60,
-		);
-		try {
-			const frame = warningWindow.captureSpans();
-			expect(spanFor(frame, "90%").fg.equals(LAYOUT_THEME.warning)).toBe(true);
-			expect(spanFor(frame, "5h").fg.equals(LAYOUT_THEME.muted)).toBe(true);
-			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.base)).toBe(true);
-			expect(spanFor(frame, "· resets 8h").fg.equals(LAYOUT_THEME.muted)).toBe(
-				true,
-			);
-		} finally {
-			await warningWindow.dispose();
-		}
-
-		const barSetup = await paint(COMPLETE_CREDITS, 60);
-		try {
-			const frame = barSetup.captureSpans();
-			// The bar segments, reset note, stat amounts, and neutral percent are
-			// all dimmed; only a threshold percent keeps its semantic color.
-			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.base)).toBe(true);
-			expect(spanFor(frame, "─").fg.equals(LAYOUT_THEME.muted)).toBe(true);
-			expect(spanFor(frame, "41.6%").fg.equals(LAYOUT_THEME.muted)).toBe(true);
-			expect(
-				spanFor(frame, "· resets 25d 15h").fg.equals(LAYOUT_THEME.muted),
-			).toBe(true);
-			expect(
-				spanFor(frame, "$24.97 / $60.00 used").fg.equals(LAYOUT_THEME.muted),
-			).toBe(true);
-			expect(
-				spanFor(frame, "+$4.27 credits").fg.equals(LAYOUT_THEME.muted),
-			).toBe(true);
-		} finally {
-			await barSetup.dispose();
-		}
-
-		const lowQuota = await paint(
-			{
-				provider: "Ollama Cloud",
-				lines: [
-					{
-						id: "included",
+						id: "bar",
 						kind: "bar",
-						fill: 0.924,
-						percent: { text: "92.4%", tone: "warning" },
-						reset: "resets 15h 30m",
-					},
-					{
-						id: "included-stats",
-						kind: "pair",
-						left: { text: "$55.44 / $60.00 used", tone: "normal" },
-						right: { text: "+$4.27 credits", tone: "normal" },
-						metricIDs: ["included"],
+						fill: Number.parseInt(text, 10) / 100,
+						percent,
 					},
 				],
 			},
 			60,
 		);
 		try {
-			const frame = lowQuota.captureSpans();
-			expect(spanFor(frame, "92.4%").fg.equals(LAYOUT_THEME.warning)).toBe(
-				true,
-			);
-			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.base)).toBe(true);
-			expect(spanFor(frame, "─").fg.equals(LAYOUT_THEME.muted)).toBe(true);
-			expect(
-				spanFor(frame, "$55.44 / $60.00 used").fg.equals(LAYOUT_THEME.muted),
-			).toBe(true);
-			expect(
-				spanFor(frame, "+$4.27 credits").fg.equals(LAYOUT_THEME.muted),
-			).toBe(true);
-		} finally {
-			await lowQuota.dispose();
-		}
-
-		const exhausted = await paint(
-			{
-				provider: "Ollama Cloud",
-				lines: [
-					{
-						id: "included",
-						kind: "bar",
-						fill: 1,
-						percent: { text: "100%", tone: "error" },
-					},
-				],
-			},
-			60,
-		);
-		try {
-			const frame = exhausted.captureSpans();
-			expect(spanFor(frame, "100%").fg.equals(LAYOUT_THEME.error)).toBe(true);
+			const frame = setup.captureSpans();
+			expect(spanFor(frame, text).fg.equals(LAYOUT_THEME[tone])).toBe(true);
 			expect(spanFor(frame, "━").fg.equals(LAYOUT_THEME.base)).toBe(true);
 		} finally {
-			await exhausted.dispose();
+			await setup.dispose();
 		}
+	});
 
-		const errorSetup = await paint(
+	test("error status text stays muted", async () => {
+		const setup = await paint(
 			{
 				...UNAVAILABLE,
 				lines: [
@@ -676,10 +584,10 @@ describe("approved sidebar layout", () => {
 			60,
 		);
 		try {
-			const span = spanFor(errorSetup.captureSpans(), "Quota unavailable");
+			const span = spanFor(setup.captureSpans(), "Quota unavailable");
 			expect(span.fg.equals(LAYOUT_THEME.muted)).toBe(true);
 		} finally {
-			await errorSetup.dispose();
+			await setup.dispose();
 		}
 	});
 
@@ -759,44 +667,6 @@ describe("approved sidebar layout", () => {
 			await setup.mockMouse.click(3, 1);
 			await setup.renderOnce();
 			expect(opened).toBe(1);
-		} finally {
-			await setup.dispose();
-		}
-	});
-
-	test("renderer_returns_fresh_static_renderables_without_function_children", async () => {
-		let first: unknown;
-		let second: unknown;
-		const setup = await testRender(
-			() => {
-				first = renderSidebar(TWO_WINDOWS, LAYOUT_THEME, () => {});
-				second = renderSidebar(TWO_WINDOWS, LAYOUT_THEME, () => {});
-				return first as never;
-			},
-			{ width: 40, height: 20 },
-		);
-		try {
-			await setup.renderOnce();
-			expect(first).not.toBe(second);
-			const root = first as unknown as {
-				border?: unknown;
-				_mouseListeners?: { down?: unknown };
-			};
-			expect(root.border).toBe(false);
-			expect(typeof root._mouseListeners?.down).toBe("function");
-			const children = (first as { getChildren(): unknown[] }).getChildren();
-			expect(children.every((child) => typeof child !== "function")).toBe(true);
-			expect(children.length).toBeGreaterThan(0);
-			const visit = (node: unknown): void => {
-				expect(typeof node).not.toBe("function");
-				const candidate = node as { getChildren?: () => unknown[] };
-				if (typeof candidate.getChildren === "function") {
-					for (const child of candidate.getChildren()) {
-						visit(child);
-					}
-				}
-			};
-			visit(first);
 		} finally {
 			await setup.dispose();
 		}

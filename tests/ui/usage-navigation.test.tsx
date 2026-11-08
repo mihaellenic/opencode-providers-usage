@@ -58,20 +58,18 @@ describe("usage page return route", () => {
 		});
 	});
 
-	test("back without an opening route returns home", () => {
-		const host = routeHost({ type: "session", sessionID: "ses_session" });
+	test.each([
+		[
+			"back without an opening route",
+			{ type: "session", sessionID: "ses_session" },
+			false,
+		],
+		["opening from home", { type: "home" }, true],
+	] as const)("%s returns home", (_name, initial, opens) => {
+		const host = routeHost(initial as QuotaRoute);
 		const usage = createUsageNavigator(host.context);
 
-		usage.back();
-
-		expect(host.current()).toEqual({ type: "home" });
-	});
-
-	test("opening from home returns home", () => {
-		const host = routeHost({ type: "home" });
-		const usage = createUsageNavigator(host.context);
-
-		usage.open();
+		if (opens) usage.open();
 		usage.back();
 
 		expect(host.current()).toEqual({ type: "home" });

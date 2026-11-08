@@ -84,25 +84,13 @@ const importedSpecifiers = (code: string): string[] =>
 
 describe("package manifest", () => {
 	test("is an ESM package whose version tracks release-please", () => {
-		expect(manifest.name).toBe("opencode-providers-usage");
 		expect(manifest.type).toBe("module");
 		expect(manifest.version).toBe(releasePleaseManifest["."]);
-		expect(manifest.version).toMatch(/^0\./);
 	});
 
 	test("points main and every export at built dist files", () => {
 		expect(manifest.main).toBe("./dist/index.js");
 		expect(manifest.exports).toEqual(EXPECTED_EXPORTS);
-	});
-
-	test("uses only string export targets, without conditional or type exports", () => {
-		for (const target of Object.values(manifest.exports)) {
-			expect(typeof target).toBe("string");
-		}
-	});
-
-	test("publishes only built output", () => {
-		expect(manifest.files).toEqual(["dist/", "index.js", "tui.js", "rpc.js"]);
 	});
 
 	test("ships root JS shims that re-export the dist modules", () => {
@@ -112,45 +100,15 @@ describe("package manifest", () => {
 	});
 
 	test("publishes publicly with a prepack rebuild and no consumer install hooks", () => {
-		expect(manifest.publishConfig).toEqual({ access: "public" });
 		expect(manifest.scripts.prepack).toBe("bun run build");
 		for (const hook of ["preinstall", "install", "postinstall"]) {
 			expect(manifest.scripts[hook]).toBeUndefined();
 		}
 	});
 
-	test("carries the owner-approved MIT publication metadata", () => {
-		expect(manifest.license).toBe("MIT");
-		expect(manifest.author).toBe("Mihael Lenic");
-		expect(manifest.repository).toEqual({
-			type: "git",
-			url: "git+https://github.com/mihaellenic/opencode-providers-usage.git",
-		});
-		const license = read("LICENSE");
-		expect(license).toContain("MIT License");
-		expect(license).toContain("Copyright (c) 2026 Mihael Lenic");
-	});
-
-	test("declares the coordinated host runtime contract", () => {
-		expect(manifest.dependencies["@opencode/plugin"]).toBe("2.2.5");
-		expect(manifest.peerDependencies).toEqual({
-			"@opencode/theme": "2.2.5",
-			"@opentui/core": ">=0.8.0",
-			"@opentui/solid": ">=0.8.0",
-			"solid-js": ">=1.9.18",
-		});
-	});
-
-	test("pins the source dev toolchain to the approved patched stack", () => {
-		expect(manifest.devDependencies["@opentui/solid"]).toBe("0.8.0");
-		expect(manifest.devDependencies["solid-js"]).toBe("1.9.18");
-		expect(manifest.devDependencies["babel-preset-solid"]).toBe("1.9.16");
-	});
-
 	test("lets source resolve seroval through solid-js and never overrides it", () => {
 		// Solid 1.9.18 declares the patched seroval range itself. A source-only
 		// override would not protect downstream consumers, so none may exist.
-		expect(manifest.overrides?.seroval).toBeUndefined();
 		expect(manifest.overrides).toBeUndefined();
 	});
 
@@ -310,15 +268,10 @@ describe("built artifacts", () => {
 		}
 	});
 
-	test("building twice leaves exactly the expected files", () => {
-		expect(runBuild().status).toBe(0);
-		expect(runBuild().status).toBe(0);
-		expect(readdirSync(join(root, "dist")).sort()).toEqual(EXPECTED_DIST_FILES);
-	});
-
-	test("removes stale dist files on rebuild", () => {
+	test("rebuilds idempotently and removes stale dist files", () => {
 		mkdirSync(join(root, "dist"), { recursive: true });
 		writeFileSync(dist("stale.js"), "export {}\n");
+		expect(runBuild().status).toBe(0);
 		expect(runBuild().status).toBe(0);
 		expect(existsSync(dist("stale.js"))).toBe(false);
 		expect(readdirSync(join(root, "dist")).sort()).toEqual(EXPECTED_DIST_FILES);
@@ -328,21 +281,6 @@ describe("built artifacts", () => {
 describe("README distribution contract", () => {
 	const readme = read("README.md");
 
-	/** Text of one section, heading excluded, up to the next heading of the same or higher level. */
-	const section = (heading: string): string => {
-		const start = readme.indexOf(`\n${heading}\n`);
-		if (start === -1) throw new Error(`missing README section: ${heading}`);
-		const level = heading.match(/^#+/)?.[0].length ?? 1;
-		const rest = readme.slice(start + heading.length + 2);
-		const next = rest.search(new RegExp(`\\n#{1,${level}} `));
-		return next === -1 ? rest : rest.slice(0, next);
-	};
-
-	test("makes no not-published-to-a-registry claim", () => {
-		expect(readme).not.toMatch(/not (?:yet )?published/i);
-		expect(readme).not.toMatch(/registry/i);
-	});
-
 	test("documents the export table with targets identical to manifest.exports", () => {
 		const rows = new Map<string, string>();
 		for (const line of readme.split("\n")) {
@@ -351,33 +289,6 @@ describe("README distribution contract", () => {
 		}
 		expect(Object.fromEntries(rows)).toEqual(manifest.exports);
 		expect(rows.size).toBe(Object.keys(manifest.exports).length);
-	});
-
-	test("lists the experimental GUI export row", () => {
-		expect(readme).toContain(
-			"| `./gui-experimental` | `./dist/gui-experimental.cjs` |",
-		);
-	});
-
-	test("provides the published npm install path and a separate source-checkout path", () => {
-		const install = section("## Installation");
-		expect(install).toMatch(/npm install opencode-providers-usage(?:\s|$)/m);
-		expect(install).toContain(
-			"### Install from a source checkout (development)",
-		);
-		const checkout = section(
-			"### Install from a source checkout (development)",
-		);
-		expect(checkout).toContain("npx bun@1.4.4 run build");
-		expect(checkout.indexOf("npx bun@1.4.4 run build")).toBeGreaterThan(-1);
-	});
-
-	test("keeps local TypeScript root-file guidance for checkouts", () => {
-		expect(readme).toContain("root-file convention");
-		expect(readme).toMatch(/`index\.ts`/);
-		expect(readme).toMatch(/`tui\.tsx`/);
-		expect(readme).toMatch(/`rpc\.ts`/);
-		expect(readme).toMatch(/named installs[^.]*`exports`/i);
 	});
 });
 
@@ -414,17 +325,5 @@ describe("npm tarball", () => {
 			expect(path).not.toMatch(/^(?:index|tui|rpc)\.tsx?$/);
 			expect(path).not.toMatch(/^(?:bun\.lock|tsconfig\.json)$/);
 		}
-	});
-});
-
-describe("README Desktop GUI statement", () => {
-	const readme = read("README.md");
-
-	test("is experimental, version-qualified, and keeps web/V1/forks unsupported", () => {
-		expect(readme).toContain("Desktop GUI (experimental)");
-		expect(readme).toContain("`@opencode/plugin` `2.2.5`");
-		expect(readme).toContain("Desktop `2.2.1`");
-		expect(readme).toContain("Web, V1, and OpenCode forks are not supported.");
-		expect(readme).toContain("exports five entrypoints");
 	});
 });

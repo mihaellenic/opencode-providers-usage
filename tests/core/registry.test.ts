@@ -128,7 +128,10 @@ describe("adapter registry", () => {
 		expect(calls).toEqual(["first"]);
 	});
 
-	test("declining_adapter_falls_through_to_next", async () => {
+	test.each([
+		["declining adapter falls through to next", true, "second-key"],
+		["no match returns null", false, undefined],
+	])("%s", async (_name, secondMatches, expectedKey) => {
 		const calls: string[] = [];
 		const first = adapter("first", [], async () => {
 			calls.push("first");
@@ -136,30 +139,14 @@ describe("adapter registry", () => {
 		});
 		const second = adapter("second", [], async () => {
 			calls.push("second");
-			return source("second-key");
+			return secondMatches ? source("second-key") : null;
 		});
 
 		const registry = createAdapterRegistry([first, second]);
 		const resolved = await registry.resolve(resolveInput());
 
-		expect(resolved?.identityKey).toBe("second-key");
-		expect(calls).toEqual(["first", "second"]);
-	});
-
-	test("no_match_returns_null", async () => {
-		const calls: string[] = [];
-		const first = adapter("first", [], async () => {
-			calls.push("first");
-			return null;
-		});
-		const second = adapter("second", [], async () => {
-			calls.push("second");
-			return null;
-		});
-
-		const registry = createAdapterRegistry([first, second]);
-
-		expect(await registry.resolve(resolveInput())).toBeNull();
+		expect(resolved?.identityKey).toBe(expectedKey);
+		if (!secondMatches) expect(resolved).toBeNull();
 		expect(calls).toEqual(["first", "second"]);
 	});
 
@@ -183,53 +170,54 @@ describe("adapter registry", () => {
 		expect(received?.nativeCredential).toBe(native);
 	});
 
-	test("summarize_returns_declared_capability", () => {
-		const declared: ProviderCapability = {
-			match: { providerID: "x", authMethod: "api-key" },
-			name: "X Cloud",
-			support: "supported",
-			evidence: "live-validated",
-		};
-		const registry = createAdapterRegistry([
-			adapter("x", [declared], async () => null),
-		]);
-
-		expect(
-			registry.summarize({ providerID: "x", authMethod: "api-key" }),
-		).toEqual({
-			providerID: "x",
-			name: "X Cloud",
-			authMethod: "api-key",
-			support: "supported",
-			evidence: "live-validated",
-		});
-	});
-
-	test("summarize_matches_integration_id", () => {
-		const declared: ProviderCapability = {
-			match: { integrationID: "integration-7", authMethod: "any" },
-			name: "Integration Cloud",
-			support: "requires-companion",
-			evidence: "documented-only",
-		};
-		const registry = createAdapterRegistry([
-			adapter("integration", [declared], async () => null),
-		]);
-
-		expect(
-			registry.summarize({
+	test.each([
+		[
+			"declared capability by provider id",
+			{
+				match: { providerID: "x", authMethod: "api-key" },
+				name: "X Cloud",
+				support: "supported",
+				evidence: "live-validated",
+			} as ProviderCapability,
+			{ providerID: "x", authMethod: "api-key" },
+			{
+				providerID: "x",
+				name: "X Cloud",
+				authMethod: "api-key",
+				support: "supported",
+				evidence: "live-validated",
+			},
+		],
+		[
+			"declared capability by integration id",
+			{
+				match: { integrationID: "integration-7", authMethod: "any" },
+				name: "Integration Cloud",
+				support: "requires-companion",
+				evidence: "documented-only",
+			} as ProviderCapability,
+			{
 				providerID: "different-provider-id",
 				integrationID: "integration-7",
 				authMethod: "oauth",
-			}),
-		).toEqual({
-			providerID: "different-provider-id",
-			integrationID: "integration-7",
-			name: "Integration Cloud",
-			authMethod: "oauth",
-			support: "requires-companion",
-			evidence: "documented-only",
-		});
+			},
+			{
+				providerID: "different-provider-id",
+				integrationID: "integration-7",
+				name: "Integration Cloud",
+				authMethod: "oauth",
+				support: "requires-companion",
+				evidence: "documented-only",
+			},
+		],
+	])("summarize matches %s", (_name, declared, query, expected) => {
+		const registry = createAdapterRegistry([
+			adapter("a", [declared], async () => null),
+		]);
+
+		expect(registry.summarize(query)).toEqual(
+			expected as ReturnType<typeof registry.summarize>,
+		);
 	});
 
 	test("summarize_synthesizes_unsupported_when_undeclared", () => {

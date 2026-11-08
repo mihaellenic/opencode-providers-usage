@@ -224,38 +224,31 @@ describe("Codex home resolution", () => {
 });
 
 describe("storage mode", () => {
-	test("explicit_file_storage_is_supported", async () => {
-		const files = {
-			[CONFIG_PATH]: [
+	test.each([
+		[
+			"explicit file storage with a later keyring table",
+			[
 				'model = "synthetic-model"',
 				'cli_auth_credentials_store = "file" # inline comment',
 				"",
 				"[tui]",
 				'cli_auth_credentials_store = "keyring"',
 			].join("\n"),
-			[AUTH_PATH]: authText(),
-		};
-		const { read: result } = await read(files);
-		expect(result.state).toBe("available");
-	});
-
-	test("absent_config_defaults_to_file_storage", async () => {
-		const files = { [AUTH_PATH]: authText() };
-		const { read: result, observed } = await read(files);
-		expect(result.state).toBe("available");
-		expect(observed.paths).toEqual([CONFIG_PATH, AUTH_PATH]);
-	});
-
-	test("commented_storage_key_is_ignored", async () => {
-		const files = {
-			[CONFIG_PATH]: [
+		],
+		["absent config", undefined],
+		[
+			"commented storage key",
+			[
 				'# cli_auth_credentials_store = "keyring"',
 				'model = "synthetic-model"',
 			].join("\n"),
-			[AUTH_PATH]: authText(),
-		};
-		const { read: result } = await read(files);
+		],
+	])("file_storage_is_supported: %s", async (_name, config) => {
+		const files: Record<string, string> = { [AUTH_PATH]: authText() };
+		if (config !== undefined) files[CONFIG_PATH] = config;
+		const { read: result, observed } = await read(files);
 		expect(result.state).toBe("available");
+		expect(observed.paths).toEqual([CONFIG_PATH, AUTH_PATH]);
 	});
 
 	for (const mode of [
@@ -312,11 +305,6 @@ describe("cached auth.json validation", () => {
 		expect(observed.limits).toEqual([MAX_BYTES, MAX_BYTES]);
 	});
 
-	test("malformed_cache_is_invalid_companion", async () => {
-		const { read: result } = await read({ [AUTH_PATH]: "{not json" });
-		expectReason(result, "invalid_companion");
-	});
-
 	test("oversized_cache_is_rejected_with_the_bound_enforced_while_reading", async () => {
 		const oversized = `{"padding":"${"x".repeat(MAX_BYTES)}"}`;
 		expect(Buffer.byteLength(oversized, "utf8")).toBeGreaterThan(MAX_BYTES);
@@ -325,81 +313,45 @@ describe("cached auth.json validation", () => {
 		expect(observed.limits).toEqual([MAX_BYTES, MAX_BYTES]);
 	});
 
-	test("api_key_login_is_not_a_chatgpt_companion", async () => {
-		const files = {
-			[AUTH_PATH]: JSON.stringify({
+	const noExp = claims();
+	delete noExp.exp;
+	const withTokens = (tokenOverrides: Record<string, unknown>) =>
+		authText({ tokenOverrides });
+
+	test.each([
+		["malformed JSON", "{not json"],
+		[
+			"api key login",
+			JSON.stringify({
 				auth_mode: "apikey",
 				OPENAI_API_KEY: "synthetic-api-key-sentinel",
 				tokens: null,
 			}),
-		};
-		const { read: result } = await read(files);
+		],
+		[
+			"legacy api key only cache",
+			JSON.stringify({ OPENAI_API_KEY: "synthetic-api-key-sentinel" }),
+		],
+		["undefined access token", withTokens({ access_token: undefined })],
+		["empty access token", withTokens({ access_token: "" })],
+		["blank access token", withTokens({ access_token: "   " })],
+		["undefined account id", withTokens({ account_id: undefined })],
+		["empty account id", withTokens({ account_id: "" })],
+		["blank account id", withTokens({ account_id: "   " })],
+		[
+			"access token account conflict",
+			withTokens({
+				access_token: jwt(claims({ accountID: OTHER_ACCOUNT_ID })),
+			}),
+		],
+		[
+			"id token account conflict",
+			withTokens({ id_token: jwt(claims({ accountID: OTHER_ACCOUNT_ID })) }),
+		],
+		["missing exp", withTokens({ access_token: jwt(noExp) })],
+	])("invalid_companion: %s", async (_name, auth) => {
+		const { read: result } = await read({ [AUTH_PATH]: auth });
 		expectReason(result, "invalid_companion");
-	});
-
-	test("legacy_api_key_only_cache_is_rejected", async () => {
-		const files = {
-			[AUTH_PATH]: JSON.stringify({
-				OPENAI_API_KEY: "synthetic-api-key-sentinel",
-			}),
-		};
-		const { read: result } = await read(files);
-		expectReason(result, "invalid_companion");
-	});
-
-	test("chatgpt_auth_mode_without_access_token_is_rejected", async () => {
-		for (const accessToken of [undefined, "", "   "]) {
-			const files = {
-				[AUTH_PATH]: authText({
-					tokenOverrides: { access_token: accessToken },
-				}),
-			};
-			const { read: result } = await read(files);
-			expectReason(result, "invalid_companion");
-		}
-	});
-
-	test("absent_account_context_is_rejected", async () => {
-		for (const accountID of [undefined, "", "   "]) {
-			const files = {
-				[AUTH_PATH]: authText({
-					tokenOverrides: { account_id: accountID },
-				}),
-			};
-			const { read: result } = await read(files);
-			expectReason(result, "invalid_companion");
-		}
-	});
-
-	test("conflicting_token_and_account_ids_are_rejected", async () => {
-		const accessConflict = {
-			[AUTH_PATH]: authText({
-				tokenOverrides: {
-					access_token: jwt(claims({ accountID: OTHER_ACCOUNT_ID })),
-				},
-			}),
-		};
-		expectReason((await read(accessConflict)).read, "invalid_companion");
-
-		const idTokenConflict = {
-			[AUTH_PATH]: authText({
-				tokenOverrides: {
-					id_token: jwt(claims({ accountID: OTHER_ACCOUNT_ID })),
-				},
-			}),
-		};
-		expectReason((await read(idTokenConflict)).read, "invalid_companion");
-	});
-
-	test("missing_exp_is_invalid", async () => {
-		const payload = claims();
-		delete payload.exp;
-		const files = {
-			[AUTH_PATH]: authText({
-				tokenOverrides: { access_token: jwt(payload) },
-			}),
-		};
-		expectReason((await read(files)).read, "invalid_companion");
 	});
 
 	test("expired_companion_never_refreshes_or_writes", async () => {

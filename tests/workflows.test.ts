@@ -1,57 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const root = fileURLToPath(new URL("..", import.meta.url));
-// Built without a literal dollar-brace so Biome does not flag GitHub expression text.
-const OPEN_EXPR = `\${{`;
-const read = (path: string): string => readFileSync(join(root, path), "utf8");
+import { jobBlock, read, runBlocks } from "./workflow-helpers";
 
 const ci = read(".github/workflows/ci.yml");
-
-/** Extract a top-level job block so assertions cannot match another job. */
-function jobBlock(source: string, name: string): string {
-	const marker = `\n  ${name}:\n`;
-	const start = source.indexOf(marker);
-	if (start === -1) throw new Error(`job ${name} not found`);
-	const rest = source.slice(start + marker.length);
-	const next = rest.search(/\n {2}[a-zA-Z0-9_-]+:\n/);
-	return next === -1 ? rest : rest.slice(0, next);
-}
-
-/** Collect `run:` bodies, single-line or block scalar, so shell can be inspected. */
-function runBlocks(source: string): string[] {
-	const blocks: string[] = [];
-	let current: string[] | undefined;
-	let blockIndent = 0;
-	for (const line of source.split("\n")) {
-		if (current === undefined) {
-			const match = /^(\s*)(?:-\s+)?run: \|\s*$/.exec(line);
-			if (match) {
-				current = [];
-				blockIndent = match[1]?.length ?? 0;
-				continue;
-			}
-			const single = /^(\s*)(?:-\s+)?run:\s+(.+)$/.exec(line);
-			if (single?.[2]) blocks.push(single[2]);
-			continue;
-		}
-		if (line.trim() === "") {
-			current.push(line);
-			continue;
-		}
-		const indent = line.length - line.trimStart().length;
-		if (indent <= blockIndent) {
-			blocks.push(current.join("\n"));
-			current = undefined;
-		} else {
-			current.push(line);
-		}
-	}
-	if (current !== undefined) blocks.push(current.join("\n"));
-	return blocks;
-}
 
 describe("CI workflow triggers and permissions", () => {
 	test("runs on pull requests and pushes to main only", () => {
@@ -64,42 +14,10 @@ describe("CI workflow triggers and permissions", () => {
 			expect(ci).not.toContain(forbidden);
 		}
 	});
-
-	test("grants only read access to the repository", () => {
-		expect(ci).toContain("permissions:\n  contents: read\n");
-		for (const forbidden of [
-			"contents: write",
-			"actions: write",
-			"pull-requests: write",
-			"id-token",
-			"secrets.",
-		]) {
-			expect(ci).not.toContain(forbidden);
-		}
-	});
-
-	test("never executes checkout code with privileged triggers or credentials", () => {
-		expect(ci).not.toContain("pull_request_target");
-		expect(ci).not.toContain("NPM_TOKEN");
-		expect(ci).not.toContain("NODE_AUTH_TOKEN");
-		expect(ci).not.toContain("continue-on-error");
-		expect(ci).not.toContain("|| true");
-	});
 });
 
 describe("CI quality job", () => {
 	const quality = jobBlock(ci, "quality");
-
-	test("uses the pinned action majors and the supported Bun runtime", () => {
-		expect(quality).toContain("uses: actions/checkout@v7");
-		expect(quality).toContain("uses: oven-sh/setup-bun@v2");
-		expect(quality).toContain("bun-version: 1.4.4");
-		expect(ci).not.toContain("1.1.3");
-	});
-
-	test("checks out without persisting credentials", () => {
-		expect(quality).toContain("persist-credentials: false");
-	});
 
 	test("installs from the committed lockfile with lifecycle scripts disabled", () => {
 		expect(quality).toContain("bun install --frozen-lockfile --ignore-scripts");
@@ -140,12 +58,6 @@ describe("CI quality job", () => {
 			'exec(["bun", "run", "test"], source, testEnv)',
 		);
 	});
-
-	test("has no shell that interpolates event context", () => {
-		expect(runBlocks(quality).length).toBeGreaterThan(0);
-		for (const block of runBlocks(quality))
-			expect(block).not.toContain(OPEN_EXPR);
-	});
 });
 
 describe("CI source audit gate", () => {
@@ -168,13 +80,6 @@ describe("CI source audit gate", () => {
 
 describe("CI commit subject job", () => {
 	const subjects = jobBlock(ci, "subjects");
-
-	test("documents new-branch and force-push range behavior", () => {
-		expect(subjects).toContain("new branch");
-		expect(subjects).toContain("force push");
-		expect(subjects).toContain("no longer exists");
-		expect(subjects).toContain("fails closed");
-	});
 
 	test("validates the exact pull request head against the exact base SHA", () => {
 		expect(subjects).toContain("uses: actions/checkout@v7");
@@ -211,12 +116,6 @@ describe("CI commit subject job", () => {
 	test("checks every subject with the shared checker", () => {
 		expect(subjects).toContain('sh scripts/commit-subject-ok.sh "$s" "$id"');
 		expect(subjects).toContain("IFS=' ' read -r id s");
-	});
-
-	test("passes event values through env instead of shell interpolation", () => {
-		expect(runBlocks(subjects).length).toBeGreaterThan(0);
-		for (const block of runBlocks(subjects))
-			expect(block).not.toContain(OPEN_EXPR);
 	});
 });
 

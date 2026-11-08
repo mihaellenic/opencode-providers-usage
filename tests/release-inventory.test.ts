@@ -44,10 +44,12 @@ describe("parseTreeListing", () => {
 			"docs/é.md",
 		]);
 	});
-	test("rejects an empty listing and a missing final terminator", () => {
-		expect(() => parseTreeListing("")).toThrow();
-		expect(() => parseTreeListing("a.md")).toThrow();
-		expect(() => parseTreeListing("a.md\0\0")).toThrow();
+	test.each([
+		["empty listing", ""],
+		["missing final terminator", "a.md"],
+		["empty name", "a.md\0\0"],
+	])("parseTreeListing rejects %s", (_name, listing) => {
+		expect(() => parseTreeListing(listing)).toThrow();
 	});
 });
 
@@ -65,40 +67,41 @@ describe("parseInventory", () => {
 		});
 		expect([...parseInventory(text).paths].sort()).toEqual(["a", "b"]);
 	});
-	test("rejects malformed JSON, wrong schema and wrong shapes", () => {
-		for (const bad of [
-			"",
-			"{",
-			"null",
-			"[]",
-			make(["a"], { schema: 2 }),
-			make(["a"], { commit: "xyz" }),
-			make(["a"], { packageJsonSha256: "short" }),
-			make(["a"], { extra: true }),
-			make([]),
-			make("a" as never),
-			make([1 as never]),
+	test.each([
+		["empty text", ""],
+		["truncated JSON", "{"],
+		["null", "null"],
+		["array", "[]"],
+		["wrong schema", make(["a"], { schema: 2 })],
+		["bad commit", make(["a"], { commit: "xyz" })],
+		["short hash", make(["a"], { packageJsonSha256: "short" })],
+		["extra key", make(["a"], { extra: true })],
+		["empty paths", make([])],
+		["string paths", make("a" as never)],
+		["non-string path", make([1 as never])],
+		[
+			"missing hash",
 			JSON.stringify({ schema: 1, commit: COMMIT, paths: ["a"] }),
-		]) {
-			expect(() => parseInventory(bad)).toThrow();
-		}
+		],
+	])("parseInventory rejects %s", (_name, bad) => {
+		expect(() => parseInventory(bad)).toThrow();
 	});
-	test("rejects duplicate and noncanonical paths", () => {
-		for (const bad of [
-			"",
-			"/abs",
-			"./a",
-			"a/./b",
-			"a/../b",
-			"../a",
-			"a//b",
-			"a/",
-			"a\\b",
-			"a\0b",
-			"a\nb",
-		]) {
-			expect(() => parseInventory(make(["ok", bad]))).toThrow();
-		}
+	test.each([
+		"",
+		"/abs",
+		"./a",
+		"a/./b",
+		"a/../b",
+		"../a",
+		"a//b",
+		"a/",
+		"a\\b",
+		"a\0b",
+		"a\nb",
+	])("parseInventory rejects noncanonical path %p", (bad) => {
+		expect(() => parseInventory(make(["ok", bad]))).toThrow();
+	});
+	test("rejects duplicate paths", () => {
 		expect(() => parseInventory(make(["a", "a"]))).toThrow(/duplicate/i);
 	});
 	test("binds to the package.json hash when requested", () => {
@@ -234,11 +237,14 @@ describe("docs link test inside a git-less archive copy", () => {
 		tree = join(dir, "tree");
 		mkdirSync(join(tree, "tests"), { recursive: true });
 		mkdirSync(join(tree, "scripts"));
+		mkdirSync(join(tree, ".github/workflows"), { recursive: true });
 		for (const f of ["README.md", "package.json", "docs"])
 			cpSync(join(repo, f), join(tree, f), { recursive: true });
 		for (const f of [
-			"tests/release-docs-hardening.test.ts",
+			"tests/releasing-doc.test.ts",
 			"scripts/release-inventory.ts",
+			"scripts/release-acceptance.ts",
+			".github/workflows/release.yml",
 		])
 			cpSync(join(repo, f), join(tree, f));
 		tracked = [...committedPaths(repo)];
@@ -256,15 +262,11 @@ describe("docs link test inside a git-less archive copy", () => {
 			paths: p,
 		});
 	const run = (env: Record<string, string>) =>
-		spawnSync(
-			"bun",
-			["test", "--cwd", tree, "tests/release-docs-hardening.test.ts"],
-			{
-				cwd: tree,
-				encoding: "utf8",
-				env: { PATH: process.env.PATH ?? "", HOME: tree, ...env },
-			},
-		);
+		spawnSync("bun", ["test", "--cwd", tree, "tests/releasing-doc.test.ts"], {
+			cwd: tree,
+			encoding: "utf8",
+			env: { PATH: process.env.PATH ?? "", HOME: tree, ...env },
+		});
 
 	test("has no .git", () => {
 		expect(existsSync(join(tree, ".git"))).toBe(false);

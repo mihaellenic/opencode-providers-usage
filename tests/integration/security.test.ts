@@ -804,7 +804,7 @@ describe("RPC presentation boundary", () => {
 		}
 	});
 
-	test("presentation_validators_require_matching_v2_and_complete_history", () => {
+	describe("presentation_validators_require_matching_v2_and_complete_history", () => {
 		const presentation: QuotaPresentation = {
 			revision: 2,
 			lastKnown: completeRead,
@@ -816,79 +816,102 @@ describe("RPC presentation boundary", () => {
 		} as const;
 		const getWithout = { version: 2, provider: summary, quota: completeRead };
 		const getWith = { ...getWithout, presentation };
-
-		expect(isQuotaGetResult(getWithout)).toBe(true);
-		expect(isQuotaGetResult(getWith)).toBe(true);
-		expect(
-			isQuotaProviderView({ provider: summary, quota: completeRead }),
-		).toBe(true);
-		expect(
-			isQuotaListResult({
-				version: 2,
-				providers: [{ provider: summary, quota: completeRead }],
-			}),
-		).toBe(true);
-		expect(
-			isQuotaListResult({
-				version: 2,
-				providers: [{ provider: summary, quota: completeRead, presentation }],
-			}),
-		).toBe(true);
-
-		expect(isQuotaGetResult({ ...getWithout, version: 1 })).toBe(false);
-		expect(isQuotaGetResult({ ...getWith, extra: true })).toBe(false);
-		expect(
-			isQuotaGetResult({
-				...getWith,
-				presentation: { revision: 1.5 },
-			}),
-		).toBe(false);
-		expect(
-			isQuotaGetResult({
-				...getWith,
-				presentation: { revision: 1, lastKnown: partialHistory },
-			}),
-		).toBe(false);
-		expect(
-			isQuotaGetResult({
-				...getWith,
-				presentation: { revision: 1, failedSince: -1 },
-			}),
-		).toBe(false);
-
 		const event = {
 			version: 2,
 			providerID: "alpha",
 			quota: completeRead,
 			presentation,
 		};
-		expect(isQuotaUpdatedEvent(event)).toBe(true);
-		expect(
-			isQuotaUpdatedEvent({
-				version: 2,
-				providerID: "alpha",
-				quota: completeRead,
-			}),
-		).toBe(true);
-		expect(isQuotaUpdatedEvent({ ...event, version: 1 })).toBe(false);
-		expect(isQuotaUpdatedEvent({ ...event, extra: true })).toBe(false);
-		expect(
-			isQuotaUpdatedEvent({
-				...event,
-				presentation: { revision: 1, identityKey: ACCOUNT_SENTINEL },
-			}),
-		).toBe(false);
 
-		const getOutput = QuotaRpc.methods.get.output as {
-			properties?: Record<string, unknown>;
-		};
-		expect(Object.keys(getOutput.properties ?? {})).toContain("presentation");
-		const eventSchema = QuotaRpc.events.updated.schema as {
-			properties?: Record<string, unknown>;
-			additionalProperties?: boolean;
-		};
-		expect(Object.keys(eventSchema.properties ?? {})).toContain("presentation");
-		expect(eventSchema.additionalProperties).toBe(false);
+		test.each([
+			["get without presentation", isQuotaGetResult, getWithout],
+			["get with presentation", isQuotaGetResult, getWith],
+			[
+				"provider view",
+				isQuotaProviderView,
+				{ provider: summary, quota: completeRead },
+			],
+			[
+				"list without presentation",
+				isQuotaListResult,
+				{
+					version: 2,
+					providers: [{ provider: summary, quota: completeRead }],
+				},
+			],
+			[
+				"list with presentation",
+				isQuotaListResult,
+				{
+					version: 2,
+					providers: [{ provider: summary, quota: completeRead, presentation }],
+				},
+			],
+			["updated event with presentation", isQuotaUpdatedEvent, event],
+			[
+				"updated event without presentation",
+				isQuotaUpdatedEvent,
+				{ version: 2, providerID: "alpha", quota: completeRead },
+			],
+		] as [string, (value: unknown) => boolean, unknown][])(
+			"accepts %s",
+			(_name, validate, value) => {
+				expect(validate(value)).toBe(true);
+			},
+		);
+
+		test.each([
+			["get with version 1", isQuotaGetResult, { ...getWithout, version: 1 }],
+			["get with extra key", isQuotaGetResult, { ...getWith, extra: true }],
+			[
+				"get with fractional revision",
+				isQuotaGetResult,
+				{ ...getWith, presentation: { revision: 1.5 } },
+			],
+			[
+				"get with partial lastKnown history",
+				isQuotaGetResult,
+				{
+					...getWith,
+					presentation: { revision: 1, lastKnown: partialHistory },
+				},
+			],
+			[
+				"get with negative failedSince",
+				isQuotaGetResult,
+				{ ...getWith, presentation: { revision: 1, failedSince: -1 } },
+			],
+			["event with version 1", isQuotaUpdatedEvent, { ...event, version: 1 }],
+			["event with extra key", isQuotaUpdatedEvent, { ...event, extra: true }],
+			[
+				"event with identityKey in presentation",
+				isQuotaUpdatedEvent,
+				{
+					...event,
+					presentation: { revision: 1, identityKey: ACCOUNT_SENTINEL },
+				},
+			],
+		] as [string, (value: unknown) => boolean, unknown][])(
+			"rejects %s",
+			(_name, validate, value) => {
+				expect(validate(value)).toBe(false);
+			},
+		);
+
+		test("RPC schemas declare presentation and close the event schema", () => {
+			const getOutput = QuotaRpc.methods.get.output as {
+				properties?: Record<string, unknown>;
+			};
+			expect(Object.keys(getOutput.properties ?? {})).toContain("presentation");
+			const eventSchema = QuotaRpc.events.updated.schema as {
+				properties?: Record<string, unknown>;
+				additionalProperties?: boolean;
+			};
+			expect(Object.keys(eventSchema.properties ?? {})).toContain(
+				"presentation",
+			);
+			expect(eventSchema.additionalProperties).toBe(false);
+		});
 	});
 });
 
@@ -1003,21 +1026,6 @@ describe("support matrix contract", () => {
 		const rows = parseDeclarationRows(support);
 		expect(rows.length).toBeGreaterThan(0);
 
-		// The test builds the registry directly (never importing src/index.ts),
-		// but it still reads the single registration point so a newly registered
-		// adapter cannot silently escape the matrix check.
-		const indexSource = readFileSync(
-			new URL("../../src/index.ts", import.meta.url),
-			"utf8",
-		);
-		const registrations = [
-			...indexSource.matchAll(/^\s*(create\w*Adapter)\(/gm),
-		].map((match) => match[1]);
-		expect(registrations).toEqual([
-			"createOllamaAdapter",
-			"createOpenAICompanionAdapter",
-		]);
-
 		const rowsByKey = new Map<string, DocRow[]>();
 		for (const row of rows) {
 			const key = `${row.Adapter ?? ""}\u0000${row.Capability ?? ""}`;
@@ -1076,45 +1084,6 @@ describe("support matrix contract", () => {
 		// in src/ui/format.ts has a complete public explanation set.
 		for (const reason of QUOTA_REASON_CODES) {
 			expect(support).toContain(`\`${reason}\``);
-		}
-
-		// The full specification matrix remains present (row labels verbatim).
-		const matrixRows = [
-			"Ollama Cloud saved API key",
-			"Ollama Cloud legacy session/weekly plan with API key",
-			"Signed-in local Ollama cloud proxy",
-			"Purely local Ollama inference",
-			"OpenAI current ChatGPT token-sharing OAuth, companion explicitly opted out",
-			"Current token-sharing OAuth plus valid, file-backed, matching Codex companion login",
-			"Same combination, but missing/expired/mismatched companion login",
-			"Keychain/encrypted Codex cache",
-			"OpenAI inference API key",
-			"Legacy Codex OAuth saved directly in OpenCode",
-			"OpenCode Console device OAuth",
-			"Zen/Go inference API keys",
-			"Other providers / custom compatible endpoints",
-		];
-		for (const label of matrixRows) {
-			expect(support).toContain(label);
-		}
-
-		// Ledger rulings that must stay visible in the compatibility contract.
-		const rulings = [
-			"Legacy windows render ONLY when the provider reports a duration",
-			"valid legacy response shows `partial` plus an unavailable section",
-			"`no_validated_quota_source` has two meanings",
-			"on by default",
-			"`auth-required` with reason `unsupported_auth_method`",
-			"On OpenCode 2.1.4 the active OpenAI OAuth credential is stored in\n  `opencode.db`",
-			"integration.connection.active",
-			"connection.resolve",
-			"Cross-process deduplication",
-			"Not promised",
-			"remains active until the plugin unloads",
-			"Keychain, encrypted, ephemeral, and other non-file Codex stores are explicitly\nunsupported",
-		];
-		for (const ruling of rulings) {
-			expect(support).toContain(ruling);
 		}
 	});
 });

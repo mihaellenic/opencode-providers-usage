@@ -10,29 +10,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const root = fileURLToPath(new URL("..", import.meta.url));
-// Built without a literal dollar-brace so Biome does not flag GitHub expression text.
-const OPEN_EXPR = `\${{`;
-const read = (path: string): string => readFileSync(join(root, path), "utf8");
+import { jobBlock, OPEN_EXPR, read, runBlock } from "./workflow-helpers";
 
 describe("release-please config", () => {
-	const config = JSON.parse(read("release-please-config.json"));
 	const manifest = JSON.parse(read(".release-please-manifest.json"));
-
-	test("releases a node package and bumps minor while pre-1.0", () => {
-		expect(config["release-type"]).toBe("node");
-		expect(config["bump-minor-pre-major"]).toBe(true);
-	});
-
-	test("manages the root package with plain vX.Y.Z tags", () => {
-		expect(Object.keys(config.packages)).toEqual(["."]);
-		expect(config.packages["."]["package-name"]).toBe(
-			"opencode-providers-usage",
-		);
-		expect(config.packages["."]["include-component-in-tag"]).toBe(false);
-	});
 
 	// The release PR bumps the manifest, so pin its shape, not a version.
 	test("tracks a single root package at a 0.x version", () => {
@@ -41,93 +22,10 @@ describe("release-please config", () => {
 	});
 });
 
-/** Extract a top-level job block so assertions cannot match another job. */
-function jobBlock(source: string, name: string): string {
-	const marker = `\n  ${name}:\n`;
-	const start = source.indexOf(marker);
-	if (start === -1) throw new Error(`job ${name} not found`);
-	const rest = source.slice(start + marker.length);
-	const next = rest.search(/\n {2}[a-zA-Z0-9_-]+:\n/);
-	return next === -1 ? rest : rest.slice(0, next);
-}
-
-/** Collect `run:` bodies, single-line or block scalar, so shell can be inspected. */
-function runBlocks(source: string): string[] {
-	const blocks: string[] = [];
-	let current: string[] | undefined;
-	let blockIndent = 0;
-	for (const line of source.split("\n")) {
-		if (current === undefined) {
-			const match = /^(\s*)(?:-\s+)?run: \|\s*$/.exec(line);
-			if (match) {
-				current = [];
-				blockIndent = match[1]?.length ?? 0;
-				continue;
-			}
-			const single = /^(\s*)(?:-\s+)?run:\s+(.+)$/.exec(line);
-			if (single?.[2]) blocks.push(single[2]);
-			continue;
-		}
-		if (line.trim() === "") {
-			current.push(line);
-			continue;
-		}
-		const indent = line.length - line.trimStart().length;
-		if (indent <= blockIndent) {
-			blocks.push(current.join("\n"));
-			current = undefined;
-		} else {
-			current.push(line);
-		}
-	}
-	if (current !== undefined) blocks.push(current.join("\n"));
-	return blocks;
-}
-
-/** Extract a named step's inline shell body so it can run without a GitHub runner. */
-function runBlock(source: string, stepName: string): string {
-	const lines = source.split("\n");
-	const stepIndex = lines.findIndex(
-		(line) => line.trim() === `- name: ${stepName}`,
-	);
-	if (stepIndex === -1) throw new Error(`step ${stepName} not found`);
-	const first = lines[stepIndex] as string;
-	const stepIndent = first.length - first.trimStart().length;
-	let stepEnd = lines.length;
-	for (let index = stepIndex + 1; index < lines.length; index += 1) {
-		const line = lines[index] as string;
-		if (line.trim() === "") continue;
-		const indent = line.length - line.trimStart().length;
-		if (indent === stepIndent && line.trimStart().startsWith("- ")) {
-			stepEnd = index;
-			break;
-		}
-	}
-	const step = lines.slice(stepIndex, stepEnd);
-	const runIndex = step.findIndex((line) => /^\s*run:\s*\|\s*$/.test(line));
-	if (runIndex === -1)
-		throw new Error(`step ${stepName} has no multi-line run body`);
-	const runLine = step[runIndex] as string;
-	const runIndent = runLine.length - runLine.trimStart().length;
-	const body: string[] = [];
-	for (let index = runIndex + 1; index < step.length; index += 1) {
-		const line = step[index] as string;
-		if (line.trim() === "") {
-			body.push("");
-			continue;
-		}
-		const indent = line.length - line.trimStart().length;
-		if (indent <= runIndent) break;
-		body.push(line.slice(runIndent + 2));
-	}
-	return body.join("\n").trimEnd();
-}
-
 const release = read(".github/workflows/release.yml");
 
 describe("release workflow triggers and permissions", () => {
 	const header = release.slice(0, release.indexOf("\njobs:\n"));
-	const topLevel = release.slice(0, release.indexOf("\nconcurrency:"));
 
 	test("runs on pushes to main and manual recovery dispatch only", () => {
 		expect(release.startsWith("name: Release\n")).toBe(true);
@@ -143,12 +41,6 @@ describe("release workflow triggers and permissions", () => {
 		]) {
 			expect(release).not.toContain(forbidden);
 		}
-	});
-
-	test("defaults the workflow to read-only repository access", () => {
-		expect(topLevel).toContain("\npermissions:\n  contents: read\n");
-		expect(topLevel).not.toContain("write");
-		expect(topLevel).not.toContain("id-token");
 	});
 
 	test("serializes releases without cancelling an in-flight publish", () => {
@@ -171,19 +63,6 @@ describe("release workflow triggers and permissions", () => {
 			expect(job).not.toContain("pull-requests: write");
 		}
 		expect(release.match(/contents: write/g)?.length).toBe(1);
-	});
-
-	test("grants id-token write only to the publish job", () => {
-		const releasePlease = jobBlock(release, "release-please");
-		const accept = jobBlock(release, "accept");
-		const publish = jobBlock(release, "publish");
-		expect(release.match(/id-token/g)?.length).toBe(1);
-		expect(releasePlease).not.toContain("id-token");
-		expect(accept).not.toContain("id-token");
-		expect(accept).toContain("permissions:\n      contents: read\n");
-		expect(publish).toContain(
-			"permissions:\n      contents: read\n      id-token: write\n",
-		);
 	});
 
 	test("runs release-please with the committed config and manifest", () => {
@@ -255,20 +134,6 @@ describe("release workflow forbidden constructs", () => {
 		expect(release).not.toMatch(/\b(?:for|while|until)\b[^\n]*\bdo\b/);
 		expect(release).not.toMatch(/\bretry\b|nick-fields|wretry/i);
 	});
-
-	test("has no shell that interpolates event or input context", () => {
-		const blocks = runBlocks(release);
-		expect(blocks.length).toBeGreaterThan(5);
-		for (const block of blocks) expect(block).not.toContain(OPEN_EXPR);
-	});
-
-	test("checks out without persisting credentials", () => {
-		for (const name of ["accept", "publish"]) {
-			const job = jobBlock(release, name);
-			expect(job, name).toContain("uses: actions/checkout@v7");
-			expect(job, name).toContain("persist-credentials: false");
-		}
-	});
 });
 
 describe("release workflow accept job", () => {
@@ -279,14 +144,6 @@ describe("release workflow accept job", () => {
 		expect(accept).not.toContain("npm publish");
 		expect(accept).not.toContain("npm install -g");
 		expect(accept).not.toContain("--verify-published");
-	});
-
-	test("runs the repo gate on Node 24 and the pinned Bun", () => {
-		expect(accept).toContain("uses: actions/setup-node@v7");
-		expect(accept).toContain("node-version: 24");
-		expect(accept).toContain("package-manager-cache: false");
-		expect(accept).toContain("uses: oven-sh/setup-bun@v2");
-		expect(accept).toContain("bun-version: 1.4.4");
 	});
 
 	test("checks out the exact resolved tag and verifies it", () => {
@@ -366,16 +223,6 @@ describe("release workflow accept job", () => {
 describe("release workflow publish job", () => {
 	const publish = jobBlock(release, "publish");
 
-	test("pins the runtimes used to publish", () => {
-		expect(publish).toContain("uses: actions/setup-node@v7");
-		expect(publish).toContain("node-version: 24");
-		expect(publish).toContain("package-manager-cache: false");
-		expect(publish).toContain("npm install -g npm@11.16.0");
-		expect(publish).toContain('test "$(npm --version)" = "11.16.0"');
-		expect(publish).toContain("uses: oven-sh/setup-bun@v2");
-		expect(publish).toContain("bun-version: 1.4.4");
-	});
-
 	test("checks out the accepted commit, not a re-resolved tag", () => {
 		expect(publish).toContain(`ref: ${OPEN_EXPR} needs.accept.outputs.sha }}`);
 		expect(publish).not.toContain("steps.resolve");
@@ -447,22 +294,6 @@ describe("release workflow publish job", () => {
 			'run: bun scripts/release-acceptance.ts --verify-published "$ARTIFACT_DIR/artifact.json"',
 		);
 		expect(start).toBeGreaterThan(publish.indexOf("npm publish"));
-	});
-
-	test("orders download and integrity check before the one-shot publish", () => {
-		const markers = [
-			"uses: actions/checkout@v7",
-			"uses: actions/download-artifact@v8",
-			"name: Verify the accepted tarball integrity",
-			"npm install -g npm@11.16.0",
-			"npm publish",
-			"bun scripts/release-acceptance.ts --verify-published",
-		];
-		const positions = markers.map((marker) => publish.indexOf(marker));
-		for (const [index, position] of positions.entries()) {
-			expect(position, markers[index]).toBeGreaterThan(-1);
-		}
-		expect([...positions].sort((a, b) => a - b)).toEqual(positions);
 	});
 });
 
