@@ -34,13 +34,15 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  publish:
+  accept:
     needs: release-please
     if: always() && ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.verify.outputs.sha }}
     steps:
       - name: Resolve release ref
         id: resolve
@@ -77,6 +79,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify the checked-out tag and package version
+        id: verify
         env:
           RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
         run: |
@@ -85,17 +88,12 @@ jobs:
           test "$actual_tag" = "$RELEASE_TAG"
           version=$(node -p 'require("./package.json").version')
           test "$version" = "${RELEASE_TAG#v}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           package-manager-cache: false
-
-      - name: Pin npm for trusted publishing
-        run: |
-          set -euo pipefail
-          npm install -g npm@11.16.0
-          test "$(npm --version)" = "11.16.0"
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -122,12 +120,66 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  publish:
+    needs: [release-please, accept]
+    if: always() && needs.accept.result == 'success' && ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.accept.outputs.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-evidence-${{ needs.accept.outputs.tag }}
+          path: ${{ runner.temp }}/providers-usage-release
+
+      - name: Verify the accepted tarball integrity
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/providers-usage-release
+        run: |
+          set -euo pipefail
+          node -e '
+            const { createHash } = require("node:crypto");
+            const { readFileSync } = require("node:fs");
+            const { join } = require("node:path");
+            const dir = process.env.ARTIFACT_DIR;
+            const meta = JSON.parse(readFileSync(join(dir, "artifact.json"), "utf8"));
+            const bytes = readFileSync(join(dir, meta.filename));
+            const integrity = "sha512-" + createHash("sha512").update(bytes).digest("base64");
+            if (integrity !== meta.integrity) {
+              console.error("tarball integrity " + integrity + " does not match accepted " + meta.integrity);
+              process.exit(1);
+            }
+          '
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Pin npm for trusted publishing
+        run: |
+          set -euo pipefail
+          npm install -g npm@11.16.0
+          test "$(npm --version)" = "11.16.0"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
       - name: Publish the accepted tarball
         env:
           ARTIFACT_DIR: ${{ runner.temp }}/providers-usage-release
         run: |
           set -euo pipefail
-          tarball=$(node -p 'require(process.env.ARTIFACT_DIR + "/artifact.json").path')
+          filename=$(node -p 'require(process.env.ARTIFACT_DIR + "/artifact.json").filename')
+          tarball="$ARTIFACT_DIR/$filename"
           test -f "$tarball"
           npm publish "$tarball" --access public
 

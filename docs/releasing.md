@@ -64,27 +64,33 @@ that code rather than trusting a green check alone.
 
 ## 2. Automated publication
 
-Merging the release PR triggers [release.yml](../.github/workflows/release.yml). The
-publish job runs only when Release Please reports a created release (or on a recovery
-dispatch, see [Failure and recovery](#failure-and-recovery)), in this order:
+Merging the release PR triggers [release.yml](../.github/workflows/release.yml). Two
+jobs run only when Release Please reports a created release (or on a recovery
+dispatch, see [Failure and recovery](#failure-and-recovery)). The `accept` job has
+read-only repository access and no OIDC token. It runs the full gate and hands the
+accepted tarball to the `publish` job, the only job with `id-token: write`. In order:
 
 1. Release Please creates the release tag and GitHub release.
-2. The publisher resolves the tag, which must look like `vX.Y.Z`, and checks out that
+2. The `accept` job resolves the tag, which must look like `vX.Y.Z`, and checks out that
    exact tag, not floating `main`. It verifies that the checked-out tag agrees with
-   `package.json`.
-3. It sets up Node 24, installs npm 11.16.0, and sets up Bun 1.4.4.
+   `package.json` and records the commit it accepted.
+3. It sets up Node 24 and Bun 1.4.4.
 4. It runs `bun install --frozen-lockfile --ignore-scripts`, tests, lint, typecheck,
    and build.
 5. It runs fresh artifact acceptance with `scripts/release-acceptance.ts`. It never
    downloads or trusts the PR validator's artifact.
 6. It uploads the evidence, including after an acceptance failure.
-7. It publishes only the accepted tarball with
+7. The `publish` job runs only if `accept` succeeded. It checks out the accepted
+   commit, downloads the evidence artifact, and recomputes the tarball's sha512
+   integrity against `artifact.json`. It installs no dependencies and runs no tests.
+8. It sets up Node 24, installs npm 11.16.0, and sets up Bun 1.4.4 (for verification
+   only), then publishes only the accepted tarball with
    `npm publish <accepted tarball> --access public`, using OIDC trusted publishing.
-8. It verifies the registry with
+9. It verifies the registry with
    `bun scripts/release-acceptance.ts --verify-published <artifact.json>`.
 
 A GitHub release or a green PR check does not prove npm publication succeeded.
-Confirm that the publish job, including the registry verification step, passed. The
+Confirm that the `accept` and `publish` jobs, including the registry verification step, passed. The
 publisher executes release code, so pre-merge review of that code remains essential.
 
 ### Acceptance and security gates

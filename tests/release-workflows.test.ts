@@ -159,22 +159,28 @@ describe("release workflow triggers and permissions", () => {
 
 	test("grants write scopes only to the release-please job", () => {
 		const releasePlease = jobBlock(release, "release-please");
+		const accept = jobBlock(release, "accept");
 		const publish = jobBlock(release, "publish");
 		expect(releasePlease).toContain(
 			"permissions:\n      contents: write\n      issues: write\n      pull-requests: write\n",
 		);
 		expect(releasePlease).toContain("if: github.event_name == 'push'");
-		expect(publish).not.toContain("contents: write");
-		expect(publish).not.toContain("issues: write");
-		expect(publish).not.toContain("pull-requests: write");
+		for (const job of [accept, publish]) {
+			expect(job).not.toContain("contents: write");
+			expect(job).not.toContain("issues: write");
+			expect(job).not.toContain("pull-requests: write");
+		}
 		expect(release.match(/contents: write/g)?.length).toBe(1);
 	});
 
 	test("grants id-token write only to the publish job", () => {
 		const releasePlease = jobBlock(release, "release-please");
+		const accept = jobBlock(release, "accept");
 		const publish = jobBlock(release, "publish");
 		expect(release.match(/id-token/g)?.length).toBe(1);
 		expect(releasePlease).not.toContain("id-token");
+		expect(accept).not.toContain("id-token");
+		expect(accept).toContain("permissions:\n      contents: read\n");
 		expect(publish).toContain(
 			"permissions:\n      contents: read\n      id-token: write\n",
 		);
@@ -198,25 +204,35 @@ describe("release workflow triggers and permissions", () => {
 	});
 
 	test("publishes only after a created release or an explicit dispatch", () => {
+		const accept = jobBlock(release, "accept");
 		const publish = jobBlock(release, "publish");
-		expect(publish).toContain("needs: release-please");
+		const trigger =
+			"((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))";
+		expect(accept).toContain("needs: release-please\n");
+		expect(accept).toContain(`if: always() && ${trigger}\n`);
+		expect(publish).toContain("needs: [release-please, accept]\n");
 		expect(publish).toContain(
-			"if: always() && ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))",
+			`if: always() && needs.accept.result == 'success' && ${trigger}\n`,
+		);
+		expect(publish).toContain(
+			"if: always() && needs.accept.result == 'success' && ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))",
 		);
 	});
 
 	test("never publishes from a dispatch started on a non-main ref", () => {
 		// A branch copy of this workflow would carry id-token: write.
-		const condition = jobBlock(release, "publish")
-			.split("\n")
-			.find((line) => line.trim().startsWith("if:"));
-		expect(condition).toBeDefined();
-		const dispatchClause = condition?.split("||").pop() ?? "";
-		expect(dispatchClause).toContain(
-			"github.event_name == 'workflow_dispatch'",
-		);
-		expect(dispatchClause).toContain("github.ref == 'refs/heads/main'");
-		expect(condition?.match(/workflow_dispatch/g)).toHaveLength(1);
+		for (const name of ["accept", "publish"]) {
+			const condition = jobBlock(release, name)
+				.split("\n")
+				.find((line) => line.trim().startsWith("if:"));
+			expect(condition).toBeDefined();
+			const dispatchClause = condition?.split("||").pop() ?? "";
+			expect(dispatchClause).toContain(
+				"github.event_name == 'workflow_dispatch'",
+			);
+			expect(dispatchClause).toContain("github.ref == 'refs/heads/main'");
+			expect(condition?.match(/workflow_dispatch/g)).toHaveLength(1);
+		}
 	});
 });
 
@@ -247,9 +263,103 @@ describe("release workflow forbidden constructs", () => {
 	});
 
 	test("checks out without persisting credentials", () => {
-		const publish = jobBlock(release, "publish");
-		expect(publish).toContain("uses: actions/checkout@v7");
-		expect(publish).toContain("persist-credentials: false");
+		for (const name of ["accept", "publish"]) {
+			const job = jobBlock(release, name);
+			expect(job, name).toContain("uses: actions/checkout@v7");
+			expect(job, name).toContain("persist-credentials: false");
+		}
+	});
+});
+
+describe("release workflow accept job", () => {
+	const accept = jobBlock(release, "accept");
+
+	test("has no publishing capability", () => {
+		expect(accept).not.toContain("id-token");
+		expect(accept).not.toContain("npm publish");
+		expect(accept).not.toContain("npm install -g");
+		expect(accept).not.toContain("--verify-published");
+	});
+
+	test("runs the repo gate on Node 24 and the pinned Bun", () => {
+		expect(accept).toContain("uses: actions/setup-node@v7");
+		expect(accept).toContain("node-version: 24");
+		expect(accept).toContain("package-manager-cache: false");
+		expect(accept).toContain("uses: oven-sh/setup-bun@v2");
+		expect(accept).toContain("bun-version: 1.4.4");
+	});
+
+	test("checks out the exact resolved tag and verifies it", () => {
+		expect(accept).toContain(`ref: ${OPEN_EXPR} steps.resolve.outputs.tag }}`);
+		expect(accept).toContain(
+			"actual_tag=$(git describe --tags --exact-match HEAD)",
+		);
+		expect(accept).toContain('test "$actual_tag" = "$RELEASE_TAG"');
+		expect(accept).toContain(`test "$version" = "$` + `{RELEASE_TAG#v}"`);
+	});
+
+	test("exports the resolved tag and accepted commit to the publisher", () => {
+		expect(accept).toContain(`tag: ${OPEN_EXPR} steps.resolve.outputs.tag }}`);
+		expect(accept).toContain(`sha: ${OPEN_EXPR} steps.verify.outputs.sha }}`);
+		expect(accept).toContain(
+			'echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"',
+		);
+	});
+
+	test("runs the full gate and acceptance with the shared artifact dir", () => {
+		for (const command of [
+			"bun install --frozen-lockfile --ignore-scripts",
+			"run: bun run test\n",
+			"run: bun run lint\n",
+			"run: bun run typecheck\n",
+			"run: bun run build\n",
+		]) {
+			expect(accept, command).toContain(command);
+		}
+		expect(accept).toContain(`SCRATCH_ROOT: ${OPEN_EXPR} runner.temp }}\n`);
+		expect(accept).toContain(
+			`ARTIFACT_DIR: ${OPEN_EXPR} runner.temp }}/providers-usage-release\n`,
+		);
+		expect(accept).toContain(
+			'run: bun scripts/release-acceptance.ts --output-dir "$ARTIFACT_DIR"',
+		);
+	});
+
+	test("preserves evidence even when acceptance fails", () => {
+		const start = accept.indexOf("name: Preserve acceptance evidence");
+		const step = accept.slice(start);
+		expect(start).toBeGreaterThan(accept.indexOf("--output-dir"));
+		expect(step).toContain("if: always()");
+		expect(step).toContain("uses: actions/upload-artifact@v7");
+		expect(step).toContain(
+			`name: release-evidence-${OPEN_EXPR} steps.resolve.outputs.tag }}`,
+		);
+		expect(step).toContain(
+			`path: ${OPEN_EXPR} runner.temp }}/providers-usage-release`,
+		);
+		expect(step).toContain("if-no-files-found: warn");
+		expect(step).toContain("retention-days: 14");
+	});
+
+	test("orders every gate before the evidence upload", () => {
+		const markers = [
+			"name: Resolve release ref",
+			"uses: actions/checkout@v7",
+			"name: Verify the checked-out tag and package version",
+			"bun install --frozen-lockfile --ignore-scripts",
+			"run: bun run test\n",
+			"run: bun run lint\n",
+			"run: bun run typecheck\n",
+			"run: bun run build\n",
+			"bun scripts/release-acceptance.ts --output-dir",
+			"uses: actions/upload-artifact@v7",
+		];
+		const positions = markers.map((marker) => accept.indexOf(marker));
+		for (const [index, position] of positions.entries()) {
+			expect(position, markers[index]).toBeGreaterThan(-1);
+		}
+		expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+		expect(new Set(positions).size).toBe(positions.length);
 	});
 });
 
@@ -266,70 +376,47 @@ describe("release workflow publish job", () => {
 		expect(publish).toContain("bun-version: 1.4.4");
 	});
 
-	test("checks out the exact resolved tag and verifies it", () => {
-		expect(publish).toContain(`ref: ${OPEN_EXPR} steps.resolve.outputs.tag }}`);
-		expect(publish).toContain(
-			"actual_tag=$(git describe --tags --exact-match HEAD)",
-		);
-		expect(publish).toContain('test "$actual_tag" = "$RELEASE_TAG"');
-		expect(publish).toContain(`test "$version" = "$` + `{RELEASE_TAG#v}"`);
+	test("checks out the accepted commit, not a re-resolved tag", () => {
+		expect(publish).toContain(`ref: ${OPEN_EXPR} needs.accept.outputs.sha }}`);
+		expect(publish).not.toContain("steps.resolve");
+		expect(publish).not.toContain("gh api");
 	});
 
-	test("runs the full gate and acceptance with the shared artifact dir", () => {
-		for (const command of [
-			"bun install --frozen-lockfile --ignore-scripts",
-			"run: bun run test\n",
-			"run: bun run lint\n",
-			"run: bun run typecheck\n",
-			"run: bun run build\n",
+	test("installs nothing and runs no repo gate", () => {
+		for (const forbidden of [
+			"bun install",
+			"bun run ",
+			"npm ci",
+			"npm install\n",
+			"--output-dir",
+			"actions/upload-artifact",
 		]) {
-			expect(publish, command).toContain(command);
+			expect(publish, forbidden).not.toContain(forbidden);
 		}
-		expect(publish).toContain(`SCRATCH_ROOT: ${OPEN_EXPR} runner.temp }}\n`);
-		expect(publish).toContain(
-			`ARTIFACT_DIR: ${OPEN_EXPR} runner.temp }}/providers-usage-release\n`,
-		);
-		expect(publish).toContain(
-			'run: bun scripts/release-acceptance.ts --output-dir "$ARTIFACT_DIR"',
-		);
+		expect(release.match(/bun install/g)?.length).toBe(1);
+		expect(publish.match(/scripts\/release-acceptance\.ts/g)?.length).toBe(1);
 	});
 
-	test("preserves evidence even when acceptance fails", () => {
-		const start = publish.indexOf("name: Preserve acceptance evidence");
+	test("downloads the accepted artifact and checks its integrity first", () => {
+		expect(publish).toContain("uses: actions/download-artifact@v8");
+		expect(publish).toContain(
+			`name: release-evidence-${OPEN_EXPR} needs.accept.outputs.tag }}`,
+		);
+		expect(publish).toContain(
+			`path: ${OPEN_EXPR} runner.temp }}/providers-usage-release`,
+		);
+		const verify = publish.indexOf(
+			"name: Verify the accepted tarball integrity",
+		);
+		expect(verify).toBeGreaterThan(publish.indexOf("download-artifact"));
+		expect(verify).toBeLessThan(publish.indexOf("npm publish"));
 		const step = publish.slice(
-			start,
-			publish.indexOf("- name: Publish", start),
+			verify,
+			publish.indexOf("uses: actions/setup-node"),
 		);
-		expect(step).toContain("if: always()");
-		expect(step).toContain("uses: actions/upload-artifact@v7");
-		expect(step).toContain(
-			`name: release-evidence-${OPEN_EXPR} steps.resolve.outputs.tag }}`,
-		);
-		expect(step).toContain("if-no-files-found: warn");
-		expect(step).toContain("retention-days: 14");
-	});
-
-	test("orders every gate before the one-shot publish", () => {
-		const markers = [
-			"name: Resolve release ref",
-			"uses: actions/checkout@v7",
-			"name: Verify the checked-out tag and package version",
-			"bun install --frozen-lockfile --ignore-scripts",
-			"run: bun run test\n",
-			"run: bun run lint\n",
-			"run: bun run typecheck\n",
-			"run: bun run build\n",
-			"bun scripts/release-acceptance.ts --output-dir",
-			"uses: actions/upload-artifact@v7",
-			"npm publish",
-			"bun scripts/release-acceptance.ts --verify-published",
-		];
-		const positions = markers.map((marker) => publish.indexOf(marker));
-		for (const [index, position] of positions.entries()) {
-			expect(position, markers[index]).toBeGreaterThan(-1);
-		}
-		expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-		expect(new Set(positions).size).toBe(positions.length);
+		expect(step).toContain('createHash("sha512")');
+		expect(step).toContain("meta.integrity");
+		expect(step).toContain("process.exit(1)");
 	});
 
 	test("publishes exactly the accepted tarball once, without a token", () => {
@@ -343,8 +430,9 @@ describe("release workflow publish job", () => {
 			`ARTIFACT_DIR: ${OPEN_EXPR} runner.temp }}/providers-usage-release\n`,
 		);
 		expect(step).toContain(
-			`tarball=$(node -p 'require(process.env.ARTIFACT_DIR + "/artifact.json").path')`,
+			`filename=$(node -p 'require(process.env.ARTIFACT_DIR + "/artifact.json").filename')`,
 		);
+		expect(step).toContain('tarball="$ARTIFACT_DIR/$filename"');
 		expect(step).toContain('test -f "$tarball"');
 		expect(step).toContain('npm publish "$tarball" --access public\n');
 		expect(step.indexOf('test -f "$tarball"')).toBeLessThan(
@@ -359,6 +447,22 @@ describe("release workflow publish job", () => {
 			'run: bun scripts/release-acceptance.ts --verify-published "$ARTIFACT_DIR/artifact.json"',
 		);
 		expect(start).toBeGreaterThan(publish.indexOf("npm publish"));
+	});
+
+	test("orders download and integrity check before the one-shot publish", () => {
+		const markers = [
+			"uses: actions/checkout@v7",
+			"uses: actions/download-artifact@v8",
+			"name: Verify the accepted tarball integrity",
+			"npm install -g npm@11.16.0",
+			"npm publish",
+			"bun scripts/release-acceptance.ts --verify-published",
+		];
+		const positions = markers.map((marker) => publish.indexOf(marker));
+		for (const [index, position] of positions.entries()) {
+			expect(position, markers[index]).toBeGreaterThan(-1);
+		}
+		expect([...positions].sort((a, b) => a - b)).toEqual(positions);
 	});
 });
 
