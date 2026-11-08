@@ -18,6 +18,7 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (path: string): string => readFileSync(join(root, path), "utf8");
 
 const manifest = JSON.parse(read("package.json"));
+const releasePleaseManifest = JSON.parse(read(".release-please-manifest.json"));
 const dist = (path: string): string => join(root, "dist", path);
 
 const GUI_BUNDLE = "gui-experimental.cjs";
@@ -82,10 +83,11 @@ const importedSpecifiers = (code: string): string[] =>
 	].map((match) => match[1] ?? match[2] ?? match[3] ?? "");
 
 describe("package manifest", () => {
-	test("is an ESM package at the bootstrap candidate version", () => {
+	test("is an ESM package whose version tracks release-please", () => {
 		expect(manifest.name).toBe("opencode-providers-usage");
 		expect(manifest.type).toBe("module");
-		expect(manifest.version).toBe("0.1.0");
+		expect(manifest.version).toBe(releasePleaseManifest["."]);
+		expect(manifest.version).toMatch(/^0\./);
 	});
 
 	test("points main and every export at built dist files", () => {

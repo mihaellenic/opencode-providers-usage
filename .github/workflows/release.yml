@@ -1,0 +1,137 @@
+name: Release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to recover, for example v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: always() && ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Resolve release ref
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$DISPATCH_TAG"
+          else
+            tag="$RELEASE_TAG"
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release tag must look like vX.Y.Z, got: ${tag:-<empty>}" >&2
+            exit 1
+          fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag")
+            release_tag=$(printf '%s' "$release" | jq -r '.tag_name // empty')
+            draft=$(printf '%s' "$release" | jq -r '.draft | tostring')
+            test "$release_tag" = "$tag"
+            test "$draft" = "false"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release ref: $tag"
+
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify the checked-out tag and package version
+        env:
+          RELEASE_TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          actual_tag=$(git describe --tags --exact-match HEAD)
+          test "$actual_tag" = "$RELEASE_TAG"
+          version=$(node -p 'require("./package.json").version')
+          test "$version" = "${RELEASE_TAG#v}"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Pin npm for trusted publishing
+        run: |
+          set -euo pipefail
+          npm install -g npm@11.16.0
+          test "$(npm --version)" = "11.16.0"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: bun run test
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run build
+
+      - name: Accept the exact release artifact
+        env:
+          SCRATCH_ROOT: ${{ runner.temp }}
+          ARTIFACT_DIR: ${{ runner.temp }}/providers-usage-release
+        run: bun scripts/release-acceptance.ts --output-dir "$ARTIFACT_DIR"
+
+      - name: Preserve acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-evidence-${{ steps.resolve.outputs.tag }}
+          path: ${{ runner.temp }}/providers-usage-release
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish the accepted tarball
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/providers-usage-release
+        run: |
+          set -euo pipefail
+          tarball=$(node -p 'require(process.env.ARTIFACT_DIR + "/artifact.json").path')
+          test -f "$tarball"
+          npm publish "$tarball" --access public
+
+      - name: Verify published integrity
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/providers-usage-release
+        run: bun scripts/release-acceptance.ts --verify-published "$ARTIFACT_DIR/artifact.json"
