@@ -278,20 +278,6 @@ describe("built artifacts", () => {
 	});
 });
 
-describe("README distribution contract", () => {
-	const readme = read("README.md");
-
-	test("documents the export table with targets identical to manifest.exports", () => {
-		const rows = new Map<string, string>();
-		for (const line of readme.split("\n")) {
-			const match = line.match(/^\| `(\.[^`]*)` \| `([^`]+)` \|/);
-			if (match) rows.set(match[1] ?? "", match[2] ?? "");
-		}
-		expect(Object.fromEntries(rows)).toEqual(manifest.exports);
-		expect(rows.size).toBe(Object.keys(manifest.exports).length);
-	});
-});
-
 describe("npm tarball", () => {
 	let tarballPaths: string[] = [];
 

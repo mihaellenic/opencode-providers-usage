@@ -303,6 +303,26 @@ describe("partitionUsageCards", () => {
 		expect(out.unavailableNote).toBe(note);
 	});
 
+	test("claude-agent is not listed as unavailable while Claude Code is shown", () => {
+		const quota = { "claude-agent": unsupportedRead(), zen: unsupportedRead() };
+		const withClaude = partitionUsageCards(
+			[
+				card("claude-agent", "Claude Agent"),
+				card("zen", "OpenCode"),
+				card("claude-code", "Claude Code"),
+			],
+			quota,
+		);
+		expect(withClaude.cards.map((c) => c.id)).toEqual(["claude-code"]);
+		expect(withClaude.unavailableNote).toBe("Usage unavailable for: OpenCode");
+
+		const without = partitionUsageCards(
+			[card("claude-agent", "Claude Agent")],
+			quota,
+		);
+		expect(without.unavailableNote).toBe("Usage unavailable for: Claude Agent");
+	});
+
 	test("does not mutate its inputs", () => {
 		const cards = [card("u", "U"), card("a", "A")];
 		const quota: Record<string, QuotaRead> = {
