@@ -32,7 +32,7 @@ const PENDING: SidebarLine = {
 	tone: "warning",
 };
 
-const CLAUDE_CARD_ID = "claude-code";
+export const CLAUDE_CARD_ID = "claude-code";
 const CLAUDE_CARD_NAME = "Claude Code";
 
 /**

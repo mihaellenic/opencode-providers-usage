@@ -1,6 +1,7 @@
 import type { ClaudeUsage } from "../claude-code/usage";
 import type { QuotaPresentation, QuotaRead } from "../core/contracts";
-import type { UsagePageCard } from "./usage-page-model";
+import { CLAUDE_AGENT_PROVIDER_ID } from "./claude-sidebar";
+import { CLAUDE_CARD_ID, type UsagePageCard } from "./usage-page-model";
 
 /**
  * Display-only cadence for the Claude Code reset countdown. The card can be
@@ -120,7 +121,8 @@ const UNAVAILABLE_NOTE_PREFIX = "Usage unavailable for: ";
  * whose read is `unsupported` or `not-applicable` move to the note; their
  * resolved display names are listed in input order. Every other card, including
  * pending, loading, transient-failure, and Claude Code cards, keeps its input
- * order. Inputs are not mutated.
+ * order. The `claude-agent` provider is left out of the note while the Claude
+ * Code card is shown, since that card is its usage. Inputs are not mutated.
  */
 export function partitionUsageCards(
 	cards: UsagePageCard[],
@@ -130,8 +132,10 @@ export function partitionUsageCards(
 		const state = quotaByProvider[id]?.state;
 		return state === "unsupported" || state === "not-applicable";
 	};
+	const claudeShown = cards.some((card) => card.id === CLAUDE_CARD_ID);
 	const names = cards
 		.filter((card) => unavailable(card.id))
+		.filter((card) => !(claudeShown && card.id === CLAUDE_AGENT_PROVIDER_ID))
 		.map((card) => card.name);
 	return {
 		cards: cards.filter((card) => !unavailable(card.id)),
