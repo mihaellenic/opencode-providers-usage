@@ -11,6 +11,7 @@ const failure: QuotaRead = {
 };
 function history(
 	fetchedAt = START,
+	resetsAt = fetchedAt + 60_000,
 ): Extract<QuotaRead, { state: "available" | "partial" }> {
 	return {
 		state: "available",
@@ -30,7 +31,7 @@ function history(
 							label: "Window",
 							windowSeconds: 3_600,
 							remainingPercent: 40,
-							resetsAt: fetchedAt + 60_000,
+							resetsAt,
 						},
 					],
 				},
@@ -40,17 +41,55 @@ function history(
 }
 
 describe("sidebar historical presentation", () => {
-	test("idle expiry and passed reset retain exact figures without warning or timer", () => {
+	test("idle expiry retains exact figures without warning or timer", () => {
 		const lastKnown = history();
 		const before = JSON.stringify(lastKnown);
 		const result = sidebarQuotaPresentation({
 			quota: failure,
 			presentation: { revision: 1, lastKnown },
-			now: START + 3_600_000,
+			now: START + 59_999,
 		});
-		expect(result).toEqual({ quota: lastKnown, mightBeStale: false });
+		expect(result.mightBeStale).toBe(false);
 		expect(result.quota).toBe(lastKnown);
 		expect(JSON.stringify(lastKnown)).toBe(before);
+	});
+
+	test("a passed reset withdraws history figures on every path and asks for a fetch at the reset", () => {
+		const lastKnown = history();
+		const reset = START + 60_000;
+		const before = sidebarQuotaPresentation({
+			quota: failure,
+			presentation: { revision: 1, lastKnown },
+			now: reset - 1,
+		});
+		expect(before.refreshAt).toBe(reset);
+		expect(before.nextChangeAt).toBe(reset);
+		for (const failedSince of [undefined, reset - 1_000]) {
+			const after = sidebarQuotaPresentation({
+				quota: failure,
+				presentation: {
+					revision: 1,
+					lastKnown,
+					...(failedSince === undefined ? {} : { failedSince }),
+				},
+				now: reset,
+			});
+			expect(JSON.stringify(after.quota)).not.toContain("remainingPercent");
+			expect(after.refreshAt).toBeUndefined();
+		}
+		expect(JSON.stringify(lastKnown)).toContain("remainingPercent");
+	});
+
+	test("the fetched path drops a reset window even while the fetch is fresh", () => {
+		const fresh = history();
+		const reset = START + 60_000;
+		expect(
+			JSON.stringify(
+				sidebarQuotaPresentation({ quota: fresh, now: reset - 1 }).quota,
+			),
+		).toContain("remainingPercent");
+		const after = sidebarQuotaPresentation({ quota: fresh, now: reset });
+		expect(JSON.stringify(after.quota)).not.toContain("remainingPercent");
 	});
 
 	test.each([
@@ -101,7 +140,7 @@ describe("sidebar historical presentation", () => {
 	});
 
 	test("partial failure keeps complete history; recovery and a subsequent failure reset timing", () => {
-		const lastKnown = history();
+		const lastKnown = history(START, START + 10_000_000);
 		const partial: QuotaRead = {
 			...history(START + 1_900_000),
 			state: "partial",
@@ -113,7 +152,7 @@ describe("sidebar historical presentation", () => {
 		});
 		expect(failed.quota).toBe(lastKnown);
 		expect(failed.mightBeStale).toBe(true);
-		const recovered = history(START + 1_900_000);
+		const recovered = history(START + 1_900_000, START + 10_000_000);
 		expect(
 			sidebarQuotaPresentation({
 				quota: recovered,

@@ -575,7 +575,8 @@ async function main(): Promise<void> {
 		assert.equal(calls.filter((call) => call.providerID === "gamma").length, 1);
 		assert.equal(calls.filter((call) => call.providerID === "delta").length, 1);
 
-		// Retain an hour-old success even beyond expiry/reset. Render
+		// Retain an old success beyond expiry but before its reset; a passed
+		// reset withdraws the figures (see quota-presentation tests). Render
 		// reconciliation is display-only and must not request quota.
 		failAlpha = false;
 		const retained = reads.alpha;
@@ -599,7 +600,7 @@ async function main(): Promise<void> {
 		presentations.alpha = { revision: 1, lastKnown: retained };
 		keyInput.emit("keypress");
 		await waitForFrame((frame) => frame.includes("10%"));
-		await advanceClock(3_600_000);
+		await advanceClock(3_000_000);
 		const idleCalls = calls.length;
 		setTheme(fixtureTheme(INITIAL_COLORS));
 		const idleFrame = await waitForFrame((frame) => frame.includes("10%"));

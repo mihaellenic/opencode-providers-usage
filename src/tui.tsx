@@ -943,10 +943,17 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 			const now = Date.now();
 			const display = sidebarQuotaPresentation({ ...observation, now });
 			if (display.nextChangeAt !== undefined) {
-				const timer = setTimeout(
-					() => setDisplayTick((tick) => tick + 1),
-					display.nextChangeAt - now,
-				);
+				const providerID = selected.providerID;
+				const timer = setTimeout(() => {
+					// A reset is the only deadline that warrants a fetch; the driver
+					// throttles it and a failed fetch leaves no further reset to chase.
+					if (
+						display.refreshAt !== undefined &&
+						Date.now() >= display.refreshAt
+					)
+						activityRouter.activity(providerID);
+					setDisplayTick((tick) => tick + 1);
+				}, display.nextChangeAt - now);
 				onCleanup(() => clearTimeout(timer));
 			}
 			// `selected.label` is the host provider-registry display name resolved by
