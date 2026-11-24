@@ -305,6 +305,12 @@ export const QuotaRpc = Rpc.define({
 			output: getOutputSchema,
 			errors: { invalid_input: invalidInputSchema },
 		},
+		/** Desktop-only lookup of a server-owned snapshot. Never reads through. */
+		cached: {
+			input: providerInputSchema,
+			output: { oneOf: [getOutputSchema, { type: "null" }] },
+			errors: { invalid_input: invalidInputSchema },
+		},
 		refresh: {
 			input: providerInputSchema,
 			output: getOutputSchema,
@@ -380,6 +386,10 @@ export type QuotaRpcSource = {
 
 export type QuotaRpcOptions = {
 	source: QuotaRpcSource;
+	cached?(
+		providerID: string,
+		signal: AbortSignal,
+	): Promise<QuotaProviderView | undefined>;
 	publish?(event: QuotaUpdatedEvent): Promise<void> | void;
 	/**
 	 * Page-only Claude Code collection. Optional so existing custom sources and
@@ -706,6 +716,30 @@ export function createQuotaRpcHandlers(
 					? {}
 					: { presentation: view.presentation }),
 			};
+		},
+
+		async cached(input, context) {
+			const parsed = parseProviderInput(input);
+			if (!parsed.ok) {
+				return context.error("invalid_input", parsed.message, {
+					message: parsed.message,
+				});
+			}
+			if (options.cached === undefined || context.signal.aborted) return null;
+			try {
+				const snapshot = await options.cached(
+					parsed.providerID,
+					context.signal,
+				);
+				if (context.signal.aborted || snapshot === undefined) return null;
+				const result = { version: QUOTA_RPC_VERSION, ...snapshot };
+				return isQuotaGetResult(result) &&
+					result.provider.providerID === parsed.providerID
+					? result
+					: null;
+			} catch {
+				return null;
+			}
 		},
 
 		async claudeCodeUsage(input, context) {

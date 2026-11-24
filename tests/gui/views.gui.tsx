@@ -191,9 +191,8 @@ const buttonByText = (root: HTMLElement, text: string): HTMLButtonElement => {
 async function openDashboard(h: ReturnType<typeof setup>, root: HTMLElement) {
 	button(root).click();
 	await flush();
-	// Opening restarts collection; the summary-era calls are now stale and the
+	// Opening restarts collection; the summary-era read is now stale and the
 	// controller must ignore them even if they settle.
-	h.rpc.reject("list", new Error("stale"));
 	h.rpc.reject("get", new Error("stale"));
 	await flush();
 }

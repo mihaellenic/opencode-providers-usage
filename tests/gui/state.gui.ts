@@ -138,7 +138,6 @@ const counts = (h: Harness) => ({
 
 async function showSummary(h: Harness, fetchedAt?: number) {
 	h.session.setVisible(true);
-	h.rpc.resolve("list", listOf("a"));
 	h.rpc.resolve(
 		"get",
 		fetchedAt === undefined ? viewFor("a") : availableFor("a", fetchedAt, 1),
@@ -173,13 +172,13 @@ describe("usage controller", () => {
 		expect(c.summary()).toEqual({ kind: "loading", providerID: "b" });
 	});
 
-	test("construction makes no rpc call; first visible makes list+get once", async () => {
+	test("construction makes no rpc call; first visible reads only the selection", async () => {
 		const h = setup();
 		h.clock.advance(3_600_000);
 		expect(h.rpc.calls).toEqual([]);
 		h.session.setVisible(true);
 		h.session.setVisible(true);
-		expect(counts(h)).toEqual({ list: 1, get: 1, refresh: 0, claude: 0 });
+		expect(counts(h)).toEqual({ list: 0, get: 1, refresh: 0, claude: 0 });
 		expect(callsOf(h, "get")[0]?.args[0]).toMatchObject({ providerID: "a" });
 	});
 
@@ -214,7 +213,6 @@ describe("usage controller", () => {
 		const h = setup();
 		const lastKnown = availableQuota(0);
 		h.session.setVisible(true);
-		h.rpc.resolve("list", listOf("a"));
 		h.rpc.resolve("get", {
 			...viewFor("a"),
 			presentation: { revision: 1, lastKnown, failedSince: 0 },
@@ -277,7 +275,7 @@ describe("usage controller", () => {
 		expect(counts(h).refresh).toBe(0);
 		h.clock.advance(1);
 		h.clock.advance(0);
-		expect(counts(h)).toEqual({ list: 1, get: 1, refresh: 1, claude: 0 });
+		expect(counts(h)).toEqual({ list: 0, get: 1, refresh: 1, claude: 0 });
 		expect(callsOf(h, "refresh")[0]?.args[0]).toMatchObject({
 			providerID: "a",
 		});
@@ -704,7 +702,6 @@ describe("usage controller", () => {
 		const first = make("s1");
 		const second = make("s2");
 		for (let i = 0; i < 2; i++) {
-			rpc.resolve("list", listOf("a"));
 			rpc.resolve("get", viewFor("a"));
 		}
 		await flush();
@@ -721,7 +718,6 @@ describe("usage controller", () => {
 	test("an older updated revision does not replace a newer observation", async () => {
 		const h = setup();
 		h.session.setVisible(true);
-		h.rpc.resolve("list", listOf("a"));
 		h.rpc.resolve("get", availableFor("a", 0, 5));
 		await flush();
 		h.rpc.emitUpdated(
@@ -800,7 +796,7 @@ describe("usage controller", () => {
 		const h = setup();
 		await showSummary(h);
 		h.controller.refresh();
-		expect(counts(h)).toEqual({ list: 1, get: 1, refresh: 1, claude: 0 });
+		expect(counts(h)).toEqual({ list: 0, get: 1, refresh: 1, claude: 0 });
 		h.rpc.resolve("refresh", availableFor("a", 0, 2));
 		await flush();
 		expect(h.controller.summary().kind).toBe("ready");
@@ -883,7 +879,7 @@ describe("usage controller", () => {
 		expect(refreshedIDs(h).sort()).toEqual(["c", "n", "s", "u"]);
 	});
 
-	test("requests carry the inventory authMethod and integrationID", async () => {
+	test("summary refresh carries authMethod and integrationID from the selected read", async () => {
 		const h = setup();
 		h.session.setVisible(true);
 		// Inventory unknown yet: the wire only sends providerID, the backend resolves the source.
@@ -892,20 +888,11 @@ describe("usage controller", () => {
 			authMethod: "",
 		});
 		const { provider, quota } = viewFor("a");
-		h.rpc.resolve("list", {
+		h.rpc.resolve("get", {
 			version: QUOTA_RPC_VERSION,
-			providers: [
-				{
-					provider: {
-						...provider,
-						authMethod: "api-key",
-						integrationID: "i-1",
-					},
-					quota,
-				},
-			],
+			provider: { ...provider, authMethod: "api-key", integrationID: "i-1" },
+			quota,
 		});
-		h.rpc.resolve("get", viewFor("a"));
 		await flush();
 		h.controller.refresh();
 		expect(callsOf(h, "refresh")[0]?.args[0]).toStrictEqual({

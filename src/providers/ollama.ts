@@ -497,7 +497,7 @@ async function readSavedOllamaKey(
 }
 
 type KeyResolution =
-	| { state: "key"; key: string }
+	| { state: "key"; key: string; native: boolean }
 	| { state: "missing" }
 	| { state: "error" };
 
@@ -521,12 +521,16 @@ async function resolveOllamaKey(
 		}
 		if (value !== undefined) {
 			const key = parseOllamaKeyEntry(value);
-			return key === null ? { state: "missing" } : { state: "key", key };
+			return key === null
+				? { state: "missing" }
+				: { state: "key", key, native: true };
 		}
 	}
 
 	const key = await readSavedOllamaKey(integrationID, input.credentialDeps);
-	return key === null ? { state: "missing" } : { state: "key", key };
+	return key === null
+		? { state: "missing" }
+		: { state: "key", key, native: false };
 }
 
 function hostFailureSource(
@@ -585,6 +589,7 @@ export function createOllamaAdapter(): ProviderAdapter {
 
 			return {
 				identityKey: `ollama-balance:${integrationID}:${fingerprint}`,
+				...(resolution.native ? { boundToNativeCredential: true } : {}),
 				read: (signal) => fetchOllamaQuota(apiKey, signal, input.deps),
 				isCurrent: async () => {
 					const current = await resolveOllamaKey(input, integrationID);

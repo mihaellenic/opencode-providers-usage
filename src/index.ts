@@ -233,12 +233,11 @@ async function readBoundedUtf8(
 }
 
 /**
- * Server-owned overrides. The optional collector exists so lifecycle tests can
- * observe cancellation without launching the real CLI; production callers omit
- * it and use `collectClaudeUsage`.
+ * Server-owned test seams for the CLI and provider transport.
  */
 export type QuotaServerOverrides = {
 	claudeUsage?(signal: AbortSignal): Promise<ClaudeUsage | null>;
+	getJson?: ProviderDeps["getJson"];
 };
 
 export async function setupQuotaServer(
@@ -255,7 +254,10 @@ export async function setupQuotaServer(
 	const nativeCredential = createNativeCredentialSource(
 		ctx.integration.connection,
 	);
-	const deps: ProviderDeps = { now, getJson: getQuotaJson };
+	const deps: ProviderDeps = {
+		now,
+		getJson: overrides.getJson ?? getQuotaJson,
+	};
 	const credentialDeps: CredentialReadDeps = {
 		now,
 		env: process.env,
@@ -299,6 +301,14 @@ export async function setupQuotaServer(
 				);
 			}
 		}
+		return resolveRef(ref, signal);
+	}
+
+	async function resolveRef(
+		ref: QuotaProviderRef,
+		signal: AbortSignal,
+	): Promise<ResolvedQuotaSource> {
+		const { providerID } = ref;
 		try {
 			const resolved = await registry.resolve({
 				...ref,
@@ -445,6 +455,24 @@ export async function setupQuotaServer(
 
 	const handlers = createQuotaRpcHandlers({
 		source,
+		async cached(providerID, signal) {
+			const refs = await resolveProviderRefs(ctx);
+			const ref = refs.find((candidate) => candidate.providerID === providerID);
+			if (
+				signal.aborted ||
+				lifecycle.signal.aborted ||
+				ref?.integrationID !== "ollama-cloud" ||
+				ref.authMethod !== "key"
+			) {
+				return undefined;
+			}
+			const resolved = await resolveRef(ref, signal);
+			if (signal.aborted || lifecycle.signal.aborted) return undefined;
+			const snapshot = coordinator.cached(providerID, resolved);
+			return snapshot === undefined
+				? undefined
+				: { provider: registry.summarize(ref), ...snapshot };
+		},
 		publish: async (event) => {
 			await emitUpdated?.(event);
 		},

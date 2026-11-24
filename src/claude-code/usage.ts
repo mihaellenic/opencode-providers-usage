@@ -53,6 +53,24 @@ export type ClaudeUsageSpawn = (
 	options: ClaudeUsageSpawnOptions,
 ) => ClaudeUsageChild;
 
+/**
+ * Fixed, sanitized causes for a null collection. Raw CLI output, stderr, and
+ * paths never leave this module, so diagnostics carry a reason and, for a
+ * failed process, its numeric exit code only.
+ */
+export type ClaudeUsageFailureReason =
+	| "aborted"
+	| "unsupported_platform"
+	| "no_home"
+	| "spawn_failed"
+	| "timeout"
+	| "output_too_large"
+	| "nonzero_exit"
+	| "stream_error"
+	| "no_result_text"
+	| "parse_failed"
+	| "invalid_clock";
+
 export type ClaudeUsageCollectOptions = {
 	spawn?: ClaudeUsageSpawn;
 	now?: () => number;
@@ -63,7 +81,29 @@ export type ClaudeUsageCollectOptions = {
 	timeoutMs?: number;
 	maxOutputBytes?: number;
 	cleanupGraceMs?: number;
+	/** Optional diagnostics hook; a throwing callback never changes the result. */
+	onFailure?: (reason: ClaudeUsageFailureReason, exitCode?: number) => void;
 };
+
+type UsageCommandOutcome =
+	| { readonly text: string }
+	| { readonly reason: ClaudeUsageFailureReason; readonly exitCode?: number };
+
+/** Reporting is best-effort: it must never turn an omission into a throw. */
+function reportFailure(
+	onFailure: ClaudeUsageCollectOptions["onFailure"],
+	reason: ClaudeUsageFailureReason,
+	exitCode?: number,
+): void {
+	if (onFailure === undefined) {
+		return;
+	}
+	try {
+		onFailure(reason, exitCode);
+	} catch {
+		// Diagnostics are not part of the collection contract.
+	}
+}
 
 const defaultDirectoryExists = (path: string): boolean => {
 	try {
@@ -692,7 +732,7 @@ async function runUsageCommand(
 	maxOutputBytes: number,
 	cleanupGraceMs: number,
 	cwd: string,
-): Promise<string | null> {
+): Promise<UsageCommandOutcome> {
 	let child: ClaudeUsageChild;
 	try {
 		child = spawn([...CLAUDE_USAGE_COMMAND], {
@@ -703,7 +743,7 @@ async function runUsageCommand(
 			cwd,
 		});
 	} catch {
-		return null;
+		return { reason: "spawn_failed" };
 	}
 
 	// Structural on purpose: ReturnType<getReader> resolves to the BYOB overload
@@ -728,23 +768,21 @@ async function runUsageCommand(
 		} catch {
 			// Reaping is best-effort when the process boundary is malformed.
 		}
-		return null;
+		return { reason: "stream_error" };
 	}
 
 	let stopped = false;
-	let failed = false;
-	let resolveStopped!: () => void;
-	const stoppedPromise = new Promise<void>((resolve) => {
+	let resolveStopped!: (reason: ClaudeUsageFailureReason) => void;
+	const stoppedPromise = new Promise<ClaudeUsageFailureReason>((resolve) => {
 		resolveStopped = resolve;
 	});
-	const stop = () => {
+	const stop = (reason: ClaudeUsageFailureReason) => {
 		if (stopped) {
 			return;
 		}
 		stopped = true;
-		failed = true;
 		terminateChild(child, killProcess);
-		resolveStopped();
+		resolveStopped(reason);
 		try {
 			void reader.cancel().catch(() => {
 				// Cancelling an already-closed stream is cleanup, not an error.
@@ -754,12 +792,12 @@ async function runUsageCommand(
 		}
 	};
 
-	const onAbort = () => stop();
+	const onAbort = () => stop("aborted");
 	signal.addEventListener("abort", onAbort, { once: true });
 	if (signal.aborted) {
 		onAbort();
 	}
-	const timer = setTimeout(stop, timeoutMs);
+	const timer = setTimeout(() => stop("timeout"), timeoutMs);
 
 	let exitCode: number | null = null;
 	let exitSettled = false;
@@ -775,10 +813,10 @@ async function runUsageCommand(
 			},
 		);
 	} catch {
-		stop();
+		stop("stream_error");
 		clearTimeout(timer);
 		signal.removeEventListener("abort", onAbort);
-		return null;
+		return { reason: "stream_error" };
 	}
 
 	const textPromise = (async (): Promise<string | null> => {
@@ -795,7 +833,7 @@ async function runUsageCommand(
 				}
 				total += value.byteLength;
 				if (total > maxOutputBytes) {
-					stop();
+					stop("output_too_large");
 					return null;
 				}
 				chunks.push(value);
@@ -823,30 +861,36 @@ async function runUsageCommand(
 
 	try {
 		const outcome = await Promise.race([
-			Promise.allSettled([textPromise, exitPromise]).then(
-				() => "settled" as const,
-			),
-			stoppedPromise.then(() => "stopped" as const),
+			Promise.allSettled([textPromise, exitPromise]).then(() => null),
+			stoppedPromise,
 		]);
-		if (outcome === "stopped") {
-			return null;
+		if (outcome !== null) {
+			return { reason: outcome };
 		}
 		const text = await textPromise;
-		if (failed || signal.aborted || exitCode !== 0 || text === null) {
-			return null;
+		if (signal.aborted) {
+			return { reason: "aborted" };
+		}
+		if (text === null) {
+			return { reason: "stream_error" };
+		}
+		if (exitCode !== 0) {
+			return exitCode === null
+				? { reason: "nonzero_exit" }
+				: { reason: "nonzero_exit", exitCode };
 		}
 		// Do not group-kill after a successful parent exit. Bun has already
 		// reaped the leader, so the PGID may be reused and a negative-PID
 		// signal could hit an unrelated group. Descendants surviving a
 		// successful /usage are therefore a documented limitation.
-		return text;
+		return { text };
 	} catch {
-		return null;
+		return { reason: "stream_error" };
 	} finally {
 		clearTimeout(timer);
 		signal.removeEventListener("abort", onAbort);
 		if (!exitSettled) {
-			stop();
+			stop("stream_error");
 			await waitBounded(exitPromise, cleanupGraceMs);
 		}
 	}
@@ -855,23 +899,28 @@ async function runUsageCommand(
 /**
  * Runs one bounded, non-interactive `/usage` command and returns sanitized
  * quota data. Every failure, cancellation, timeout, or oversized output yields
- * null; raw CLI output never leaves this module.
+ * null; raw CLI output never leaves this module. `options.onFailure` receives
+ * one fixed reason per failure, never the output that caused it.
  */
 export async function collectClaudeUsage(
 	signal: AbortSignal,
 	options: ClaudeUsageCollectOptions = {},
 ): Promise<ClaudeUsage | null> {
+	const onFailure = options.onFailure;
 	if (signal.aborted) {
+		reportFailure(onFailure, "aborted");
 		return null;
 	}
 	const platform = options.platform ?? process.platform;
 	if (!supportsProcessGroups(platform)) {
+		reportFailure(onFailure, "unsupported_platform");
 		return null;
 	}
 	let home: string;
 	try {
 		home = options.homeDirectory ?? homedir();
 	} catch {
+		reportFailure(onFailure, "no_home");
 		return null;
 	}
 	const cwd = resolveNeutralCwd(
@@ -879,6 +928,7 @@ export async function collectClaudeUsage(
 		options.directoryExists ?? defaultDirectoryExists,
 	);
 	if (cwd === null) {
+		reportFailure(onFailure, "no_home");
 		return null;
 	}
 	const spawn = options.spawn ?? defaultSpawn;
@@ -892,15 +942,17 @@ export async function collectClaudeUsage(
 	try {
 		startedAt = readNow();
 	} catch {
+		reportFailure(onFailure, "invalid_clock");
 		return null;
 	}
 	if (!isValidNow(startedAt)) {
+		reportFailure(onFailure, "invalid_clock");
 		return null;
 	}
 
-	let stdout: string | null;
+	let outcome: UsageCommandOutcome;
 	try {
-		stdout = await runUsageCommand(
+		outcome = await runUsageCommand(
 			spawn,
 			killProcess,
 			signal,
@@ -910,32 +962,50 @@ export async function collectClaudeUsage(
 			cwd,
 		);
 	} catch {
+		reportFailure(onFailure, "stream_error");
 		return null;
 	}
-	if (stdout === null) {
+	if (!("text" in outcome)) {
+		reportFailure(onFailure, outcome.reason, outcome.exitCode);
 		return null;
 	}
-	const text = resultText(stdout);
-	if (text === null || signal.aborted) {
+	const text = resultText(outcome.text);
+	if (text === null) {
+		reportFailure(onFailure, "no_result_text");
+		return null;
+	}
+	if (signal.aborted) {
+		reportFailure(onFailure, "aborted");
 		return null;
 	}
 	let completedAt: number;
 	try {
 		completedAt = readNow();
 	} catch {
+		reportFailure(onFailure, "invalid_clock");
 		return null;
 	}
-	if (!isValidNow(completedAt) || signal.aborted) {
+	if (!isValidNow(completedAt)) {
+		reportFailure(onFailure, "invalid_clock");
+		return null;
+	}
+	if (signal.aborted) {
+		reportFailure(onFailure, "aborted");
 		return null;
 	}
 	let usage: ClaudeUsage | null;
 	try {
 		usage = parseClaudeUsage(text, completedAt);
 	} catch {
+		reportFailure(onFailure, "parse_failed");
 		return null;
 	}
 	if (signal.aborted) {
+		reportFailure(onFailure, "aborted");
 		return null;
+	}
+	if (usage === null) {
+		reportFailure(onFailure, "parse_failed");
 	}
 	return usage;
 }

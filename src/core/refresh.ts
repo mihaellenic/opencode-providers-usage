@@ -59,6 +59,7 @@ type Entry = {
 	snapshot?: QuotaRead;
 	/** Last complete, fully available observation from the current identity. */
 	lastKnown?: QuotaSectionsRead;
+	historyOrigin?: string | undefined;
 	/** Coordinator runtime-wide mutation revision last applied to this entry. */
 	revision: number;
 	/** Start of continuous refresh failures, independent of retry eligibility. */
@@ -192,7 +193,12 @@ function currentView(snapshot: QuotaRead, now: number): QuotaRead {
  */
 export function createQuotaCoordinator(
 	deps: CoordinatorDeps,
-): QuotaCoordinator {
+): QuotaCoordinator & {
+	cached(
+		providerID: string,
+		source: ResolvedQuotaSource,
+	): { quota: QuotaRead; presentation?: QuotaPresentation } | undefined;
+} {
 	const entries = new Map<string, Entry>();
 	let disposed = false;
 	/** Runtime-wide monotonic counter; entries keep their last applied value. */
@@ -249,6 +255,35 @@ export function createQuotaCoordinator(
 		return entries.get(providerID)?.recovering === true;
 	}
 
+	/** Capture only the history actually read with this positively resolved key. */
+	function cached(providerID: string, source: ResolvedQuotaSource) {
+		const entry = entries.get(providerID);
+		const history = entry?.lastKnown;
+		if (
+			disposed ||
+			history === undefined ||
+			entry?.historyOrigin === undefined
+		) {
+			return undefined;
+		}
+		const now = deps.now();
+		// A read-through on bridge failure can still return the previous
+		// snapshot under the manual floor. Withhold it when the key is unknown.
+		if (source.boundToNativeCredential !== true)
+			return { quota: emptyRead(now) };
+		if (entry.historyOrigin !== source.identityKey) return undefined;
+		const fresh =
+			entry.snapshot === history &&
+			history.sections.every(
+				({ result }) =>
+					result.state === "available" && sectionIsCurrent(result, now),
+			);
+		return {
+			quota: fresh ? history : emptyRead(now),
+			presentation: presentation(providerID),
+		};
+	}
+
 	function notify(entry: Entry): void {
 		if (entry.listeners.size === 0) {
 			return;
@@ -295,6 +330,7 @@ export function createQuotaCoordinator(
 	 */
 	function clearHistory(entry: Entry): void {
 		entry.lastKnown = undefined;
+		entry.historyOrigin = undefined;
 		endRecovery(entry);
 	}
 
@@ -368,7 +404,7 @@ export function createQuotaCoordinator(
 		);
 	}
 
-	function commit(entry: Entry, value: QuotaRead): QuotaRead {
+	function commit(entry: Entry, value: QuotaRead, origin?: string): QuotaRead {
 		const completedAt = deps.now();
 		entry.snapshot = value;
 		bumpRevision(entry);
@@ -383,6 +419,7 @@ export function createQuotaCoordinator(
 				// Only full success replaces history and clears the same identity's
 				// continuous failure window.
 				entry.lastKnown = value;
+				entry.historyOrigin = origin;
 				endRecovery(entry);
 			} else {
 				// A partial result starts or continues failure timing; it never
@@ -517,7 +554,13 @@ export function createQuotaCoordinator(
 			// figures. Ollama's host-bridge failure source reports
 			// `isCurrent() === false` alongside a sanitized unavailable read;
 			// commit that reason anyway so the user is not left with silence.
-			return commit(entry, value);
+			return commit(
+				entry,
+				value,
+				current && source.boundToNativeCredential === true
+					? source.identityKey
+					: undefined,
+			);
 		} finally {
 			controller.signal.removeEventListener("abort", cancelTimeout);
 			deps.clearTimer(timeoutHandle);
@@ -677,6 +720,7 @@ export function createQuotaCoordinator(
 		read,
 		refresh,
 		presentation,
+		cached,
 		isRecovering,
 		invalidate,
 		dispose,

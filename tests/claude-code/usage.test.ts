@@ -770,3 +770,58 @@ describe("collectClaudeUsage", () => {
 		expect(fake.killCalls.length).toBeGreaterThan(0);
 	});
 });
+
+describe("collectClaudeUsage failure diagnostics", () => {
+	test("reports one fixed reason per failed collection", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const aborted: string[] = [];
+
+		expect(
+			await collectForTest(controller.signal, {
+				onFailure: (reason) => aborted.push(reason),
+			}),
+		).toBeNull();
+		expect(aborted).toEqual(["aborted"]);
+
+		const spawnFailed: string[] = [];
+
+		expect(
+			await collectForTest(new AbortController().signal, {
+				spawn: () => {
+					throw new Error("ENOENT");
+				},
+				onFailure: (reason) => spawnFailed.push(reason),
+			}),
+		).toBeNull();
+		expect(spawnFailed).toEqual(["spawn_failed"]);
+	});
+
+	test("reports only the numeric exit code for a failed process", async () => {
+		const fake = fakeSpawn({ stdout: SANITIZED_USAGE_JSON, exitCode: 7 });
+		const failures: [string, number | undefined][] = [];
+
+		const usage = await collectForTest(new AbortController().signal, {
+			spawn: fake.spawn,
+			now: () => NOW,
+			onFailure: (reason, exitCode) => failures.push([reason, exitCode]),
+		});
+
+		expect(usage).toBeNull();
+		expect(failures).toEqual([["nonzero_exit", 7]]);
+	});
+
+	test("ignores a throwing failure callback", async () => {
+		const fake = fakeSpawn({ stdout: SANITIZED_USAGE_JSON, exitCode: 1 });
+
+		const usage = await collectForTest(new AbortController().signal, {
+			spawn: fake.spawn,
+			now: () => NOW,
+			onFailure: () => {
+				throw new Error("callback failed");
+			},
+		});
+
+		expect(usage).toBeNull();
+	});
+});

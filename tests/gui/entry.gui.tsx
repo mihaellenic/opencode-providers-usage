@@ -110,6 +110,7 @@ function fakeQuotaClient() {
 	const client: QuotaRpcClient = {
 		list: (_input, { signal }) => call("list", signal),
 		get: (input, { signal }) => call("get", signal, input.providerID),
+		cached: (input, { signal }) => call("cached", signal, input.providerID),
 		refresh: (input, { signal }) => call("refresh", signal, input.providerID),
 		claudeCodeUsage: (_input, { signal }) => call("claudeCodeUsage", signal),
 	};
@@ -139,6 +140,21 @@ const okGet = {
 		evidence: "unverified",
 	},
 	quota: { state: "unavailable", reason: "network_error", attemptedAt: 0 },
+};
+const cachedQuota = {
+	state: "available",
+	authSource: "opencode",
+	sections: [
+		{
+			scope: "provider-balance",
+			result: {
+				state: "available",
+				fetchedAt: 0,
+				expiresAt: 60_000,
+				metrics: [],
+			},
+		},
+	],
 };
 const okClaude = {
 	session: { usedPercent: 10, resetsAt: 1_000 },
@@ -735,6 +751,7 @@ function harness() {
 	let layoutState: "closed" | "open" | "active" | "visible" = "closed";
 	let current: FakeSession | undefined;
 	const [visible, setVisible] = createSignal(true);
+	const [present, setPresent] = createSignal(true);
 
 	const ctx: UsageSetupContext<FakeSession> = {
 		id: "provider-usage",
@@ -755,7 +772,7 @@ function harness() {
 		sessions: { current: () => current },
 	};
 	const cleanup = setupUsage(ctx, {
-		usePanel: () => ({ visible, present: () => true }),
+		usePanel: () => ({ visible, present }),
 		clock,
 	});
 
@@ -831,6 +848,7 @@ function harness() {
 		setScreen,
 		setSession,
 		setVisible,
+		setPresent,
 		setCurrent(value: FakeSession | undefined) {
 			current = value;
 		},
@@ -847,6 +865,93 @@ function harness() {
 describe("entry selection source", () => {
 	const gets = (h: ReturnType<typeof harness>) =>
 		h.quota.calls.filter((c) => c.method === "get");
+
+	test("a non-present local panel waits; a stale hit shows history and refreshes once", async () => {
+		const h = harness();
+		h.setPresent(false);
+		h.setComposer("p");
+		h.setSession({ ...h.sessions("s1"), server: h.rpcServer.server });
+		h.quota.respond("cached", async () => ({
+			...okGet,
+			presentation: { revision: 1, lastKnown: cachedQuota },
+		}));
+		h.mount();
+		await flush();
+		expect(h.quota.calls).toHaveLength(0);
+		h.setPresent(true);
+		await flush();
+		expect(h.container.querySelector('[data-state="ready"]')).not.toBeNull();
+		expect(h.container.textContent).not.toContain("Loading usage");
+		expect(h.quota.calls.map((c) => c.method)).toEqual(["cached", "get"]);
+	});
+
+	test("rapid local A → B → A switches read only the cache and never flash quota loading on a hit", async () => {
+		const h = harness();
+		const deferred: ((value: unknown) => void)[] = [];
+		h.quota.respond(
+			"cached",
+			() => new Promise((resolve) => deferred.push(resolve)),
+		);
+		const local = (key: string) => ({
+			...h.sessions(key),
+			server: h.rpcServer.server,
+		});
+		h.setComposer("p");
+		h.setSession(local("s1"));
+		h.mount();
+		await flush();
+		expect(h.container.textContent).not.toContain("Loading usage");
+		deferred[0]?.({ ...okGet, quota: cachedQuota });
+		await flush();
+		expect(h.container.querySelector('[data-state="ready"]')).not.toBeNull();
+
+		h.setSession(local("s2"));
+		await flush();
+		h.setSession(local("s1"));
+		await flush();
+		expect(h.container.querySelector('[data-state="checking"]')).not.toBeNull();
+		deferred[1]?.({
+			...okGet,
+			provider: { ...okGet.provider, name: "Late B" },
+		});
+		await flush();
+		expect(h.container.textContent).not.toContain("Late B");
+		deferred[2]?.({ ...okGet, quota: cachedQuota });
+		await flush();
+		expect(h.container.querySelector('[data-state="ready"]')).not.toBeNull();
+		expect(h.quota.calls.map((c) => c.method)).toEqual([
+			"cached",
+			"cached",
+			"cached",
+		]);
+	});
+
+	test("a sidecar restart aborts an outstanding cache lookup even on the same tab", async () => {
+		const h = harness();
+		const deferred: ((value: unknown) => void)[] = [];
+		h.quota.respond(
+			"cached",
+			() => new Promise((resolve) => deferred.push(resolve)),
+		);
+		h.setComposer("p");
+		h.setSession({ ...h.sessions("s1"), server: h.rpcServer.server });
+		h.mount();
+		await flush();
+		h.rpcServer.restart();
+		await flush();
+		expect(h.quota.calls[0]?.signal.aborted).toBe(true);
+		deferred[0]?.({ ...okGet, quota: cachedQuota });
+		await flush();
+		expect(h.container.querySelector('[data-state="checking"]')).not.toBeNull();
+		deferred[1]?.(null);
+		await flush();
+		expect(h.container.textContent).toContain("Loading usage");
+		expect(h.quota.calls.map((c) => c.method)).toEqual([
+			"cached",
+			"cached",
+			"get",
+		]);
+	});
 
 	test("a fresh session with no durable model follows the composer default", async () => {
 		const h = harness();

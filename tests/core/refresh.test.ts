@@ -270,6 +270,72 @@ function pollDelays(scheduled: number[]): number[] {
 }
 
 describe("quota refresh lifecycle", () => {
+	test("a matching identity key cannot certify figures from a separately resolved read", async () => {
+		let actualUpstreamAccount = "";
+		const { coordinator } = harness(() =>
+			source({
+				identityKey: "A",
+				async read() {
+					actualUpstreamAccount = "B";
+					return availableRead(NOW);
+				},
+				isCurrent: async () => true,
+			}),
+		);
+		await coordinator.refresh("provider");
+		expect(actualUpstreamAccount).toBe("B");
+		expect(coordinator.read("provider").state).toBe("available");
+		expect(
+			coordinator.cached("provider", {
+				...source({ identityKey: "A", read: async () => availableRead(NOW) }),
+				boundToNativeCredential: true,
+			}),
+		).toBeUndefined();
+	});
+
+	test("cached history is origin-bound and never reports a later failure as fresh", async () => {
+		let attempts = 0;
+		const trusted = {
+			...source({
+				identityKey: "A",
+				read: async () => {
+					attempts += 1;
+					return availableRead(NOW);
+				},
+			}),
+			boundToNativeCredential: true as const,
+		};
+		const { coordinator, clock, counts, setCurrent } = harness(() => trusted);
+		await coordinator.refresh("provider");
+		expect(coordinator.cached("provider", trusted)).toMatchObject({
+			quota: availableRead(NOW),
+		});
+		expect(
+			coordinator.cached("provider", { ...trusted, identityKey: "B" }),
+		).toBeUndefined();
+		expect(counts.resolves).toBe(1);
+		expect(attempts).toBe(1);
+		await clock.advance(POLL_MS);
+		expect(coordinator.cached("provider", trusted)).toMatchObject({
+			quota: { state: "unavailable" },
+			presentation: { lastKnown: availableRead(NOW) },
+		});
+		expect(attempts).toBe(1);
+		setCurrent(() =>
+			source({
+				identityKey: "A",
+				read: async () => unavailableRead(clock.now(), "network_error"),
+			}),
+		);
+		await clock.advance(FLOOR_MS);
+		await coordinator.refresh("provider");
+		expect(coordinator.cached("provider", trusted)).toMatchObject({
+			quota: { state: "unavailable" },
+			presentation: { lastKnown: availableRead(NOW) },
+		});
+		coordinator.invalidate("A");
+		expect(coordinator.cached("provider", trusted)).toBeUndefined();
+	});
 	test.each(["get", "list", "refresh"] as const)(
 		"%s cannot stamp old-account quota with a newer identity revision",
 		async (method) => {

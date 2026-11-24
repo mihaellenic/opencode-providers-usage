@@ -30,6 +30,10 @@ export type QuotaRpcClient = {
 		input: { providerID: string },
 		options: { signal: AbortSignal },
 	): Promise<unknown>;
+	cached?(
+		input: { providerID: string },
+		options: { signal: AbortSignal },
+	): Promise<unknown>;
 	refresh(
 		input: { providerID: string },
 		options: { signal: AbortSignal },
@@ -67,11 +71,23 @@ export type RpcBindingContext = {
 	/** The server that runs this plugin is the builtin one (documented `Servers.get` example). */
 	readonly servers: {
 		list(): readonly string[];
-		get(
-			id: string,
-		): { readonly builtin: boolean; readonly data: EventData } | undefined;
+		get(id: string):
+			| {
+					readonly builtin: boolean;
+					readonly data: EventData;
+					readonly connected?: boolean;
+			  }
+			| undefined;
 	};
 };
+
+export function builtinServer(ctx: RpcBindingContext) {
+	for (const id of ctx.servers.list()) {
+		const server = ctx.servers.get(id);
+		if (server?.builtin) return server;
+	}
+	return undefined;
+}
 
 /**
  * Listens to `types` on whatever data controller `data()` currently returns.
@@ -134,6 +150,24 @@ export function bindUsageRpc(ctx: RpcBindingContext): UsageRpc {
 	const client = (): QuotaRpcClient => ctx.client.rpc(QuotaRpc);
 
 	return {
+		async cached(ref, signal) {
+			try {
+				const rpc = client();
+				const result = await rpc.cached?.(
+					{ providerID: ref.providerID },
+					{ signal },
+				);
+				if (signal.aborted) throw abortError();
+				return isQuotaGetResult(result) &&
+					result.provider.providerID === ref.providerID
+					? result
+					: null;
+			} catch (error) {
+				if (signal.aborted || isAbortError(error)) throw abortError();
+				// Older sidecars don't have the cache lookup. Take the cold path.
+				return null;
+			}
+		},
 		async list(signal) {
 			try {
 				const result = await client().list({}, { signal });
@@ -186,15 +220,8 @@ export function bindUsageRpc(ctx: RpcBindingContext): UsageRpc {
 			return isClaudeUsage(result) ? result : null;
 		},
 		onUpdated(handler) {
-			const builtin = (): EventData | undefined => {
-				for (const id of ctx.servers.list()) {
-					const server = ctx.servers.get(id);
-					if (server?.builtin) return server.data;
-				}
-				return undefined;
-			};
 			const stop = followEvents(
-				builtin,
+				() => builtinServer(ctx)?.data,
 				[`rpc.${QUOTA_RPC_ID}.updated`],
 				(event) => {
 					if (isQuotaUpdatedEvent(event.data)) handler(event.data);
@@ -219,6 +246,7 @@ const STEP_TYPES: readonly StepEventType[] = [
 
 /** Narrow view of the owning session's server; the real `ServerRef` is assignable to it. */
 export type SessionServer = {
+	readonly connected?: boolean;
 	readonly data: EventData & {
 		readonly session: {
 			get(

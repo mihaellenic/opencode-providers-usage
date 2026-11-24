@@ -8,6 +8,7 @@ import type {
 	ProviderCapability,
 	QuotaRead,
 } from "../../src/core/contracts";
+import { createQuotaCoordinator } from "../../src/core/refresh";
 import { createAdapterRegistry } from "../../src/core/registry";
 import { QUOTA_ADAPTERS, setupQuotaServer } from "../../src/index";
 import {
@@ -29,6 +30,159 @@ import {
 } from "../../src/tui";
 
 const NOW = 1_800_000_000_000;
+
+test("Desktop cache lookup rechecks the native credential without provider work or pushes", async () => {
+	let key: string | undefined = "synthetic-native-A";
+	let metadata = 0;
+	let http = 0;
+	let pushes = 0;
+	let handlers: ReturnType<typeof createQuotaRpcHandlers> | undefined;
+	const ctx = {
+		provider: {
+			async list() {
+				metadata += 1;
+				return { data: [{ id: "ollama", integrationID: "ollama-cloud" }] };
+			},
+		},
+		integration: {
+			connection: {
+				active: async () => ({ type: "credential", method: "key" }),
+				async resolve() {
+					if (key === undefined) throw new Error("credential bridge offline");
+					return { type: "key", key };
+				},
+			},
+		},
+		rpc: {
+			async register(_rpc: unknown, registered: NonNullable<typeof handlers>) {
+				handlers = registered;
+				return {
+					dispose: async () => {},
+					events: {
+						emit: async () => {
+							pushes += 1;
+						},
+					},
+				};
+			},
+		},
+	};
+	const dispose = await setupQuotaServer(ctx as never, {
+		async getJson() {
+			http += 1;
+			return {
+				included: { balance_usd: 40, allowance_usd: 60 },
+				purchased: { balance_usd: 5 },
+			};
+		},
+	});
+	try {
+		if (handlers === undefined) throw new Error("no server registration");
+		const input = { providerID: "ollama" };
+		const context = emptyRpcContext() as never;
+		expect(await handlers.cached(input, context)).toBeNull();
+		expect({ metadata, http, pushes }).toEqual({
+			metadata: 1,
+			http: 0,
+			pushes: 0,
+		});
+		const first = await handlers.get(input, context);
+		expect(first).toMatchObject({ quota: { state: "available" } });
+		const pushed = pushes;
+		expect(await handlers.cached(input, context)).toEqual(first);
+		expect({ metadata, http, pushes }).toEqual({
+			metadata: 3,
+			http: 1,
+			pushes: pushed,
+		});
+		key = "synthetic-native-B";
+		expect(await handlers.cached(input, context)).toBeNull();
+		expect({ metadata, http, pushes }).toEqual({
+			metadata: 4,
+			http: 1,
+			pushes: pushed,
+		});
+		key = undefined;
+		const unavailable = await handlers.cached(input, context);
+		expect(unavailable).toMatchObject({ quota: { state: "unavailable" } });
+		expect(unavailable).not.toHaveProperty("presentation");
+		expect({ metadata, http, pushes }).toEqual({
+			metadata: 5,
+			http: 1,
+			pushes: pushed,
+		});
+	} finally {
+		await dispose();
+	}
+});
+
+test("Desktop cache reads are server-local even when legacy responses are identical", async () => {
+	const snapshot: QuotaRead = {
+		state: "available",
+		authSource: "opencode",
+		sections: [
+			{
+				scope: "provider-balance",
+				result: {
+					state: "available",
+					metrics: [],
+					fetchedAt: NOW,
+					expiresAt: NOW + 60_000,
+				},
+			},
+		],
+	};
+	function runtime(origin: string) {
+		const resolved = {
+			identityKey: origin,
+			boundToNativeCredential: true as const,
+			read: async () => snapshot,
+			isCurrent: async () => true,
+		};
+		const coordinator = createQuotaCoordinator({
+			now: () => NOW,
+			resolve: async () => resolved,
+			setTimer: (fn, ms) => setTimeout(fn, ms),
+			clearTimer: (handle) =>
+				clearTimeout(handle as ReturnType<typeof setTimeout>),
+		});
+		const registry = createAdapterRegistry([]);
+		const ref = { providerID: "ollama", authMethod: "key" };
+		const handlers = createQuotaRpcHandlers({
+			async cached(id) {
+				const cached = coordinator.cached(id, resolved);
+				return cached && { provider: registry.summarize(ref), ...cached };
+			},
+			source: {
+				now: () => NOW,
+				registry,
+				providers: async () => [ref],
+				read: ({ providerID }) => coordinator.refresh(providerID),
+				presentation: coordinator.presentation,
+				snapshot: (id) => ({
+					quota: coordinator.read(id),
+					presentation: coordinator.presentation(id),
+				}),
+			},
+		});
+		return { coordinator, handlers, resolved };
+	}
+	const a = runtime("server-a");
+	const b = runtime("server-b");
+	try {
+		const input = { providerID: "ollama" };
+		const first = await a.handlers.get(input, emptyRpcContext() as never);
+		const second = await b.handlers.get(input, emptyRpcContext() as never);
+		expect(await a.handlers.cached(input, emptyRpcContext() as never)).toEqual(
+			first,
+		);
+		expect(b.coordinator.cached("ollama", a.resolved)).toBeUndefined();
+		expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+	} finally {
+		a.coordinator.dispose();
+		b.coordinator.dispose();
+	}
+});
 
 test("newer RPC metadata supersedes old pushes and identity reset cannot be rolled back", () => {
 	const view = (revision: number) => ({
@@ -961,6 +1115,7 @@ describe("Claude Code usage RPC", () => {
 		expect(Object.keys(QuotaRpc.methods)).toEqual([
 			"list",
 			"get",
+			"cached",
 			"refresh",
 			"claudeCodeUsage",
 		]);
@@ -1075,6 +1230,7 @@ describe("Claude Code usage RPC", () => {
 			expect(Object.keys(registered?.definition.methods ?? {})).toEqual([
 				"list",
 				"get",
+				"cached",
 				"refresh",
 				"claudeCodeUsage",
 			]);
