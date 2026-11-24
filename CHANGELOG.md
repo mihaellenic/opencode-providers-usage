@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/mihaellenic/opencode-providers-usage/compare/v0.1.2...v0.2.0) (2026-11-24)
+
+
+### Features
+
+* cached desktop usage reads and reset-aware quota display ([30227ed](https://github.com/mihaellenic/opencode-providers-usage/commit/30227ed8f1c6e2345d431bf8b6e249c2a46400c9))
+* **gui:** read cached quota on desktop and report Claude Code collection failures ([f68dda3](https://github.com/mihaellenic/opencode-providers-usage/commit/f68dda353e80aad7aaefa6d79d685563b5363689))
+
+
+### Bug Fixes
+
+* **ui:** withdraw quota figures once their window has reset and refresh at the reset ([db5d85c](https://github.com/mihaellenic/opencode-providers-usage/commit/db5d85cd7a890f32b0e3732247f15cccef3fe843))
+
 ## [0.1.2](https://github.com/mihaellenic/opencode-providers-usage/compare/v0.1.1...v0.1.2) (2026-11-09)
 
 
