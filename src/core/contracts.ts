@@ -125,6 +125,8 @@ export type RegistrationFailure = { state: "unavailable"; reason: string };
 
 export type ResolvedQuotaSource = {
 	identityKey: string;
+	/** The read closes over this exact native credential; it does not resolve again. */
+	boundToNativeCredential?: true;
 	read(signal: AbortSignal): Promise<QuotaRead>;
 	isCurrent(): Promise<boolean>;
 };

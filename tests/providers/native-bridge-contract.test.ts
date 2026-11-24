@@ -8,6 +8,7 @@ import {
 	type ProviderDeps,
 	type ResolvedQuotaSource,
 } from "../../src/core/contracts";
+import { createQuotaCoordinator } from "../../src/core/refresh";
 import { createOllamaAdapter } from "../../src/providers/ollama";
 import { createOpenAICompanionAdapter } from "../../src/providers/openai-companion";
 
@@ -20,6 +21,7 @@ type BridgeCase = {
 	/** "distinct" stores a credential that could only be read by mistake. */
 	fileStore: "distinct" | "valid";
 	hostError?: string;
+	companionABA?: boolean;
 };
 
 type Run = {
@@ -167,15 +169,24 @@ const openai: Fixture = {
 				return JSON.stringify(store);
 			},
 		};
+		let companionReads = 0;
 		const adapter = createOpenAICompanionAdapter({
 			async readCompanion() {
+				companionReads++;
+				const interim = testCase.companionABA && companionReads === 2;
 				return {
 					state: "available",
 					credential: {
-						accessToken: OPENAI_COMPANION_TOKEN,
-						accountID: "synthetic-companion-account-id",
+						accessToken: interim
+							? "synthetic-companion-B"
+							: OPENAI_COMPANION_TOKEN,
+						accountID: interim
+							? "synthetic-account-B"
+							: "synthetic-companion-account-id",
 						expiresAt: NOW + 3_600_000,
-						identityKey: "synthetic-companion-identity-a",
+						identityKey: interim
+							? "synthetic-companion-identity-b"
+							: "synthetic-companion-identity-a",
 					},
 				};
 			},
@@ -204,6 +215,32 @@ const openai: Fixture = {
 		};
 	},
 };
+
+test("an A → B → A companion attempt does not establish replay provenance", async () => {
+	const { source, requests } = await openai.run({
+		host: "valid",
+		fileStore: "distinct",
+		companionABA: true,
+	});
+	const coordinator = createQuotaCoordinator({
+		now: () => NOW,
+		resolve: async () => source,
+		setTimer: (fn, ms) => setTimeout(fn, ms),
+		clearTimer: (handle) =>
+			clearTimeout(handle as ReturnType<typeof setTimeout>),
+	});
+	try {
+		expect((await coordinator.refresh("openai")).state).toBe("available");
+		expect(
+			requests.some(({ headers }) =>
+				Object.values(headers).includes("Bearer synthetic-companion-B"),
+			),
+		).toBe(true);
+		expect(coordinator.cached("openai", source)).toBeUndefined();
+	} finally {
+		coordinator.dispose();
+	}
+});
 
 const ollama: Fixture = {
 	name: "ollama",

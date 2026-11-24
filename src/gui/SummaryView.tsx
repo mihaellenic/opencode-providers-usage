@@ -18,7 +18,7 @@ export type SummaryViewProps = {
 };
 
 type Shown = {
-	state: "no-selection" | "loading" | "ready" | "failed";
+	state: "no-selection" | "checking" | "loading" | "ready" | "failed";
 	status: string;
 	name?: string;
 	note?: string;
@@ -49,6 +49,8 @@ export function SummaryView(props: SummaryViewProps): JSX.Element {
 					lines: model.lines,
 				};
 			}
+			case "checking":
+				return { state: "checking", status: "", lines: [] };
 			case "loading":
 				return { state: "loading", status: "Loading usage…", lines: [] };
 			case "ready": {
@@ -105,8 +107,12 @@ export function SummaryView(props: SummaryViewProps): JSX.Element {
 				}}
 				class="ou-summary-button"
 				type="button"
-				aria-label={`Provider usage ${shown().status}. Open dashboard`}
-				aria-busy={shown().state === "loading" ? "true" : undefined}
+				aria-label={`Provider usage${shown().status ? ` ${shown().status}` : ""}. Open dashboard`}
+				aria-busy={
+					shown().state === "loading" || shown().state === "checking"
+						? "true"
+						: undefined
+				}
 				onClick={open}
 				onKeyDown={(event) => {
 					if (event.key !== "Enter" && event.key !== " ") return;

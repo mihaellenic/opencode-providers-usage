@@ -568,16 +568,60 @@ export function formatSidebarText(
  * removed.
  */
 export function revalidateQuota(read: QuotaRead, now: number): QuotaRead {
+	return withdrawSections(
+		read,
+		(result) =>
+			Math.min(result.expiresAt, result.fetchedAt + 90_000) <= now ||
+			hasPassedReset(result, now),
+	);
+}
+
+type AvailableResult = Extract<SectionResult, { state: "available" }>;
+
+/** A window that has reset no longer describes any usage, however fresh the fetch. */
+function hasPassedReset(result: AvailableResult, now: number): boolean {
+	return result.metrics.some(
+		(metric) => metric.resetsAt !== undefined && metric.resetsAt <= now,
+	);
+}
+
+/**
+ * Keeps history presentable past its age but never past a window reset: the
+ * figures of a reset window are provably wrong, not merely old.
+ */
+export function withdrawPassedResets(read: QuotaRead, now: number): QuotaRead {
+	return withdrawSections(read, (result) => hasPassedReset(result, now));
+}
+
+/** The earliest future window reset in a read, or undefined. */
+export function nextQuotaReset(
+	read: QuotaRead,
+	now: number,
+): number | undefined {
+	if (!("sections" in read)) return undefined;
+	const resets = read.sections.flatMap((section) =>
+		section.result.state === "available"
+			? section.result.metrics.flatMap((metric) =>
+					metric.resetsAt !== undefined && metric.resetsAt > now
+						? [metric.resetsAt]
+						: [],
+				)
+			: [],
+	);
+	return resets.length > 0 ? Math.min(...resets) : undefined;
+}
+
+function withdrawSections(
+	read: QuotaRead,
+	invalid: (result: AvailableResult) => boolean,
+): QuotaRead {
 	if (!("sections" in read)) {
 		return read;
 	}
 	let changed = false;
 	const sections = read.sections.map((section) => {
 		const result = section.result;
-		if (
-			result.state !== "available" ||
-			Math.min(result.expiresAt, result.fetchedAt + 90_000) > now
-		) {
+		if (result.state !== "available" || !invalid(result)) {
 			return section;
 		}
 		changed = true;
@@ -614,5 +658,7 @@ export function nextQuotaExpiry(
 		);
 		return at > now ? [at] : [];
 	});
+	const reset = nextQuotaReset(read, now);
+	if (reset !== undefined) deadlines.push(reset);
 	return deadlines.length > 0 ? Math.min(...deadlines) : undefined;
 }

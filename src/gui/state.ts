@@ -28,6 +28,7 @@ export const RPC_TIMEOUT_MS = 60_000;
 export type SummaryState =
 	| { kind: "no-selection" }
 	| { kind: "claude"; state: ClaudeSidebarState }
+	| { kind: "checking" }
 	| { kind: "loading"; providerID: string }
 	| { kind: "ready"; providerID: string; view: QuotaProviderView }
 	| { kind: "failed"; providerID: string; lastKnown?: QuotaProviderView };
@@ -96,6 +97,7 @@ export function createUsageController(deps: {
 	let cardErrors: Record<string, string> = {};
 	let claude: ClaudeUsage | null = null;
 	let summaryFailedFor: string | undefined;
+	let checkedCache = false;
 	const entries = new Map<string, Entry>();
 
 	const listeners = new Set<() => void>();
@@ -119,9 +121,11 @@ export function createUsageController(deps: {
 	const isCurrent = (token: Token): boolean =>
 		!disposed &&
 		visible &&
+		session.visible() &&
 		token.generation === generation &&
 		token.view === view &&
-		token.sessionID === session.sessionID;
+		token.sessionID === session.sessionID &&
+		(view !== "summary" || token.providerID === selected());
 
 	const clearDisplay = (): void => {
 		if (!displayArmed) return;
@@ -161,7 +165,6 @@ export function createUsageController(deps: {
 			if (entry !== undefined) {
 				const shown = sidebarQuotaPresentation({ ...entry.obs, now });
 				consider(shown.nextChangeAt);
-				consider(nextQuotaExpiry(shown.quota, now));
 			}
 		}
 		if (delays.length === 0) return;
@@ -361,6 +364,43 @@ export function createUsageController(deps: {
 		void request.promise.then(() => endInitial?.());
 	};
 
+	const startSummary = (providerID: string): void => {
+		const cached = rpc.cached;
+		if (cached === undefined) {
+			startGet(providerID);
+			return;
+		}
+		entries.delete(providerID);
+		checkedCache = false;
+		const miss = () => {
+			checkedCache = true;
+			startGet(providerID);
+			notify();
+		};
+		const endInitial = driver?.begin(providerID);
+		const request = run(
+			"cached",
+			tokenFor(providerID),
+			(signal) => cached(refFor(providerID), signal),
+			(result) => {
+				if (result === null) {
+					miss();
+					return;
+				}
+				const stale =
+					result.quota.state !== "available" &&
+					result.presentation?.lastKnown !== undefined;
+				checkedCache = result.quota.state === "available" || stale;
+				accept(providerID, result.provider, result);
+				if (stale) startGet(providerID);
+				notify();
+			},
+			miss,
+		);
+		void request.promise.then(() => endInitial?.());
+		notify();
+	};
+
 	const cancelClaude = (): void => {
 		claudeRequest?.cancel();
 		claudeRequest = undefined;
@@ -467,9 +507,8 @@ export function createUsageController(deps: {
 		syncClaudeSidebar(claudeSummaryActive());
 		if (view === "summary") {
 			if (selected() === CLAUDE_AGENT_PROVIDER_ID) return;
-			if (inventory !== "ready") startList();
 			const id = selected();
-			if (id !== undefined) startGet(id);
+			if (id !== undefined) startSummary(id);
 		} else {
 			startList();
 			startClaude();
@@ -528,6 +567,12 @@ export function createUsageController(deps: {
 		if (disposed || !visible) return;
 		visible = false;
 		cancelAll();
+		if (rpc.cached !== undefined && view === "summary") {
+			const id = selected();
+			if (id !== undefined) entries.delete(id);
+			checkedCache = false;
+			notify();
+		}
 		driver?.dispose();
 		driver = undefined;
 		idle.hide();
@@ -605,6 +650,8 @@ export function createUsageController(deps: {
 		session.onActivity(handleActivity),
 		rpc.onUpdated((event) => {
 			if (disposed || !visible) return;
+			if (view === "summary" && rpc.cached !== undefined && !checkedCache)
+				return;
 			accept(event.providerID, undefined, {
 				quota: event.quota,
 				presentation: event.presentation,
@@ -629,7 +676,9 @@ export function createUsageController(deps: {
 					: { kind: "failed", providerID: id, lastKnown: known };
 			}
 			return known === undefined
-				? { kind: "loading", providerID: id }
+				? rpc.cached !== undefined && !checkedCache
+					? { kind: "checking" }
+					: { kind: "loading", providerID: id }
 				: { kind: "ready", providerID: id, view: known };
 		},
 		dashboard() {

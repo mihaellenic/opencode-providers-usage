@@ -18,6 +18,10 @@ export type HostActivity =
 export type UsageRpc = {
 	list(signal: AbortSignal): Promise<QuotaListResult>;
 	get(ref: QuotaProviderRef, signal: AbortSignal): Promise<QuotaGetResult>;
+	cached?(
+		ref: QuotaProviderRef,
+		signal: AbortSignal,
+	): Promise<QuotaGetResult | null>;
 	refresh(ref: QuotaProviderRef, signal: AbortSignal): Promise<QuotaGetResult>;
 	/** null on every non-abort failure incl. rpc.method_not_found; rejects only with AbortError. */
 	claudeCodeUsage(signal: AbortSignal): Promise<ClaudeUsage | null>;

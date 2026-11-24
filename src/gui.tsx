@@ -14,6 +14,7 @@ import { DashboardView } from "./gui/DashboardView";
 import {
 	bindSessionHost,
 	bindUsageRpc,
+	builtinServer,
 	type RpcBindingContext,
 	type SessionServer,
 } from "./gui/host-binding";
@@ -106,6 +107,7 @@ export function setupUsage<S extends RoutedSession>(
 	deps: UsageDeps = realDeps,
 ): () => void {
 	const rpc = bindUsageRpc(ctx);
+	const { cached: _cached, ...uncachedRpc } = rpc;
 	// View per session survives controller disposal on session switch.
 	const views = new Map<string, ControllerView>();
 	const live = new Map<string, UsageController>();
@@ -132,6 +134,7 @@ export function setupUsage<S extends RoutedSession>(
 		session: () => OwningSession;
 		screen: () => OwningScreen;
 		visible: () => boolean;
+		canReadCache: boolean;
 	}): JSX.Element {
 		const key = props.sessionKey;
 		const first = untrack(props.session);
@@ -141,7 +144,7 @@ export function setupUsage<S extends RoutedSession>(
 				composerProviderID: () => props.screen().composer.model()?.providerID,
 				visible: props.visible,
 			}),
-			rpc,
+			rpc: props.canReadCache ? rpc : uncachedRpc,
 			initialView: views.get(key) ?? "summary",
 			onView: (view) => {
 				views.set(key, view);
@@ -184,16 +187,48 @@ export function setupUsage<S extends RoutedSession>(
 		list: ({ open: stored }) => (stored.includes(PANEL_ID) ? [tab] : []),
 		render: (props: UsagePanelProps) => {
 			const frame = deps.usePanel();
-			// Keyed by session: the render stays mounted across a session switch, the
-			// body (and its controller) is rebuilt for the next session.
+			const scope = createMemo(
+				() => {
+					const session = props.session;
+					const owner = session.server.data;
+					const connected = session.server.connected;
+					const builtin = builtinServer(ctx);
+					const serving = builtin?.data;
+					const servingConnected = builtin?.connected;
+					return {
+						key: session.key,
+						owner,
+						connected,
+						serving,
+						servingConnected,
+						client: ctx.client,
+						canReadCache:
+							serving === owner &&
+							connected !== false &&
+							servingConnected !== false,
+					};
+				},
+				undefined,
+				{
+					equals: (a, b) =>
+						a.key === b.key &&
+						a.owner === b.owner &&
+						a.connected === b.connected &&
+						a.serving === b.serving &&
+						a.servingConnected === b.servingConnected &&
+						a.client === b.client,
+				},
+			);
+			// The render stays mounted; a session or server change releases its body.
 			return (
-				<Show when={props.session.key} keyed>
-					{(key) => (
+				<Show when={scope()} keyed>
+					{(current) => (
 						<SessionBody
-							sessionKey={key}
+							sessionKey={current.key}
 							session={() => props.session}
 							screen={() => props.screen}
 							visible={() => frame.visible() && frame.present()}
+							canReadCache={current.canReadCache}
 						/>
 					)}
 				</Show>
