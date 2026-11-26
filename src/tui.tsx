@@ -53,6 +53,7 @@ import { UsagePage } from "./ui/UsagePage";
 import {
 	CLAUDE_USAGE_COUNTDOWN_REFRESH_MS,
 	type ClaudeUsageRequest,
+	claudeAllWindowsReset,
 	claudeCountdownRefreshMs,
 	createClaudeUsageRequest,
 	newestQuotaObservation,
@@ -828,6 +829,9 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 			collect: (signal) => fetchClaudeUsage(context, signal),
 			now: Date.now,
 			onChange: setClaudeState,
+			setTimer: (callback, delay) => setTimeout(callback, delay),
+			clearTimer: (handle) =>
+				clearTimeout(handle as ReturnType<typeof setTimeout>),
 		});
 		const activityRouter: ActivityRefreshDriver = {
 			begin: (id) => activityDriver?.begin(id) ?? (() => {}),
@@ -912,6 +916,11 @@ export function setupQuotaTui(context: QuotaTuiContext): () => void {
 							delay,
 						);
 						onCleanup(() => clearTimeout(timer));
+					} else if (claudeAllWindowsReset(state.usage, now)) {
+						// No reset is left to repaint the card, so only a fresh
+						// collection can make it current. The controller owns the
+						// floor, single-flight, and retry policy.
+						claudeController.trigger();
 					}
 				}
 				return;
