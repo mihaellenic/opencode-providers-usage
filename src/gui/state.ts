@@ -448,6 +448,8 @@ export function createUsageController(deps: {
 		collect: (signal) => collectClaude(signal),
 		now: deps.now,
 		onChange: () => notify(),
+		setTimer: deps.setTimer,
+		clearTimer: deps.clearTimer,
 	});
 
 	const claudeSummaryActive = (): boolean =>

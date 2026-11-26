@@ -51,12 +51,18 @@ has already been imported.
   opens the full page.
 - When the selected provider ID is exactly `claude-agent`, the sidebar shows
   only a "Claude Code" card with the same 5h and 7d rows as the full
-  page's Claude Code card. It shows `Checking quota…` until the first result,
-  then `Usage unavailable` (one muted line, no error detail) if collection fails.
+  page's Claude Code card. It shows `Checking quota…` until the first result.
+  A failed collection keeps the last good reading while at least one of its
+  quota windows has not reset; only when no current reading remains does it show
+  one muted `Usage unavailable` line with no error detail. While the card is the
+  active selection, a failed or hung collection is retried after 5 s, 15 s and
+  30 s, then every 60 s; retries stop on success or when the card is deselected.
   Collection starts on every (re)selection; later input, terminal focus,
   route/session change and model-step completion start one only if 60 seconds
-  have passed since the previous attempt started. The experimental Desktop GUI
-  summary shows the same card with the same policy. See
+  have passed since the previous attempt started. When every window of the
+  displayed reading has reset, the sidebar refreshes once, still subject to that
+  60-second minimum. The experimental Desktop GUI summary shows the same card
+  and 60-second collection floor. See
   [Claude Code usage](#claude-code-usage).
 - `Show provider usage` (`provider-quota.usage`) opens the full page. The slash
   command is `/usage`; if that name is occupied at setup the plugin registers
@@ -89,15 +95,17 @@ No UI action triggers a model request or an inference call.
   independent of the connected-provider inventory and does not affect ordinary
   provider sidebar cards. The RPC does not cache or coordinate, so the page and
   the `claude-agent` sidebar may each collect; at most two bounded CLI processes
-  (30 s and 1 MiB each) can overlap briefly.
+  (30 s and 1 MiB each) can overlap briefly. Each collection attempt is
+  abandoned after 35 s, so a hung attempt cannot block a later retry.
 - On the full page, the card is hidden while collection runs and after any
   failure: missing CLI, not signed in, timeout, oversized or malformed output,
   unsupported platform, or a server without the Claude Code usage RPC. Other
   providers keep rendering and no error is shown. The sidebar card instead keeps
-  its header and shows `Usage unavailable` on failure.
+  its last good reading until no window of it is still current, then shows
+  `Usage unavailable`.
 - The sidebar card (and the Desktop GUI summary) is shown only for
-  `claude-agent` and uses the same rows, collection and collection-floor rules
-  as described in [Terminal UI](#terminal-ui).
+  `claude-agent` and uses the same rows, collection, collection-floor and retry
+  rules as described in [Terminal UI](#terminal-ui).
 - Only the current session and current week percentages and reset times are
   shown. Model-specific windows are ignored, never displayed, and never treated
   as the overall week.
@@ -114,8 +122,8 @@ No UI action triggers a model request or an inference call.
   a live OpenCode session with a real `claude-agent` selection. Other CLI
   versions and other POSIX platforms remain unverified. Platforms without POSIX
   process groups are unsupported and hide the page card. So does an unavailable
-  absolute home directory. The sidebar card shows `Usage unavailable` in those
-  cases.
+  absolute home directory. In those cases the sidebar card shows `Usage
+  unavailable` once no current reading remains.
 
 ## Freshness and request behavior
 
@@ -127,9 +135,9 @@ No UI action triggers a model request or an inference call.
 - Successful reads do **not** schedule polling. While idle, the sidebar keeps the
   last fully successful figures, even beyond normal expiry or a reported reset.
   It never estimates a refill. History is server-runtime memory only. The
-  `claude-agent` card has its own 60-second collection floor (see
-  [Terminal UI](#terminal-ui)), schedules no polling, and repaints its reset
-  countdowns on a display timer without collecting.
+  `claude-agent` card has its own 60-second collection floor and retry backoff
+  (see [Terminal UI](#terminal-ui)), makes no polling after a successful read,
+  and repaints its reset countdowns on a display timer without collecting.
 - Failed/partial refreshes retain that coherent history. `Data might be stale`
   appears only when the oldest figure is **over 30 minutes old** and refreshes
   have failed continuously for **at least 3 minutes**. Time passing alone can

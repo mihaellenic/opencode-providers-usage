@@ -430,7 +430,9 @@ async function extendedSidebarPhases(
 		}
 	}
 
-	// j. Claude-agent never shows the generic quota fallback in any state.
+	// j. Claude-agent never shows the generic quota fallback in any state. A
+	// failure while a window is still live keeps the previous figures; only a
+	// failure with every window reset becomes unavailable.
 	{
 		const harness = openSidebar(CLAUDE_SELECTION);
 		const setup = await mountSidebar(harness);
@@ -453,6 +455,13 @@ async function extendedSidebarPhases(
 			harness.setSelected(BETA_SELECTION);
 			await frameWhen(setup, betaReady, ["Claude Code"]);
 			harness.setSelected(CLAUDE_SELECTION);
+			const kept = await frameWhen(
+				setup,
+				(frame) => frame.includes("37%"),
+				forbidden,
+			);
+			assert.ok(!kept.includes("Usage unavailable"));
+			await advanceClock(2 * 86_400_000 + 1);
 			const failed = await frameWhen(
 				setup,
 				(frame) => frame.includes("Usage unavailable"),
@@ -719,12 +728,24 @@ async function main(): Promise<void> {
 		assert.equal(quotaCalls.length, 0);
 		console.log("claude-sidebar-live: countdown-tick");
 
-		// e. A null collection renders the header and one unavailable line only.
+		// e. A lost collection keeps the last good figures while one of their
+		// windows is still live; only after every window has reset does the card
+		// fall back to the header and one unavailable line.
 		clock += 61_000;
 		keyInput.emit("keypress");
 		await settle();
 		assert.equal(claudeCalls.length, 4);
 		callAt(claudeCalls, 3).resolve(null);
+		const kept = await waitForFrame((frame) => frame.includes("20%"));
+		assert.ok(kept.includes("Claude Code"));
+		assert.ok(kept.includes("30%"));
+		assert.ok(!kept.includes("Usage unavailable"));
+		assert.equal(quotaCalls.length, 0);
+		clock += 2 * 86_400_000;
+		keyInput.emit("keypress");
+		await settle();
+		assert.equal(claudeCalls.length, 5);
+		callAt(claudeCalls, 4).resolve(null);
 		const unavailable = await waitForFrame((frame) =>
 			frame.includes("Usage unavailable"),
 		);
@@ -732,14 +753,14 @@ async function main(): Promise<void> {
 		assert.equal(countOf(unavailable, "Usage unavailable"), 1);
 		assert.ok(!/%|resets/.test(unavailable));
 		assert.equal(quotaCalls.length, 0);
-		console.log("claude-sidebar-live: unavailable");
+		console.log("claude-sidebar-live: keep-live-figures-then-unavailable");
 
 		// f. Activating the card opens the usage page; no collection is started.
 		clock += 61_000;
 		keyInput.emit("keypress");
 		await settle();
-		assert.equal(claudeCalls.length, 5);
-		callAt(claudeCalls, 4).resolve(usageAt(37, 47));
+		assert.equal(claudeCalls.length, 6);
+		callAt(claudeCalls, 5).resolve(usageAt(37, 47));
 		await waitForFrame((frame) => frame.includes("37%"));
 		const callsBeforeClick = claudeCalls.length;
 		await setup.mockMouse.click(3, 1);
@@ -753,15 +774,15 @@ async function main(): Promise<void> {
 		clock += 61_000;
 		keyInput.emit("keypress");
 		await settle();
-		assert.equal(claudeCalls.length, 6);
+		assert.equal(claudeCalls.length, 7);
 		setSelected({ providerID: "beta", modelID: "model-b" });
 		await settle();
-		assert.equal(callAt(claudeCalls, 5).signal.aborted, true);
-		assert.equal(claudeCalls.length, 6);
+		assert.equal(callAt(claudeCalls, 6).signal.aborted, true);
+		assert.equal(claudeCalls.length, 7);
 		setSelected({ providerID: "claude-agent", modelID: "claude-sonnet" });
 		await settle();
-		assert.equal(claudeCalls.length, 7);
-		assert.equal(callAt(claudeCalls, 6).signal.aborted, false);
+		assert.equal(claudeCalls.length, 8);
+		assert.equal(callAt(claudeCalls, 7).signal.aborted, false);
 		assert.ok(
 			quotaCalls.every((call) => call.providerID !== "claude-agent"),
 			"claude-agent never reads the generic quota RPC",
@@ -771,7 +792,7 @@ async function main(): Promise<void> {
 		await setup.dispose();
 		setup = undefined;
 		dispose();
-		assert.equal(callAt(claudeCalls, 6).signal.aborted, true);
+		assert.equal(callAt(claudeCalls, 7).signal.aborted, true);
 		assert.equal(slotDisposals, 1);
 		assert.equal(eventDisposals, 3);
 		assert.equal(pushDisposals, 1);

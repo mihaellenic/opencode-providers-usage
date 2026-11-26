@@ -92,14 +92,17 @@ affect provider reads.
   not accept a credential, token, account path, or endpoint. The `claude`
   executable must be installed and signed in on the server machine.
 - Collection is fresh on every full-page open, on Ctrl+R, and on each
-  `claude-agent` sidebar collection. It is never cached, and it is independent of
-  the connected-provider inventory.
+  `claude-agent` sidebar collection. It is never cached across opens, and it is
+  independent of the connected-provider inventory. The sidebar holds only its
+  last good reading, in memory, for the current sidebar session. Each collection
+  attempt is abandoned after 35 seconds.
 - Only the current session and current week percentages and reset times are
   returned. Model-specific windows are ignored. On the page, the card is hidden
   while collecting and after every failure, including a missing or unauthenticated
   CLI, timeout, oversized or malformed output, unsupported platform, or a server
-  without the Claude Code usage RPC. The sidebar card instead shows
-  `Usage unavailable`.
+  without the Claude Code usage RPC. The sidebar card instead keeps its last good
+  reading while one of its windows has not reset and shows `Usage unavailable`
+  only when no current reading remains.
 - The process launches in the operating system's home directory rather than the
   OpenCode project directory, so project-level Claude settings and hooks are not
   discovered. User/home-level Claude Code settings and hooks may still run. The
@@ -107,10 +110,10 @@ affect provider reads.
   stop using the CLI's logged-in account. No model prompt is sent.
 - Platform limitations: only platforms with POSIX process-group semantics are
   supported; other platforms fail closed. The page hides its card, and the
-  sidebar shows `Usage unavailable`. An unavailable absolute home directory has
-  the same effect. Collection is bounded to 30 seconds and 1 MiB of output per
-  process. The page and the sidebar do not coordinate, so at most two processes
-  can overlap briefly.
+  sidebar falls back to `Usage unavailable` once no current reading remains. An
+  unavailable absolute home directory has the same effect. Collection is
+  bounded to 30 seconds and 1 MiB of output per process. The page and the
+  sidebar do not coordinate, so at most two processes can overlap briefly.
 - Verification: the collector was verified only on macOS arm64 with Claude Code
   CLI `2.1.308`. The live print-mode `/usage` command was independently
   verified. Other CLI versions and platforms are unverified, and the full-page
@@ -269,7 +272,7 @@ the Ollama adapter.
 | Behavior | Value |
 | --- | --- |
 | Ordinary activity freshness threshold | `60_000` ms since last full success; initial sidebar activation loads once (ordinary providers only) |
-| `claude-agent` sidebar collection | Starts on every (re)selection; later triggers only if `60_000` ms have passed since the previous attempt started (failed attempts count; step completion does not bypass); one at a time; no idle polling |
+| `claude-agent` sidebar collection | Starts on every (re)selection; later triggers only if `60_000` ms have passed since the previous attempt started (failed attempts count; step completion does not bypass); one at a time; failed or hung attempts retried after 5 s, 15 s, 30 s, then every 60 s while selected; each attempt abandoned after 35 s |
 | Automatic successful-read polling | None; activity/completion driven |
 | Minimum spacing between request starts for one provider/account | `15_000` ms |
 | Request timeout | `10_000` ms |
@@ -420,17 +423,24 @@ prompt's currently selected provider. The exception is `claude-agent`: see
   passed since the previous attempt started, failed attempts included. Step
   completion does not bypass this floor. At most one collection runs at a time.
   Previous figures stay visible while a refresh runs.
-- Nothing polls while idle. Reset countdowns repaint on a display timer without
-  collecting again.
+- Nothing polls after a successful read. Reset countdowns repaint on a display
+  timer without collecting again. When every window of the displayed reading
+  has reset, the card refreshes once, still subject to the 60-second floor.
 - On failure (missing or signed-out CLI, timeout, unsupported platform, or a
-  server without the Claude Code usage RPC) the card keeps its header and shows
-  one muted `Usage unavailable` line with no error detail.
+  server without the Claude Code usage RPC) the card keeps its last good reading
+  while at least one quota window has not reset. Only when no current reading
+  remains does it keep its header and show one muted `Usage unavailable` line
+  with no error detail.
+- While the card is the active selection, a failed or hung collection is retried
+  after 5 s, 15 s and 30 s, then every 60 s. Retries stop on success or when the
+  card is deselected, and each attempt is abandoned after 35 s.
 - Clicking the card opens the full usage page, like other sidebar cards.
 - Each collection may run user/home-level Claude Code hooks, as described in
   [Claude Code local CLI source](#claude-code-local-cli-source).
 - The experimental Desktop GUI shows the same card in its summary for
-  `claude-agent`, under the same header and with the same rows, copy and
-  collection policy. Its triggers are input, focus, model-step events and a
+  `claude-agent`, under the same header, with the same rows and copy, and the
+  same 60-second collection floor. Its triggers are input, focus, model-step
+  events and a
   model change within `claude-agent`, and the 60-second floor applies to all of
   them. The summary makes no generic quota read for that ID and never polls
   while idle. Clicking it opens the dashboard. This is covered by unit tests only;
@@ -447,7 +457,8 @@ shared-plan windows (with their `Limit reached` row) show exactly as the compact
 sidebar shows them. The Claude Code
 card is not a provider card: it uses the same rows and tones under its own
 identity. On this page it is hidden while collecting and on failure; the
-`claude-agent` sidebar card is separate and shows `Usage unavailable` instead
+`claude-agent` sidebar card is separate, keeps its last good reading while a
+window has not reset, and shows `Usage unavailable` only when none remains
 (see [Claude Code sidebar card](#claude-code-sidebar-card)). Ctrl+R starts a new
 collection independently of the provider loop.
 

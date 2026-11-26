@@ -13,6 +13,20 @@ import { CLAUDE_CARD_ID, type UsagePageCard } from "./usage-page-model";
 export const CLAUDE_USAGE_COUNTDOWN_REFRESH_MS = 30_000;
 
 /**
+ * True once every Claude window has already reset, so the figures describe no
+ * current period and the text can no longer change on its own.
+ */
+export function claudeAllWindowsReset(
+	usage: ClaudeUsage,
+	now: number,
+): boolean {
+	const windows = [usage.session, usage.week];
+	return (
+		windows.length > 0 && windows.every((window) => window.resetsAt <= now)
+	);
+}
+
+/**
  * Delay until the soonest still-future Claude reset needs a repaint, or
  * `undefined` when every window has already reset and the text can no longer
  * change.
