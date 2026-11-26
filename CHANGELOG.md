@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/mihaellenic/opencode-providers-usage/compare/v0.2.0...v0.2.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **ui:** retry the Claude sidebar card after a failed collection ([e14d52f](https://github.com/mihaellenic/opencode-providers-usage/commit/e14d52f6c3c76604f635ddd418d4ef507909f51b))
+* **ui:** retry the Claude sidebar card after a failed collection ([c5f2f72](https://github.com/mihaellenic/opencode-providers-usage/commit/c5f2f7213e438032f12450dbd58b7345cbb2dbe7))
+
 ## [0.2.0](https://github.com/mihaellenic/opencode-providers-usage/compare/v0.1.2...v0.2.0) (2026-11-24)
 
 
